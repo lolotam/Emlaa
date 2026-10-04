@@ -670,7 +670,7 @@ class Recorder:
         audio = self.np.concatenate(frames, axis=0)
         if len(audio) < int(SR * 0.3):        # أقل من ٣ من عشرة = دوسة غلط
             return None
-        wav = os.path.join(tempfile.gettempdir(), f"notq_{int(time.time() * 1000)}.wav")
+        wav = os.path.join(tempfile.gettempdir(), f"emlaa_{int(time.time() * 1000)}.wav")
         with wave.open(wav, "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
             w.writeframes(audio.tobytes())
@@ -988,7 +988,13 @@ class App:
         self.rec.close()
 
 
-ERR_LOG = os.path.join(BASE, "notq-error.log")
+ERR_LOG = os.path.join(BASE, "emlaa-error.log")
+try:                                    # الاسم القديم من النسخ اللي قبل كده
+    _old_log = os.path.join(BASE, "notq-error.log")
+    if os.path.exists(_old_log) and not os.path.exists(ERR_LOG):
+        os.replace(_old_log, ERR_LOG)
+except Exception:
+    pass
 
 
 def log_error(e, where=""):
@@ -1046,5 +1052,5 @@ def friendly_error(e):
     # حالة مش متوقّعة: نطلّع أول سطر من الخطأ الأصلي + نوديه على اللوج.
     # من غير ده الرسالة بتبقى بلا معنى والدعم مش هيعرف يساعده.
     detail = " ".join(str(e).split())[:70]
-    return ("مشكلة مش متوقّعة — ابعت ملف notq-error.log للدعم" +
+    return ("مشكلة مش متوقّعة — ابعت ملف emlaa-error.log للدعم" +
             (chr(10) + detail if detail else ""))

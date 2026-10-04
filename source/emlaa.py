@@ -3,7 +3,7 @@
 إملاء — صوت إلى نص عربي · Walid Mohamed
 واجهة رسومية · بتشتغل في الخلفية جنب الساعة
 
-تشغيل: Emlaa.exe   (أو python notq.py وقت التطوير)
+تشغيل: Emlaa.exe   (أو python emlaa.py وقت التطوير)
 """
 import os
 import sys
@@ -461,7 +461,7 @@ class ResultToast(tk.Toplevel):
             self.destroy()
 
 
-class Notq(tk.Tk):
+class EmlaaClassic(tk.Tk):
     def __init__(self):
         super().__init__()
         self.withdraw()                       # مانوريهاش غير لما تجهز
@@ -469,7 +469,7 @@ class Notq(tk.Tk):
         self.configure(bg=BG)
         self.resizable(False, False)
         try:
-            self.iconbitmap(core.asset("notq.ico"))
+            self.iconbitmap(core.asset("emlaa.ico"))
         except Exception:
             pass
 
@@ -829,7 +829,7 @@ class Notq(tk.Tk):
         d.title("إملاء · سجل التسجيلات")
         d.configure(bg=BG)
         try:
-            d.iconbitmap(core.asset("notq.ico"))
+            d.iconbitmap(core.asset("emlaa.ico"))
         except Exception:
             pass
         d.transient(self)
@@ -959,7 +959,7 @@ class Notq(tk.Tk):
         d.configure(bg=BG)
         d.resizable(False, False)
         try:
-            d.iconbitmap(core.asset("notq.ico"))
+            d.iconbitmap(core.asset("emlaa.ico"))
         except Exception:
             pass
         d.transient(self)
@@ -1386,7 +1386,7 @@ class Notq(tk.Tk):
         try:
             import pystray
             from PIL import Image
-            img = Image.open(core.asset("notq.png"))
+            img = Image.open(core.asset("emlaa.png"))
             menu = pystray.Menu(
                 pystray.MenuItem("فتح إملاء", self._tray_show, default=True),
                 pystray.MenuItem("سجل التسجيلات", lambda: self.after(0, self._open_history)),
@@ -1485,7 +1485,7 @@ def _log_crash(exc):
     import traceback, datetime
     p = "?"
     try:
-        p = os.path.join(core.BASE, "notq-error.log")
+        p = os.path.join(core.BASE, "emlaa-error.log")
         with open(p, "a", encoding="utf-8") as f:
             f.write(chr(10) + "=" * 60 + chr(10))
             f.write(str(datetime.datetime.now()) + chr(10))
@@ -1519,7 +1519,7 @@ if __name__ == "__main__":
             web_err = e
             core.log_error(e, "ui/web-start (رجعنا للواجهة القديمة)")
     try:
-        Notq().mainloop()
+        EmlaaClassic().mainloop()
     except Exception as e:
         _log_crash(e)
         raise SystemExit(1)

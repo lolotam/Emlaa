@@ -5,7 +5,7 @@
 - pywebview لازم ياخد الثريد الرئيسي، فـTk (الموجة العائمة + نافذة النتيجة)
   بيشتغل في ثريد لوحده — كل نداء ليه بيعدّي من tk_call().
 - المحرّك (core.App) والتراي والحافظة والاختصار العام كلهم ثريدات جانبية.
-- لو WebView2 أو pywebview مش موجودين، notq.py بيرجع للواجهة القديمة (Tk).
+- لو WebView2 أو pywebview مش موجودين، emlaa.py بيرجع للواجهة القديمة (Tk).
 """
 import json
 import os
@@ -86,8 +86,8 @@ def combo_listener(combo, fire):
 
 class Controller:
     def __init__(self, version, brand_name, brand_url, hotkeys):
-        import notq                                   # WaveOverlay / ResultToast
-        self.notq = notq
+        import emlaa                                  # WaveOverlay / ResultToast
+        self.emlaa = emlaa
         self.version = version
         self.brand = {"name": brand_name, "url": brand_url}
         self.hotkeys = hotkeys
@@ -127,7 +127,7 @@ class Controller:
                 core.log_error(e, "ui/tk_call")
 
     def _wave(self):
-        W = self.notq.WaveOverlay
+        W = self.emlaa.WaveOverlay
         if self.wave is not None:
             try:
                 alive = bool(self.wave.winfo_exists())
@@ -144,12 +144,12 @@ class Controller:
     # ═══════════ الحالة (من المحرّك) ═══════════
     def set_state(self, st, msg=None):
         mode = None
-        if msg in self.notq.WaveOverlay.MODE_COLORS:      # core بيبعت الوضع مكان الرسالة
+        if msg in self.emlaa.WaveOverlay.MODE_COLORS:      # core بيبعت الوضع مكان الرسالة
             mode, msg = msg, None
         self.state = st
 
         def ui():
-            W = self.notq.WaveOverlay
+            W = self.emlaa.WaveOverlay
             if st == "rec" or W.enabled():
                 w = self._wave()
                 w.set_state(st, mode=mode or ("normal" if st == "rec" else None))
@@ -167,7 +167,7 @@ class Controller:
         self.last_text = text
 
     def on_unplaced(self, text):
-        self.tk_call(lambda: self.notq.ResultToast.show_for(self.root, text))
+        self.tk_call(lambda: self.emlaa.ResultToast.show_for(self.root, text))
 
     def push(self, fn, payload):
         """بيبعت حدث للواجهة (لو مفتوحة)."""
@@ -175,7 +175,7 @@ class Controller:
         if w is None:
             return
         try:
-            w.evaluate_js(f"window.notq && notq.{fn}({json.dumps(payload, ensure_ascii=False)})")
+            w.evaluate_js(f"window.emlaa && emlaa.{fn}({json.dumps(payload, ensure_ascii=False)})")
         except Exception:
             pass
 
@@ -298,7 +298,7 @@ class Controller:
             try:
                 import pystray
                 from PIL import Image
-                img = Image.open(core.asset("notq.png"))
+                img = Image.open(core.asset("emlaa.png"))
                 self.tray = pystray.Icon("emlaa", img, self._tray_title(), self._tray_menu())
                 self.tray.run()
             except Exception as e:
@@ -598,7 +598,7 @@ class Api:
             c.start_open_hotkey()
 
         def wave_setting():
-            W = c.notq.WaveOverlay
+            W = c.emlaa.WaveOverlay
             if c.wave is None and not W.enabled():
                 return
             w = c._wave()
@@ -632,7 +632,7 @@ class Api:
 
 
 def run(version, brand_name, brand_url, hotkeys):
-    """بيرفع ImportError لو pywebview/pythonnet مش موجودين — notq.py بيرجع للواجهة القديمة."""
+    """بيرفع ImportError لو pywebview/pythonnet مش موجودين — emlaa.py بيرجع للواجهة القديمة."""
     import webview  # noqa: F401
     import clr      # noqa: F401
     Controller(version, brand_name, brand_url, hotkeys).run()

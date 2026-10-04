@@ -6,8 +6,8 @@
     python tools/release.py 1.9 --notes-file notes.md
 
 بيعمل بالترتيب:
-  1) يغيّر APP_VERSION في source/notq.py
-  2) يبني Emlaa.exe بـ PyInstaller (Notq.spec)
+  1) يغيّر APP_VERSION في source/emlaa.py
+  2) يبني Emlaa.exe بـ PyInstaller (Emlaa.spec)
   3) git commit + tag vX.Y + push
   4) ينشئ GitHub Release ويرفع Emlaa.exe عليه
 بعدها أي نسخة شغّالة عند المستخدمين هتلاقي الإصدار الجديد خلال ساعات (أو فورًا
@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NOTQ = os.path.join(ROOT, "source", "notq.py")
+APPFILE = os.path.join(ROOT, "source", "emlaa.py")
 REPO = "lolotam/Emlaa"
 
 
@@ -50,16 +50,16 @@ def main():
         sys.exit(f"الإصدار {tag} موجود قبل كده — اختار رقم أكبر")
 
     # 1) رقم الإصدار
-    src = io.open(NOTQ, encoding="utf-8").read()
+    src = io.open(APPFILE, encoding="utf-8").read()
     m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', src, re.M)
     if not m:
-        sys.exit("مش لاقي APP_VERSION في source/notq.py")
-    io.open(NOTQ, "w", encoding="utf-8", newline="").write(
+        sys.exit("مش لاقي APP_VERSION في source/emlaa.py")
+    io.open(APPFILE, "w", encoding="utf-8", newline="").write(
         src[:m.start(1)] + version + src[m.end(1):])
     print(f"APP_VERSION: {m.group(1)} → {version}")
 
     # 2) البناء
-    run(sys.executable, "-m", "PyInstaller", "Notq.spec", "--noconfirm")
+    run(sys.executable, "-m", "PyInstaller", "Emlaa.spec", "--noconfirm")
     exe = os.path.join(ROOT, "dist", "Emlaa.exe")
     if not os.path.exists(exe):
         sys.exit("البناء فشل — مفيش dist/Emlaa.exe")

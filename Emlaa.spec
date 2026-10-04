@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['source/notq.py'],
+    ['source/emlaa.py'],
     pathex=[],
     binaries=[],
-    datas=[('source/notq.ico', '.'), ('source/notq.png', '.'), ('source/ui', 'ui')],
+    datas=[('source/emlaa.ico', '.'), ('source/emlaa.png', '.'), ('source/ui', 'ui')],
     hiddenimports=['pystray._win32', 'app_web', 'webview', 'clr',
                    'comtypes.gen.UIAutomationClient', 'comtypes.gen.stdole',
                    'comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0',
@@ -38,5 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['source/notq.ico'],
+    icon=['source/emlaa.ico'],
 )

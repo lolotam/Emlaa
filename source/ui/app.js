@@ -756,7 +756,7 @@ function applyBoot() {
 }
 
 /* ═══════════ أحداث من Python ═══════════ */
-window.notq = {
+window.emlaa = {
   onState(p) {
     setState(p.state, p.msg);
     if (p.state === "done" || p.state === "err") loadHistory();

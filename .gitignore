@@ -8,6 +8,7 @@ config.json
 history.json
 clipboard.json
 *.corrupt-*.json
+emlaa-error.log
 notq-error.log
 *.log
 .show-request

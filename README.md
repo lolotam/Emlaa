@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="source/notq.png" width="88" alt="Emlaa logo">
+<img src="source/emlaa.png" width="88" alt="Emlaa logo">
 
 # إملاء · Emlaa
 
@@ -176,7 +176,7 @@
 | الكتابة مش شغّالة في برنامج معيّن | البرنامج ده شغّال كـ Administrator — شغّل `Emlaa.exe` كـ Administrator كمان |
 | «الحد المجاني خلص» | غيّر المزوّد من الإعدادات، أو استنى شوية |
 | مفيش صوت بيتسجّل | Settings ← Privacy ← Microphone واتأكد إن الميك مسموح |
-| رسالة «مشكلة مش متوقّعة» | ملف `notq-error.log` جنب البرنامج فيه السبب |
+| رسالة «مشكلة مش متوقّعة» | ملف `emlaa-error.log` جنب البرنامج فيه السبب |
 | التحديث التلقائي مش شغّال | البرنامج محطوط في فولدر محمي (زي Program Files) — انقله لفولدر عادي |
 
 ---
@@ -197,19 +197,19 @@
 
 ```
 source/
-  notq.py        نقطة البداية + الموجة العائمة + رقم الإصدار (APP_VERSION)
+  emlaa.py       نقطة البداية + الموجة العائمة + رقم الإصدار (APP_VERSION)
   app_web.py     النافذة (pywebview) والتراي والاختصارات والتحديث
   core.py        التسجيل والتفريغ والكتابة مكان المؤشر والإعدادات والسجل والتحديث
   providers.py   المزوّدين وموديلات التفريغ ونسب الترشيح ودليل المفاتيح
   ui/            الواجهة (HTML/CSS/JS) + الترجمة i18n.js
 tools/release.py نشر إصدار جديد بأمر واحد
-Notq.spec        إعدادات بناء Emlaa.exe (PyInstaller)
+Emlaa.spec       إعدادات بناء Emlaa.exe (PyInstaller)
 ```
 
 **تشغيل من الكود:**
 ```bash
 pip install -r source/requirements.txt
-python source/notq.py
+python source/emlaa.py
 ```
 
 **نشر إصدار جديد** (محتاج `git` و `gh` مسجّل دخول و PyInstaller):
