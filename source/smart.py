@@ -179,6 +179,117 @@ def app_profile(exe, cfg):
     return BUILTIN_PROFILES.get(exe)
 
 
+# ── زرار التسجيل: منطق الدوس/التسيب (قرار نقي، بيتشغل من غير pynput) ─────
+
+# أقصى مدة ل«دوسة نضيفة» في وضع toggle: أطول من كده معناه ماسك الزرار
+# (أو التكرار التلقائي) مش دوسة.
+TAP_MAX = 0.6
+
+
+class HotkeyLogic:
+    """
+    قرارات زرار التسجيل: press/release بمفتاح ووقت (now) صريح، وبيتفضّي
+    قائمة إجراءات قصيرة: "begin:<mode>", "end", "cancel", "mask" أو [].
+
+    ليه كده: القرار كان مخبّي جوّه start_hotkey في core متشابك مع
+    pynput والـApp — فككناه هنا عشان يختبر على مفاتيح عادية (كلمات زي
+    "ctrl_r") من غير ويندوز، والوقت جاي حجة مش time.time() عشان الاختبار
+    مالاقيش لينت خالص.
+
+    toggle: دوسة نضيفة تبدأ والتانية توقف. كورد (مفتاح معاه مفتاح تاني)
+    أو مسكة أطول من TAP_MAX مهمل.
+    hold: الدوسة تبدأ وتسيب نفس الزرار يوقف، وأي زرار تاني اتداس
+    والتسجيل شغال = cancel (الكلام اللي اتسجل بيرمي بهدوء).
+    """
+
+    def __init__(self, key_map, mode_type, tap_max=TAP_MAX, alt_keys=()):
+        self._key_map = dict(key_map)
+        self._hold = mode_type == "hold"
+        self._tap_max = tap_max
+        self._alt = set(alt_keys)   # المفاتيح اللي في نفس الوقت زراير Alt — "mask" ليهم
+        self._held = {}             # toggle: مفتاح → وقت الدوسة
+        self._spoiled = set()       # toggle: مفاتيح اتداست في كورد
+        self._active = None         # hold: مفتاح التسجيل اللي ماسكه دلوقتي
+
+    def press(self, key, now, recording, busy):
+        if self._hold:
+            return self._press_hold(key, now, recording, busy)
+        return self._press_toggle(key, now)
+
+    def release(self, key, now, recording, busy):
+        if self._hold:
+            return self._release_hold(key, now)
+        return self._release_toggle(key, now, recording, busy)
+
+    def _mask(self, key):
+        # أول دوسة على زرار Alt (لو هو زرار تسجيل) بتطلّع "mask" قبل أي إجراء —
+        # حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt مايفتحش قايمة البرنامج.
+        # التكرار التلقائي وهو ماسك ملوش mask (المتصل بيتأكد قبل ما ينادي).
+        if key in self._key_map and key in self._alt:
+            return ["mask"]
+        return []
+
+    # ── hold ──
+
+    def _press_hold(self, key, now, recording, busy):
+        if self._active is not None and key == self._active:
+            return []                  # تكرار تلقائي — مفيش mask ولا إجراء
+        acts = self._mask(key)
+        if self._active is not None:
+            if key == self._active:
+                # التكرار التلقائي لزرار التسجيل نفسه وهو لسه ماسك:
+                # مايتحسبش دوسة جديدة — وكده لو التسجيل اتلغى (cancel) قبل
+                # ما يتسيب الزرار، التكرار مايشغلش تسجيل جديد.
+                return acts
+            if recording:
+                acts.append("cancel")
+            return acts
+        if key in self._key_map and not recording and not busy:
+            self._active = key
+            acts.append("begin:" + self._key_map[key])
+        return acts
+
+    def _release_hold(self, key, now):
+        if key == self._active:
+            self._active = None
+            # مش لازم يكون recording وقت التسيب: لو begin فشل (ميك مبيفتحش)
+            # التسيب يطلع "end" وApp.end() مايقفلش حاجة — نفس تصرف كود
+            # قبل الكسح، حرفي.
+            return ["end"]
+        return []
+
+    # ── toggle ──
+
+    def _press_toggle(self, key, now):
+        if key in self._held:
+            return []                  # تكرار تلقائي وهو ماسك — مفيش mask ولا إجراء
+        acts = self._mask(key)
+        for k in self._held:
+            if k != key:
+                self._spoiled.add(k)
+        if key in self._key_map:
+            if key in self._held:      # تكرار تلقائي وهو ماسك
+                return acts
+            self._held[key] = now
+            if len(self._held) > 1:
+                self._spoiled.add(key)
+        else:
+            self._spoiled.update(self._held)
+        return acts
+
+    def _release_toggle(self, key, now, recording, busy):
+        t0 = self._held.pop(key, None)
+        clean = key not in self._spoiled
+        self._spoiled.discard(key)
+        if key not in self._key_map or t0 is None or not clean or now - t0 > self._tap_max:
+            return []
+        if recording:
+            return ["end"]
+        elif not busy:
+            return ["begin:" + self._key_map[key]]
+        return []
+
+
 # ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
 
 def fix_mixed(text):

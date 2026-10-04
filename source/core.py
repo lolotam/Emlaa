@@ -1068,6 +1068,8 @@ class App:
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
         from pynput import keyboard
+        import winput   # آثار جانبية Win32 (mask/مفاتيح القفل) — جوّه الدالة عشان
+                       # ماتستورداش في مستوى موديول core (وsmart مالمسهاش خالص)
 
         def _parse_key(val):
             if not val:
@@ -1097,6 +1099,32 @@ class App:
 
         self._active_key = None
 
+        # أي زرار من التلاتة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
+        # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
+        # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
+        ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
+        LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
+                    "scroll_lock": winput.VK_SCROLL_LOCK}
+        alt_keys, lock_vks = set(), {}
+        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans)):
+            if not k:
+                continue
+            s = str(raw).lower().strip()
+            if s in ALT_NAMES:
+                alt_keys.add(k)
+            if s in LOCK_VKS:
+                lock_vks[k] = LOCK_VKS[s]
+
+        # القرار نفسه (toggle: دوسة نضيفة / hold: دوسة-تسيب + أي زرار تاني
+        # وقت التسجيل = cancel) بقى جوّه smart.HotkeyLogic — مبسوط هنا
+        # عشان الاختبار من غير pynput ولا ويندوز.
+        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys)
+        # مفاتيح قفل اتداست ولسه ماتسابتش. كل دوسة حقيقية على Caps/Scroll Lock بتقلب
+        # الحالة مرة واحدة بالظبط (التكرار التلقائي مابيقلبهاش)، فعند التسيب بنرجّعها
+        # بدوسة واحدة. مش بنقارن GetKeyState قبل وبعد: من ثريد الـhook الحالة بتبان
+        # متقلبة من وقت الدوسة نفسها، فالمقارنة كانت دايمًا «متغيرتش» (اتجرّب فعليًا).
+        locks_down = set()
+
         def guard(fn):
             def wrapped(key):
                 try:
@@ -1111,52 +1139,42 @@ class App:
                         pass
             return wrapped
 
-        # وضع toggle: «دوسة نضيفة» على أي زرار من التلاتة = يبدأ، ودوسة تانية على
-        # أي زرار من التلاتة = يوقف. أي زرار تاني مالوش دعوة.
-        # «نضيفة» = الزرار اتداس واتساب لوحده: لو اتداس معاه حرف (Shift+A، Ctrl+C)
-        # يبقى المستخدم بيكتب أو بيعمل اختصار — مانبدأش تسجيل. ولو فضل ماسكه
-        # (التكرار التلقائي بتاع الكيبورد) مايتحسبش أكتر من دوسة.
-        TAP_MAX = 0.6
-        held = {}            # key → وقت الدوسة
-        spoiled = set()      # زراير اتداس معاها زرار تاني
-
         @guard
         def on_press(key):
-            if mode_type == "hold":
-                if key in key_map and not self.recording and not self.busy:
-                    self._active_key = key
-                    self.begin(mode=key_map[key])
-                return
-            for k in held:
-                if k != key:
-                    spoiled.add(k)
-            if key in key_map:
-                if key in held:              # تكرار تلقائي وهو ماسك
-                    return
-                held[key] = time.time()
-                if len(held) > 1:
-                    spoiled.add(key)
-            else:
-                spoiled.update(held)
+            now = time.time()
+            if key in lock_vks:
+                locks_down.add(key)
+            for act in logic.press(key, now, self.recording, self.busy):
+                if act == "mask":
+                    winput.send_vk(winput.VK_MASK)
+                elif act == "end":
+                    self.end()
+                elif act == "cancel":
+                    self.cancel()
+                elif act.startswith("begin:"):
+                    self.begin(mode=act[len("begin:"):])
 
         @guard
         def on_release(key):
-            if mode_type == "hold":
-                if key == self._active_key:
-                    self._active_key = None
+            for act in logic.release(key, time.time(), self.recording, self.busy):
+                if act == "end":
                     self.end()
-                return
-            t0 = held.pop(key, None)
-            clean = key not in spoiled
-            spoiled.discard(key)
-            if key not in key_map or t0 is None or not clean or time.time() - t0 > TAP_MAX:
-                return
-            if self.recording:
-                self.end()
-            elif not self.busy:
-                self.begin(mode=key_map[key])
+                elif act == "cancel":
+                    self.cancel()
+                elif act.startswith("begin:"):
+                    self.begin(mode=act[len("begin:"):])
+            if key in locks_down:
+                locks_down.discard(key)
+                winput.send_vk(lock_vks[key])
 
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        def win32_event_filter(msg, data):
+            # أحداثنا التركيبية (معلّمة EMLAA_TAG) مابنسمعهاش:
+            # غير كده منطق زرار التسجيل كان هيسمع دوساته هو. بنفلتر
+            # أحداثنا إحنا بس — مفاتيح المستخدم الحقيقية مالهاش دعوة بالفلتر.
+            return data.dwExtraInfo != winput.EMLAA_TAG
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release,
+                                           win32_event_filter=win32_event_filter)
         self._listener.daemon = True
         self._listener.start()
 
