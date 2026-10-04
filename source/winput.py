@@ -265,3 +265,135 @@ def focused_info():
             pass
         return out
 
+
+# ── الكبسولة العائمة: منع تفعيل النافذة (WS_EX_NOACTIVATE) ────────────────────
+# الكبسولة Toplevel بتبان فوق كل حاجة، بس كليك عليها كان بياخد الفوكس —
+# والكلام المُملى بعدين بيتكتب جوّاها مش في البرنامج اللي قدام المستخدم.
+# الحل: نضيف WS_EX_NOACTIVATE لطراز النافذة، فالماوس يوصل لزرار الإلغاء/
+# الإنهاء والسحب عادي، بس النافذة عمرها ما بتاخد الفوكس ولا بتبقى الأمامية.
+
+GWL_EXSTYLE      = -20
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+
+# فلاجات SetWindowPos: بننده بيهم كلهم عشان تغيير الطراز يسري من غير ما
+# النافذة تتحرّك أو تتنشّط أو يتغيّر ترتيبها
+SWP_NOSIZE       = 0x0001
+SWP_NOMOVE       = 0x0002
+SWP_NOZORDER     = 0x0004
+SWP_NOACTIVATE   = 0x0010
+SWP_FRAMECHANGED = 0x0020
+_STYLE_FLAGS = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+
+# LONG_PTR بحجم المؤشر (32/64) — وهو اللي GetWindowLongPtrW/SetWindowLongPtrW بياخدوه
+LONG_PTR = ctypes.c_ssize_t
+
+_sty32 = None
+
+
+def _style32():
+    """ميتولّد مرة: argtypes/restype لدوال طراز النافذة — عشان النداءات تصح."""
+    global _sty32
+    if _sty32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetParent.argtypes = [wintypes.HWND]
+        u.GetParent.restype = wintypes.HWND
+        u.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.GetWindowLongPtrW.restype = LONG_PTR
+        u.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        u.SetWindowLongPtrW.restype = LONG_PTR
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u.SetWindowPos.restype = wintypes.BOOL
+        _sty32 = u
+    return _sty32
+
+
+def toplevel_hwnd(widget):
+    """الـHWND الفعلي لنافذة Toplevel في Tk — winfo_id بيشير لحاوية داخلية،
+    فالوالد (GetParent) هو الـHWND اللي نعدّل عليه الطراز. بيرجّع 0 لو فشل."""
+    try:
+        widget.update_idletasks()
+        return int(_style32().GetParent(widget.winfo_id()))
+    except Exception:
+        return 0
+
+
+def set_no_activate(hwnd):
+    """
+    بيضيف WS_EX_NOACTIVATE لطراز النافذة. بيرجّع True لو اتطبق (أو متطبّق
+    بالفعل)، وFalse من غير ما يرمي — كبسولة فشل تظبيطها لازم تفضل شغّالة.
+    """
+    try:
+        u = _style32()
+        if not hwnd:
+            return False
+        ctypes.set_last_error(0)
+        style = int(u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE))
+        if style == 0 and ctypes.get_last_error():
+            return False                  # hwnd مش صالح
+        if style & WS_EX_NOACTIVATE:
+            return True                   # متطبّق بالفعل
+        ctypes.set_last_error(0)
+        if int(u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)) == 0 \
+                and ctypes.get_last_error():
+            return False
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _STYLE_FLAGS)
+        return True
+    except Exception as e:
+        try:
+            import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+            core.log_error(e, "overlay/noactivate")
+        except Exception:
+            pass
+        return False
+
+
+
+# Tk نفسه بيرد على WM_MOUSEACTIVATE بـ«فعّل» لنوافذه العلوية، وده بيتجاوز WS_EX_NOACTIVATE —
+# اتجرّب فعليًا: الطراز متطبّق والكليك برضه خطف الفوكس. فبنلف إجراء النافذة (subclass):
+# WM_MOUSEACTIVATE بيرجع MA_NOACTIVATE، وأي رسالة تانية بتعدّي لإجراء Tk الأصلي زي ما هي.
+GWLP_WNDPROC     = -4
+WM_MOUSEACTIVATE = 0x0021
+MA_NOACTIVATE    = 3
+LRESULT = ctypes.c_ssize_t
+_WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+_subclassed = {}   # hwnd → (الإجراء الجديد، الأصلي) — المرجع لازم يفضل عايش وإلا الـcallback يتمسح
+
+
+def block_mouse_activate(hwnd):
+    """
+    الكليك على النافذة ميفعّلهاش أبدًا (WM_MOUSEACTIVATE → MA_NOACTIVATE)، والماوس
+    يفضل يوصل للزراير والسحب عادي. مرة واحدة لكل نافذة؛ بيرجّع False من غير ما يرمي.
+    """
+    if not hwnd:
+        return False
+    if hwnd in _subclassed:
+        return True
+    try:
+        u = _style32()
+        u.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
+                                      wintypes.WPARAM, wintypes.LPARAM]
+        u.CallWindowProcW.restype = LRESULT
+        old = {}
+
+        @_WNDPROC
+        def proc(h, msg, wp, lp):
+            if msg == WM_MOUSEACTIVATE:
+                return MA_NOACTIVATE
+            return u.CallWindowProcW(old["proc"], h, msg, wp, lp)
+
+        ctypes.set_last_error(0)
+        prev = int(u.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ctypes.cast(proc, ctypes.c_void_p).value))
+        if prev == 0 and ctypes.get_last_error():
+            return False
+        old["proc"] = prev
+        _subclassed[hwnd] = (proc, prev)
+        return True
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "overlay/mouseactivate")
+        except Exception:
+            pass
+        return False
