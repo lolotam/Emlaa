@@ -21,6 +21,7 @@ import wave
 import tempfile
 import threading
 import urllib.request
+from dataclasses import dataclass
 
 # ── شهادات SSL جوّه الـexe ───────────────────────────────────────────────────
 # نثبّت مسار حزمة certifi كمتغيّر بيئة كمان — عشان أي نداء HTTPS بمكتبة
@@ -848,15 +849,40 @@ def paste_text(text):
 
 
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Operation:
+    """
+    بيانات دورة إملاء واحدة (تسجيل → تفريغ → كتابة).
+    ثابت (frozen) وبيتولد مرة واحدة في begin() — قبل كده كان «الوضع» بيتقرأ
+    من متغيّر بيتنازع عليه ثريدين: الدوسة اللي فتحت التسجيل وقفلته من
+    ثريد تاني كانت ممكن تقرأ الوضع الغلط أو توصل بيانات فوق عملية لسه شغّالة.
+    (حقول الهدف target_app / hwnd / selection… بتتملّأ في مهام تالية).
+    """
+    mode: str
+    target_app: str = ""
+    target_class: str = ""
+    hwnd: int = 0
+    runtime_id: tuple = ()
+    selection: str = ""
+    selection_hash: str = ""
+
+
 class App:
     """
     الواجهة بترث منه وبتعمل override لـ on_state / on_text عشان تعرض الحالة.
     """
 
+    # قفل واحد بيحرس (recording, busy, _op): أي انتقال بينهم لازم يبقى خطوة
+    # واحدة — عشان دوسة الزرار والضغط من الواجهة في نفس اللحظة ما يشغلوش
+    # عملية اتنين فوق بعض (كان بيحصل: end() قفل recording والـworker لسه
+    # لسه ماحجزش busy، فتسجيل جديد كان بيبدأ فوق الأول).
+    _state_lock = threading.Lock()
+
     def __init__(self):
         self.rec = Recorder()
         self.recording = False
         self.busy = False
+        self._op = None
         self._client = None
         self._client_sig = None
         self._listener = None
@@ -897,52 +923,78 @@ class App:
         pass
 
     # ── دورة التسجيل ──
+    def _set_busy(self, on):
+        # busy بيتحوّل من جوّه القفل زي recording: لو اتستنى عليه ثريد
+        # تاني (begin)، الفحص والتحويل لازم يقعّا في نفس اللحظة.
+        with self._state_lock:
+            self.busy = on
+
     def begin(self, mode="normal"):
-        if self.recording or self.busy:
-            return
-        # لو الميك مات (الجهاز اتفصل والبرنامج شغّال) بنحاول نفتحه تاني هنا
+        with self._state_lock:
+            # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
+            # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
+            if self.recording or self.busy:
+                return
+            self.recording = True
+            self.active_mode = mode
+            self._op = Operation(mode=mode)
+        # فتح الميك جوه القفل كان بيقعد فيه: لو الجهاز اتفصل والستريم بيأخد
+        # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
+            with self._state_lock:
+                self.recording = False
+                self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
             return
-        self.active_mode = mode
-        self.recording = True
         beep(880, 90)
         self.rec.start()
         self.on_state("rec", mode)
 
     def end(self):
-        if not self.recording:
-            return
-        self.recording = False
+        with self._state_lock:
+            # نقفل التسجيل ونحجز التفريغ (busy) في نفس اللحظة: قبل كده كانت
+            # الفجوة بين الاتنين بتسمح بتسجيل جديد يبدأ فوق الأول — الـworker
+            # لسه مشغّل والوضع الجديد بينتقل مع القديم.
+            if not self.recording:
+                return
+            self.recording = False
+            self.busy = True
+            op = self._op
+            self._op = None
         beep(500, 90)
         try:
             wav = self.rec.stop()
         except Exception as e:
             log_error(e, "recorder/stop")
+            self._set_busy(False)             # مفيش worker بدأ — الحجز اتأخد على الفاضي فبيترجّع
             self.on_state("err", "مشكلة في قراية الصوت — جرّب تاني")
             return
         if not wav:
+            self._set_busy(False)             # نفس السبب: مفيش عملية هتبدأ فالحجز بيتترجّع
             self.on_state("ready", "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف")
             return
-        cur_mode = getattr(self, "active_mode", "normal")
-        threading.Thread(target=self.process, args=(wav, cur_mode), daemon=True).start()
+        threading.Thread(target=self.process, args=(wav, op), daemon=True).start()
 
     def cancel(self):
         """إلغاء التسجيل: الصوت بيترمي ومفيش تفريغ."""
-        if not self.recording:
-            return
-        self.recording = False
-        self._active_key = None               # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
+        with self._state_lock:
+            if not self.recording:
+                return
+            self.recording = False
+            self._op = None                   # العملية اتلغت — مفيش ما يستلمها في end()
+            self._active_key = None           # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
         try:
             self.rec.discard()
         except Exception as e:
             log_error(e, "recorder/cancel")
         self.on_state("ready", "اتلغى التسجيل")
 
-    def process(self, wav, mode="normal"):
-        self.busy = True
-        self.on_state("work", mode)
+    def process(self, wav, op):
+        # busy اتحجز بالفعل في end() (قبل ما الثريد ده يبدأ) — هنا بنفكّه
+        # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
+        cur_mode = op.mode
         try:
+            self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
                 with wave.open(wav, "rb") as w:
                     dur = w.getnframes() / float(w.getframerate())
@@ -952,16 +1004,16 @@ class App:
             cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
             # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
             # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
-            lang = None if mode == "translate" else CFG.get("language", "ar")
+            lang = None if cur_mode == "translate" else CFG.get("language", "ar")
             text = cl.transcribe(wav, lang)
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
-            if mode == "prompt":
+            if cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
-            elif mode == "translate":
+            elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
             elif CFG.get("polish", True):
@@ -969,18 +1021,18 @@ class App:
             else:
                 out = text
 
-            rid = history_add(mode, text, out, dur, engine=cl.engine())
+            rid = history_add(cur_mode, text, out, dur, engine=cl.engine())
             self.on_text(out)
             if not paste_text(out):
                 self.on_unplaced(out)
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
-            self.on_state("done", mode)
+            self.on_state("done", cur_mode)
         except Exception as e:
             log_error(e, "process/transcribe")
             self.on_state("err", friendly_error(e))
         finally:
-            self.busy = False
+            self._set_busy(False)
             try:
                 os.remove(wav)
             except Exception:
