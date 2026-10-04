@@ -6,7 +6,9 @@
 """
 import os
 import sys
+import json
 import time
+import tempfile
 import dataclasses
 import threading
 import unittest
@@ -55,24 +57,33 @@ class FakeClient:
         self.vocab = []
         self.text = text
         self.calls = []
+        # زي Client الحقيقي: transcribe بيرمّيه None، والـchat بيسجل مين شغل
+        self.last_chat = None
 
     def engine(self):
-        return {"stt": "fake", "stt_model": "m1"}
+        e = {"stt": "fake", "stt_model": "m1"}
+        if self.last_chat:
+            e["chat"], e["chat_model"] = self.last_chat
+        return e
 
     def transcribe(self, wav, lang):
         self.calls.append(("transcribe", lang))
+        self.last_chat = None
         return self.text
 
     def polish(self, t):
         self.calls.append(("polish",))
+        self.last_chat = ("fake", "m1")
         return "p:" + t
 
     def to_prompt(self, t):
         self.calls.append(("prompt",))
+        self.last_chat = ("fake", "m1")
         return "P:" + t
 
     def translate(self, t):
         self.calls.append(("translate",))
+        self.last_chat = ("fake", "m1")
         return "T:" + t
 
 
@@ -313,7 +324,9 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(app.texts, ["P:مرحبا بالعالم"])
         paste.assert_called_once_with("P:مرحبا بالعالم")
         hist.assert_called_once_with("prompt", "مرحبا بالعالم", "P:مرحبا بالعالم",
-                                     None, engine={"stt": "fake", "stt_model": "m1"})
+                                     None, engine={"stt": "fake", "stt_model": "m1",
+                                                   "chat": "fake", "chat_model": "m1"},
+                                     bypass=False)
         rsave.assert_called_once_with(111, "WAV")
         self.assertEqual(app.events[-1], ("done", "prompt"))
         self.assertFalse(app.busy, "الـfinally المفروض يفكّ الحجز بعد العملية")
@@ -355,6 +368,7 @@ class TestProcess(unittest.TestCase):
         self.assertIn(("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"), app.events)
 
     def test_process_normal_mode_success(self):
+        # «مرحبا بالعالم» كلمة منها مش في قايمة التخطّي (العالم) → polish عادي
         app = make_app()
         fake = FakeClient()
         app.client = lambda: fake
@@ -386,6 +400,128 @@ class TestProcess(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.unplaced, ["p:مرحبا بالعالم"])
         self.assertFalse(app.busy)
+
+
+def _cfg(**over):
+    """إعدادات وهمية لوحدات F2 — عشان الاختبار ميعتمدش على config.json الحقيقي."""
+    base = {"polish": True, "bypass_short": True, "bypass_max_words": 3,
+            "language": "ar", "dictionary": [], "history_keep_last10": True}
+    base.update(over)
+    return base
+
+
+class TestBypassProcess(unittest.TestCase):
+    def test_short_reply_skips_llm_entirely(self):
+        # رد يومي قصير: مفيش أي نداء chat — المخرج هو الكلمة نفسها
+        app = make_app()
+        fake = FakeClient(text="تمام")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True) as paste:
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertIsNone(fake.last_chat, "مفيش chat = مفيش موديل شات شغل")
+        self.assertEqual(app.texts, ["تمام"])
+        paste.assert_called_once_with("تمام")
+        self.assertEqual(hist.call_args.kwargs.get("bypass"), True)
+        self.assertFalse(app.busy)
+
+    def test_short_reply_trailing_period_cleaned_locally(self):
+        app = make_app()
+        fake = FakeClient(text="تمام.")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch.object(core, "history_add", return_value=111), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True) as paste:
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.texts, ["تمام"])
+        paste.assert_called_once_with("تمام")
+
+    def test_longer_text_still_polished(self):
+        # 4 كلمات = فوق الحد 3 → الـLLM زي ما هي
+        app = make_app()
+        fake = FakeClient(text="تمام شكرا يا رب")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish",)])
+        self.assertEqual(app.texts, ["p:تمام شكرا يا رب"])
+        self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
+
+    def test_bypass_disabled_by_config(self):
+        app = make_app()
+        fake = FakeClient(text="تمام")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg(bypass_short=False)), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish",)])
+        self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
+
+    def test_prompt_mode_unaffected_by_bypass(self):
+        # فرع البرومبت ماشي على الـLLM حتى لو النص قصير من القايمة
+        app = make_app()
+        fake = FakeClient(text="تمام")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True):
+            app.process("WAV", core.Operation(mode="prompt"))
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(app.texts, ["P:تمام"])
+        self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
+
+    def test_translate_mode_unaffected_by_bypass(self):
+        app = make_app()
+        fake = FakeClient(text="Yes please")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True):
+            app.process("WAV", core.Operation(mode="translate"))
+        self.assertEqual(fake.calls, [("transcribe", None), ("translate",)])
+        self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
+
+
+class TestHistoryBypassFlag(unittest.TestCase):
+    def test_bypass_key_stored_only_when_true(self):
+        # التسجيل القديم (من غير bypass) يفضل زي ما هو، والجديد بس ياخد المفتاح
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "history.json")
+            with mock.patch.object(core, "HISTORY_PATH", p), \
+                    mock.patch.object(core, "log_error"), \
+                    mock.patch.object(core, "CFG", _cfg()):
+                core.history_add("normal", "مرحبا بالعالم", "مرحبا بالعالم")
+                core.history_add("normal", "تمام", "تمام", bypass=True)
+            with open(p, encoding="utf-8") as f:
+                items = json.load(f)
+        self.assertEqual(len(items), 2)
+        self.assertIs(items[0]["bypass"], True)          # الأحدث = اللي اتخطّت
+        self.assertNotIn("bypass", items[1])             # القديم من غير المفتاح
+        # السجل القديم بيتقرا من غير KeyError — الويتس مايتغيّرش بسبب المفتاح الجديد
+        self.assertEqual(items[1]["result"], "مرحبا بالعالم")
 
 
 if __name__ == "__main__":

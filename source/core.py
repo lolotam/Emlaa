@@ -34,6 +34,7 @@ except Exception:
     pass
 
 import providers
+import smart     # القرارات النقية (تخطّي الردود القصيرة F2…) — core بيستورد smart، مش العكس
 
 # ── مسار البيانات ────────────────────────────────────────────────────────────
 # لما يبقى .exe مبنيّ بـPyInstaller، __file__ بيبقى فولدر مؤقت — فبنستخدم
@@ -118,6 +119,8 @@ DEFAULTS = {
     "mic":               "",
     "language":          "ar",
     "polish":            True,
+    "bypass_short":      True,    # ردود قصيرة من القايمة → من غير لفة LLM خالص (F2)
+    "bypass_max_words":  3,       # حد عدد الكلمات اللي بيتسمح التخطّي فيه
     "prompt_mode":       False,
     "auto_paste":        True,
     "insert_method":     "type",
@@ -191,10 +194,11 @@ def history_get(limit=100):
     return _read_list(HISTORY_PATH)[0][:limit]
 
 
-def history_add(mode, raw_text, result_text, dur=None, engine=None):
+def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False):
     """
     بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني،
-    engine = مين فرّغ ومين نضّف). بيرجّع الـid عشان الصوت يتحفظ بيه.
+    engine = مين فرّغ ومين نضّف، bypass = الـLLM اتتخطّت للرد القصير F2).
+    بيرجّع الـid عشان الصوت يتحفظ بيه.
     """
     if not result_text or not result_text.strip():
         return None
@@ -214,6 +218,10 @@ def history_add(mode, raw_text, result_text, dur=None, engine=None):
         entry["dur"] = round(float(dur), 2)
     if engine:
         entry["engine"] = engine
+    if bypass:
+        # بيتكتب بس لو الـLLM اتتخطّت فعلًا — السجلات العادية والقديمة من غيره،
+        # والواجهة بتقراه بـ .get
+        entry["bypass"] = True
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
         items.insert(0, entry)
@@ -1010,6 +1018,7 @@ class App:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
+            bypass = False
             if cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
@@ -1017,11 +1026,17 @@ class App:
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
             elif CFG.get("polish", True):
-                out = cl.polish(text)
+                if smart.should_bypass(text, cur_mode, CFG):
+                    # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
+                    # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
+                    out = smart.light_clean(text)
+                    bypass = True
+                else:
+                    out = cl.polish(text)
             else:
                 out = text
 
-            rid = history_add(cur_mode, text, out, dur, engine=cl.engine())
+            rid = history_add(cur_mode, text, out, dur, engine=cl.engine(), bypass=bypass)
             self.on_text(out)
             if not paste_text(out):
                 self.on_unplaced(out)
