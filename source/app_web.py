@@ -273,12 +273,52 @@ class Controller:
             pystray.MenuItem(T("الحافظة", "Clipboard"), lambda: self.show_window("clipboard")),
             pystray.MenuItem(T("الإعدادات", "Settings"), lambda: self.show_window("settings")),
             pystray.MenuItem(T("تسجيل / إيقاف", "Record / stop"), lambda: self.toggle_record("normal")),
+            pystray.MenuItem(T("تفريغ حرفي (من غير تحسين)", "Raw transcription (no polish)"),
+                             lambda: self.toggle_raw(),
+                             checked=lambda item: not core.CFG.get("polish", True)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(T("خروج", "Quit"), lambda: self.quit()),
         )
 
     def _tray_title(self):
         return "Emlaa — voice to text" if core.CFG.get("lang") == "en" else "إملاء — صوت إلى نص عربي"
+
+    def toggle_raw(self):
+        """
+        «تفريغ حرفي» من قايمة التراي: يقلب «تنظيف النص» من غير ما المستخدم
+        يفتح الإعدادات — حاجة يتكرّر عليها بسرعة (تفريغ طويل وهوينفع يكون
+        زي ما اتقال، بالظبط). العلم بيتحفظ ويوصل للواجهة عشان مفتاح
+        الإعدادات يبان صح، والقايمة بتتحدّث علشان علامة الصح تأخذ مكانها.
+        إعادة رسم الموجة (علامة «خام» فوق الكبسولة) لازم تيجي من ثريد Tk
+        فبيتمرّرها عبر tk_call() زي set_state().
+        """
+        core.CFG["polish"] = not core.CFG.get("polish", True)
+        core.save_config(core.CFG)
+        self.push("onConfig", {"polish": core.CFG["polish"]})
+        try:
+            if self.tray is not None:
+                self.tray.update_menu()
+        except Exception as e:
+            core.log_error(e, "tray/raw-toggle")
+
+        def redraw():
+            w = self.wave
+            if w is None:
+                return
+            try:
+                if not bool(w.winfo_exists()):
+                    return
+                # الكبسولة الكبيرة بس عندها «خام» — الزرار الصغير (idle)
+                # لي رسم تاني، فـ_draw هيرسمه غلط فوقه
+                if w._state not in ("rec", "work", "prompt", "translate"):
+                    return
+            except Exception:
+                return
+            try:
+                w._draw(getattr(w, "_lvl", 0.0))
+            except Exception:
+                pass
+        self.tk_call(redraw)
 
     def apply_lang(self):
         """بعد تغيير اللغة: قايمة التراي وعنوان النافذة بيتغيّروا علطول."""

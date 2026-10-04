@@ -880,6 +880,15 @@ window.emlaa = {
     fillClipApps();
     if (S.page === "clipboard") renderClips();
   },
+  onConfig(cfg) {
+    // تغيير سريع جاي من قايمة التراي («تفريغ حرفي») من غير ما المستخدم يفتح
+    // الإعدادات — بنحدّث الإعدادات المحفوظة ونحدّث مفتاح «تنظيف النص» بس،
+    // من غير ما نلمس بقية الحقول (ممكن يكون المستخدم لسه بيفضّلها في الصفحة)
+    if (!S.boot || !S.boot.cfg) return;
+    Object.assign(S.boot.cfg, cfg);
+    const sw = $("#sPolish");
+    if (sw) sw.checked = !!S.boot.cfg.polish;
+  },
   onUpdate(info) { showUpdate(info); },
   onUpdateProgress(p) { setUpdProgress(p); },
   onUpdateError(err) { updFail(err); },
