@@ -22,7 +22,7 @@ from tkinter import ttk
 import core
 import providers
 
-APP_VERSION = "1.9"
+APP_VERSION = "1.10"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
