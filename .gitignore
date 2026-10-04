@@ -1,0 +1,42 @@
+# ── أسرار — ممنوع تترفع أبدًا ─────────────────────────────
+.env
+.env.*
+*.key
+
+# ── بيانات المستخدم (بتتعمل على جهاز كل واحد) ───────────────
+config.json
+history.json
+clipboard.json
+*.corrupt-*.json
+notq-error.log
+*.log
+.show-request
+.webview/
+
+# ── ملفات البناء والبرنامج الجاهز (بيترفع في GitHub Releases) ─
+build/
+dist/
+*.exe
+*.exe.bak
+*.exe.old
+*.exe.download
+*.bak
+
+# ── سكربتات تجارب محلية (فيها مفاتيح) وملفات صوت ─────────────
+test_*.py
+check_models_status.py
+*.wav
+
+# ── ملاحظات تطوير داخلية ───────────────────────────────────
+docs/
+
+# ── بايثون ومحررات ونظام ────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
