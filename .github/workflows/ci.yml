@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Windows: the app is Windows-only (ctypes.windll, UI Automation, SendInput)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile every source module
+        run: python -m compileall -q source
+
+      # Unit tests are stdlib-only by design (no keys, no network, no microphone)
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p "unit_*.py" -v
