@@ -1049,6 +1049,18 @@ class App:
             info["exe"] = _foreground_app()
             target = smart.insert_target(info, out, CFG.get("insert_method"))
             secure = target[0] == "secure"
+            # F7: بعد مخرج الوضع العادي (polish أو تخطّي الرد القصير) بنصلّح
+            # النص المختلط: الحرف العاري قبل الكلمة اللاتيني على شكله المثالي
+            # («للـ branch») والترقيم العربي — بس من غير تطبيقات dev (الكود لازم
+            # يفضل شكله التقني) ومن غير الترمنال: النص ممكن يكون أمر، وتغيير
+            # بايتاته خطر. التصنيف ماشي عليه زي ما هو: مبنصنّفش تاني، بنغيّر
+            # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
+            # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
+            if (cur_mode == "normal" and CFG.get("polish", True)
+                    and smart.app_profile(op.target_app, CFG) != "dev"
+                    and target[0] not in ("terminal", "secure")):
+                out = smart.fix_mixed(out)
+                target = (target[0], target[1], out)
             rid = None
             if not secure:
                 rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),

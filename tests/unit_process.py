@@ -610,3 +610,115 @@ class TestContextStyles(unittest.TestCase):
         cl._chat = lambda system, text, temperature=0.2: sent.update(system=system) or text
         cl.polish("نص قصير")
         self.assertEqual(sent["system"], providers.POLISH_SYSTEM)
+
+
+# ── F7: تصحيح النص المختلط في دورة التسجيل ───────────────────────────────────
+
+MIXED_RAW = "اعمل push للbranch, وبعدين افتح PR?"
+MIXED_FIXED = "اعمل push للـ branch، وبعدين افتح PR؟"
+TERM_FOCUS = {"is_password": False, "class": "TermControl", "editable": True}
+
+
+class FakeIdentityClient:
+    """مزوّد وهمي الهوية: polish/prompt/translate بيرجّع النص زي ما هو —
+    فأي تعديل في المخرج لازم يكون من fix_mixed مش من الموديل."""
+
+    def __init__(self, text=MIXED_RAW):
+        self.text = text
+        self.vocab = []
+        self.calls = []
+        self.last_chat = None
+
+    def engine(self):
+        return {"stt": "fake", "stt_model": "m1"}
+
+    def transcribe(self, wav, lang):
+        self.calls.append(("transcribe", lang))
+        return self.text
+
+    def polish(self, t, profile=None):
+        self.calls.append(("polish", profile))
+        self.last_chat = ("fake", "m1")
+        return t
+
+    def to_prompt(self, t):
+        self.calls.append(("prompt",))
+        self.last_chat = ("fake", "m1")
+        return t
+
+    def translate(self, t):
+        self.calls.append(("translate",))
+        self.last_chat = ("fake", "m1")
+        return t
+
+
+class TestFixMixedProcess(unittest.TestCase):
+    """F7: التصحيح في الوضع العادي بس (polish أو تخطّي الرد القصير)،
+    غير التطبيقات dev والـterminal — الخام بايت-بايت، والبرومبت/الترجمة ملهاش دعوة."""
+
+    def _run(self, mode="normal", text=MIXED_RAW, focus=GUI_FOCUS, target_app="", cfg=None):
+        app = make_app()
+        fake = FakeIdentityClient(text)
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", cfg or dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=focus), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=7), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True) as paste:
+            app.process("WAV", core.Operation(mode=mode, target_app=target_app))
+        return app, fake, paste
+
+    def test_normal_mode_gets_fixed(self):
+        # الطريق العادي: بعد polish المخرج بيتصلّح ويُحقن كده
+        app, fake, paste = self._run()
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(app.texts, [MIXED_FIXED])
+        paste.assert_called_once_with(MIXED_FIXED, ("gui", "type", MIXED_FIXED))
+
+    def test_raw_mode_stays_byte_identical(self):
+        # الوضع الخام: المخرج = التفريغ حرفي — من غير أي تصحيح
+        app, fake, _ = self._run(cfg={"polish": False, "language": "ar", "dictionary": []})
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(app.texts, [MIXED_RAW])
+
+    def test_dev_profile_skips_fix(self):
+        # تطبيق dev: الكود يفضل شكلي التقني — polish شغل بالبروفايل من غير تصحيح
+        app, fake, _ = self._run(target_app="code")
+        self.assertIn(("polish", "dev"), fake.calls)
+        self.assertEqual(app.texts, [MIXED_RAW])
+
+    def test_terminal_target_skips_fix(self):
+        # ترمنال: النص ممكن يكون أمر — بايتاته ما تتغيّرش، والاستراتيجية shift_insert
+        app, fake, paste = self._run(focus=TERM_FOCUS)
+        self.assertEqual(app.texts, [MIXED_RAW])
+        paste.assert_called_once_with(MIXED_RAW, ("terminal", "shift_insert", MIXED_RAW))
+
+    def test_prompt_mode_untouched(self):
+        # البرومبت مبيروح fix_mixed خالص — الموديل هو اللي بيشكّله
+        app, fake, _ = self._run(mode="prompt")
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(app.texts, [MIXED_RAW])
+
+    def test_translate_mode_untouched(self):
+        app, fake, _ = self._run(mode="translate")
+        self.assertEqual(fake.calls, [("transcribe", None), ("translate",)])
+        self.assertEqual(app.texts, [MIXED_RAW])
+
+    def test_secure_target_never_rewritten(self):
+        # خانة باسورد: fix_mixed مبيتطبّقش (أي «,» بتتحول «،» بتغيّر الباسورد) —
+        # بس سياسة الأسطر بتاعة التصنيف (أسطر → مسافات) لسه شغالة
+        app, fake, paste = self._run(text="اعمل push,\nللbranch",
+                                     focus={"is_password": True, "class": "", "editable": True})
+        self.assertEqual(app.texts, [])
+        paste.assert_called_once_with("اعمل push,\nللbranch",
+                                      ("secure", "type", "اعمل push, للbranch"))
+
+    def test_bypass_short_reply_also_fixed(self):
+        # الرد القصير المتخطّي (light_clean) برضه مخرج وضع عادي
+        app, fake, _ = self._run(text="تمام, شكرا")
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(app.texts, ["تمام، شكرا"])
+

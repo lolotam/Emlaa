@@ -368,12 +368,103 @@ def insert_target(info, text, method):
     return ("gui", _gui_strategy(text, method), text)
 
 
-# ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
+# ── F7: تصحيح النص المختلط (عربي/لاتيني) ─────────────────────────────────────
+# نموذج الكتابة المفروض هو «للـ branch»: حرف التطويل + مسافة واحدة ورا الحرف
+# العاري قبل الكلمة اللاتيني. بس المخرج ممكن ييجي بأي شكل («للbranch»،
+# «للـbranch»، «لل branch») حسب الموديل أو النص القديم — فبنوحّده عشان العرض
+# والحقن. الترقيم كمان: ، ؟ ؛ عربي في جملة عربية-الغالب، من غير ما نلمس
+# الأرقام (1,000) والرلينكات والإيميلات والكود (جوّه backticks) والجمل
+# الإنجليزية-الغالب. مش بنحط أي حروف تحكم اتجاه (U+200E/U+200F/U+061C).
+# ليه محلي مش للموديل: القاعدة حتمية ورخيصة، وبتصلّح حتى الردود اللي
+# اتخطّت الموديل خالص (F2).
+
+# حروف العربية (الكتلة الأساسية + الملحقات + أشكال العرض)
+_ARABIC_CHARS = "\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF"
+_AR_LETTER = re.compile("[" + _ARABIC_CHARS + "]")
+
+# الحرف العاري قبل كلمة لاتيني: «لل/بال/ال» + تطويل اختياري + مسافات اختيارية.
+# الـlookbehind عشان كلمة عربي بتخلص في «ال» (زي «السائل») متتقسمش نصّ.
+_ARTICLE = re.compile(
+    r"(?<![" + _ARABIC_CHARS + r"])(لل|بال|ال)(\u0640*)[ \t]*([A-Za-z])")
+
+_PUNCT_MAP = {",": "\u060c", "?": "\u061F", ";": "\u061B"}
+_PUNCT = re.compile(r"[,?;]")
+# إشارة الترقيم دي متخلّية جوه لينك (scheme:// أو www.) أو إيميل
+_URL_BEFORE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s]*\Z")
+_EMAIL_BEFORE = re.compile(r"[\w.%+-]+@[^\s]*\Z")
+_CODE_SPLIT = re.compile(r"(`+)")
+
+
+def _fix_article(s):
+    """«للbranch»/«للـbranch»/«لل branch» → «للـ branch» — ونفسها للـ«الـ» والـ«بالـ»."""
+    return _ARTICLE.sub(lambda m: m.group(1) + _TATWEEL + " " + m.group(3), s)
+
+
+def _arabize_punct(s):
+    """
+    , ? ; → ، ؟ ؛ بس لما الإشارة جنب عربي، أو وراه بالضبط كلمة لاتيني بتخلص
+    جملة عربية (…الـ API, …). أي حاجة تانية (أرقام، لينكات، إيميلات)
+    بتفضل زي ما هي.
+    """
+    def _one(m):
+        i = m.start()
+        left = s[i - 1] if i > 0 else ""
+        right = s[i + 1] if i + 1 < len(s) else ""
+        # فاصل رقمي (1,000): رقم على الاتنين = مش ترقيم جملة
+        if left.isdigit() and right.isdigit():
+            return m.group(0)
+        head = s[:i]
+        if _URL_BEFORE.search(head) or _EMAIL_BEFORE.search(head):
+            return m.group(0)
+        # العربية على أي جنب = كده كفاية
+        if _AR_LETTER.fullmatch(left) or _AR_LETTER.fullmatch(right):
+            return _PUNCT_MAP[m.group(0)]
+        # كلمة لاتيني مغمورة في جملة عربية (عربي أو تطويل وراها بعد أي مسافة)
+        # = الترقيم هنا عربي مش إنجليزي
+        if left.isascii() and left.isalpha():
+            j = i - 1
+            while j >= 0 and s[j].isascii() and s[j].isalnum():
+                j -= 1
+            while j >= 0 and s[j] in " \t":
+                j -= 1
+            if j >= 0 and (_AR_LETTER.fullmatch(s[j]) or s[j] == _TATWEEL):
+                return _PUNCT_MAP[m.group(0)]
+        return m.group(0)
+    return _PUNCT.sub(_one, s)
+
+
+def _outside_code(s, fn):
+    """القاعدة على النص العادي بس — جوه backticks (كود) بيتعدّى حاله زي ما هو:
+    تغيير فاصلة جوه `print(a, b)` غلط في حد ذاته."""
+    return "".join(p if p.startswith("`") else fn(p) for p in _CODE_SPLIT.split(s))
+
+
+def _arabic_dominant(s):
+    """حروف عربية أكتر من لاتيني — السطر اللي بيفرق بين «خلّي» و«سيبها إنجليزي»."""
+    ar = sum(1 for c in s if _AR_LETTER.fullmatch(c))
+    la = sum(1 for c in s if c.isascii() and c.isalpha())
+    return ar > la
+
 
 def fix_mixed(text):
-    """يرتّب الترقيم والفراغات بين عربي وإنجليزي في جملة واحدة (F7)"""
-    raise NotImplementedError
+    """
+    F7: يوحّد شكل النص المختلط في جملة واحدة:
+      • الحرف العاري قبل كلمة لاتيني على شكله المثالي
+        («للـ branch» / «الـ API» / «بالـ code» — تطويل + مسافة واحدة).
+      • , ? ; بالجمل العربية-الغالب على ، ؟ ؛.
+    مبيلمسش: أرقام بفواصل (1,000)، لينكات، إيميلات، جوه backticks،
+    جمل إنجليزي-الغالب. مبيحطش حروف تحكم اتجاه. تطبيقه مرتين = نفس الناتج.
+    """
+    s = str(text or "")
+    if not s:
+        return s
+    s = _outside_code(s, _fix_article)
+    if _arabic_dominant(s):
+        s = _outside_code(s, _arabize_punct)
+    return s
 
+
+# ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
 
 def match_snippet(text, snippets):
     """هل الكلام كله هو جملة اختصار صوتي؟ يرجّع الاختصار أو None (F8)"""

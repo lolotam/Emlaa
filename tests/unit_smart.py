@@ -327,6 +327,69 @@ class TestLightClean(unittest.TestCase):
         self.assertEqual(smart.light_clean(None), "")
 
 
+# ── F7: تصحيح النص المختلط ────────────────────────────────────────────────────
+
+# كل الحالات المطلوبة (شكل الحرف العاري + الترقيم العربي + اللي لازم يفضل
+# مستلمس) — الجدول نفسه بيتراعى في اختبار التكرار (idempotence).
+FIX_MIXED_FIXTURES = [
+    # الحرف العاري على شكله المثالي: تطويل + مسافة واحدة
+    ("للbranch", "للـ branch"),
+    ("للـbranch", "للـ branch"),
+    ("لل branch", "للـ branch"),
+    ("لل  branch", "للـ branch"),
+    ("للـ branch", "للـ branch"),
+    ("الAPI", "الـ API"),
+    ("الـAPI", "الـ API"),
+    ("ال API", "الـ API"),
+    ("الـ API", "الـ API"),
+    ("بالcode", "بالـ code"),
+    ("بال code", "بالـ code"),
+    ("بالـ code", "بالـ code"),
+    ("افتح الـPR ده", "افتح الـ PR ده"),
+    ("اعمل push للـ branch ده", "اعمل push للـ branch ده"),
+    # ترقيم عربي في جملة عربية-الغالب
+    ("تجرب, وبعدين", "تجرب، وبعدين"),
+    ("ده سؤال? لأ", "ده سؤال؟ لأ"),
+    ("اختار التاني; هو الأفصل", "اختار التاني؛ هو الأفصل"),
+    ("اعمل push للbranch, وبعدين افتح PR?", "اعمل push للـ branch، وبعدين افتح PR؟"),
+    # ديمهات لازم يفضلوا زي ما هيوا
+    ("1,000 جنيه", "1,000 جنيه"),
+    ("سعرها 1,000,000 جنيه", "سعرها 1,000,000 جنيه"),
+    ("شوف http://a.com?x=1 كده", "شوف http://a.com?x=1 كده"),
+    ("هات www.site.com;b=2 منين", "هات www.site.com;b=2 منين"),
+    ("ابعت لـ a@b.com, مش شغال", "ابعت لـ a@b.com, مش شغال"),
+    ("The API, which is fast", "The API, which is fast"),
+    ("اكتب `print(a, b)` في الـ console", "اكتب `print(a, b)` في الـ console"),
+    # «السائل» كلمة عربي بتخلص في «ال» — القاعدية ماتقسمهاش
+    ("السائل API ده", "السائل API ده"),
+    ("", ""),
+]
+
+
+class TestFixMixed(unittest.TestCase):
+    """F7: حرف العاري قبل لاتيني + ترقيم عربي في جملة عربية-الغالب — دالة نقية من re بس."""
+
+    def test_table(self):
+        for src, want in FIX_MIXED_FIXTURES:
+            self.assertEqual(smart.fix_mixed(src), want, src)
+
+    def test_idempotent(self):
+        # الشكل المثالي يفضل مثالي: التطبيق التاني مبيغيّرش حاجة
+        for src, _ in FIX_MIXED_FIXTURES:
+            once = smart.fix_mixed(src)
+            self.assertEqual(smart.fix_mixed(once), once, src)
+
+    def test_no_bidi_controls_inserted(self):
+        # ميبيحطش RTL/LRM/إخفاء أيك (U+200E / U+200F / U+061C) خالص
+        for src, _ in FIX_MIXED_FIXTURES:
+            out = smart.fix_mixed(src)
+            for ch in ("\u200e", "\u200f", "\u061c"):
+                self.assertNotIn(ch, out, src)
+
+    def test_none_input(self):
+        self.assertEqual(smart.fix_mixed(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()
 
