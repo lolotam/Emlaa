@@ -539,3 +539,6 @@ html { transition: background-color .2s; }
 .upd-actions { display: flex; gap: 8px; align-items: center; }
 .upd-actions .grow { flex: 1; }
 .upd-actions .ghost-btn, .upd-actions .cta { height: 36px; }
+
+/* نسخة Microsoft Store: التحديث من الـStore */
+:root.store .upd-row, :root.store #checkUpdate { display: none !important; }

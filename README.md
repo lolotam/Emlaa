@@ -158,7 +158,8 @@
 - المفاتيح بتتحفظ **على جهازك بس** (ملف `.env` جنب البرنامج).
 - الصوت رايح **للمزوّد بحسابك انت مباشرة**، والملف المؤقت بيتمسح بعد كل تفريغ.
 - السجل والحافظة والقاموس **على جهازك بس**.
-- **الاتصال الوحيد غير المزوّد** هو سؤال GitHub عن آخر إصدار — من غير أي بيانات عنك.
+- **الاتصال الوحيد غير المزوّد** هو سؤال GitHub عن آخر إصدار — من غير أي بيانات عنك (ونسخة الـStore مبتسألش خالص).
+- سياسة الخصوصية كاملة: [PRIVACY.md](PRIVACY.md)
 
 ---
 
@@ -202,7 +203,9 @@ source/
   core.py        التسجيل والتفريغ والكتابة مكان المؤشر والإعدادات والسجل والتحديث
   providers.py   المزوّدين وموديلات التفريغ ونسب الترشيح ودليل المفاتيح
   ui/            الواجهة (HTML/CSS/JS) + الترجمة i18n.js
-tools/release.py نشر إصدار جديد بأمر واحد
+tools/release.py        نشر إصدار جديد على GitHub بأمر واحد
+tools/store_package.py  بناء حزمة Microsoft Store (MSIX)
+tools/store/            قالب الـManifest وهوية الـStore والصور ودليل النشر
 Emlaa.spec       إعدادات بناء Emlaa.exe (PyInstaller)
 ```
 
@@ -217,6 +220,12 @@ python source/emlaa.py
 python tools/release.py 1.9 "اللي اتغيّر في النسخة دي"
 ```
 السكربت بيغيّر `APP_VERSION`، يبني `Emlaa.exe`، يعمل commit و tag `v1.9`، يرفع على GitHub، وينشئ Release عليه الـexe. كل النسخ الشغّالة عند المستخدمين هتلاقيه وتعرض «نزّل وثبّت» (أو تثبّته لوحدها).
+
+**نسخة Microsoft Store** (حزمة MSIX):
+```bash
+python tools/store_package.py
+```
+الناتج `dist/store/Emlaa_<version>_x64.msix`. خطوات النشر ونصوص الـListing والصور في [`tools/store/SUBMISSION.md`](tools/store/SUBMISSION.md). نسخة الـStore بتحفظ بياناتها في `%LOCALAPPDATA%\Emlaa`، وتحديثاتها بتيجي من الـStore (مش من GitHub).
 
 > ⚠ ممنوع ترفع `.env` أو `config.json` أو `history.json` — الـ`.gitignore` مانعهم.
 

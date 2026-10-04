@@ -346,6 +346,8 @@ class Controller:
 
     def watch_updates(self):
         """أول ما البرنامج يفتح وبعدين كل 6 ساعات: لو فيه إصدار جديد نبلّغ مرة واحدة لكل إصدار."""
+        if core.STORE:
+            return                               # الـStore هو اللي بيحدّث
         def run():
             told = None
             time.sleep(4)
@@ -471,6 +473,7 @@ class Api:
             "state": c.state,
             "lastText": c.last_text,
             "update": c.update_info,
+            "store": core.STORE,
             "providers": [dict(id=p, name=providers.PROVIDERS[p]["name"],
                                tag=providers.PROVIDERS[p]["tag"], desc=providers.PROVIDERS[p]["desc"],
                                keyUrl=providers.PROVIDERS[p]["key_url"],

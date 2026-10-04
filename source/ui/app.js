@@ -746,6 +746,8 @@ function applyBoot() {
   applyTheme(b.cfg.theme || "dark");
   if ((b.cfg.lang || "ar") !== LANG) setLang(b.cfg.lang);
   $("#versionLabel").textContent = `الإصدار v${b.version}`;
+  // نسخة الـStore: التحديثات بتيجي من الـStore — مفيش زرار تحديث ولا إعداداته
+  document.documentElement.classList.toggle("store", !!b.store);
   $("#promoName").textContent = b.brand.name;
   $("#promo").dataset.url = b.brand.url;
   $("#clipToggle").checked = !!b.cfg.clipboard_history;

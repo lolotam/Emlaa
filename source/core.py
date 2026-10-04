@@ -37,7 +37,26 @@ import providers
 # ── مسار البيانات ────────────────────────────────────────────────────────────
 # لما يبقى .exe مبنيّ بـPyInstaller، __file__ بيبقى فولدر مؤقت — فبنستخدم
 # مكان الـexe نفسه عشان الإعدادات والمفاتيح تفضل جنبه.
-if getattr(sys, "frozen", False):
+def _is_packaged():
+    """هل البرنامج متثبّت كحزمة MSIX (نسخة Microsoft Store)؟"""
+    try:
+        import ctypes
+        n = ctypes.c_uint32(0)
+        # APPMODEL_ERROR_NO_PACKAGE (15700) = برنامج عادي مش حزمة
+        return ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(n), None) != 15700
+    except Exception:
+        return False
+
+
+# نسخة الـStore: فولدر البرنامج للقراية بس، والتحديثات بتيجي من الـStore نفسه.
+# EMLAA_STORE_TEST=1 بيجرّب سلوك نسخة الـStore من غير ما نبني حزمة.
+PACKAGED = getattr(sys, "frozen", False) and _is_packaged()
+STORE = PACKAGED or os.environ.get("EMLAA_STORE_TEST") == "1"
+
+if PACKAGED:
+    BASE = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Emlaa")
+    os.makedirs(BASE, exist_ok=True)
+elif getattr(sys, "frozen", False):
     BASE = os.path.dirname(sys.executable)
 else:
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -434,7 +453,10 @@ def check_update(current_version, timeout=8):
     """
     بيرجّع dict فيه {version, url, notes, asset_url, size, sha256} لو فيه إصدار أحدث، أو None.
     أي فشل = None (البرنامج مالوش دعوة بفشل ده).
+    نسخة الـStore مبتسألش GitHub خالص — الـStore هو اللي بيحدّثها.
     """
+    if STORE:
+        return None
     try:
         with urllib.request.urlopen(_gh_request(RELEASES_API, current_version),
                                     timeout=timeout, context=providers._ssl_context()) as r:
@@ -460,7 +482,7 @@ def check_update(current_version, timeout=8):
 
 def can_self_update():
     """التحديث التلقائي شغّال بس من الـexe، ولو الفولدر بتاعه نقدر نكتب فيه."""
-    if not getattr(sys, "frozen", False):
+    if STORE or not getattr(sys, "frozen", False):
         return False
     return os.access(os.path.dirname(sys.executable), os.W_OK)
 
