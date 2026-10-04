@@ -6,6 +6,7 @@
 # ── بيانات المستخدم (بتتعمل على جهاز كل واحد) ───────────────
 config.json
 history.json
+recordings/
 clipboard.json
 *.corrupt-*.json
 emlaa-error.log

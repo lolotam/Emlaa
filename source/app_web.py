@@ -138,7 +138,8 @@ class Controller:
                 self.wave = None
         if self.wave is None:
             self.wave = W(self.root, on_click=lambda: self.toggle_record("normal"),
-                          on_menu=self.show_window)
+                          on_menu=self.show_window,
+                          on_cancel=lambda: self.engine and self.engine.cancel())
         return self.wave
 
     # ═══════════ الحالة (من المحرّك) ═══════════
@@ -503,7 +504,51 @@ class Api:
 
     # ── السجل ──
     def history(self):
-        return {"items": core.history_get(limit=1000), "stats": core.history_stats()}
+        items = core.history_get(limit=1000)
+        has = core.recording_ids()
+        for i in items:
+            i["audio"] = i.get("id") in has
+        return {"items": items, "stats": core.history_stats()}
+
+    def history_audio(self, rid):
+        """صوت التسجيل base64 عشان الواجهة تشغّله (mp3 صغير: ‏١٠ ثواني ≈ ٨٠ كيلو)."""
+        import base64
+        try:
+            with open(core.recording_path(rid), "rb") as f:
+                return {"ok": True, "mime": "audio/mpeg", "data": base64.b64encode(f.read()).decode("ascii")}
+        except (OSError, ValueError, TypeError):
+            return {"ok": False}
+
+    def history_audio_save(self, rid):
+        """نافذة «حفظ باسم» من ويندوز وبعدين نسخة من الـmp3 للمكان اللي اختاره."""
+        import shutil
+        import webview
+        try:
+            src = core.recording_path(rid)
+        except (ValueError, TypeError):
+            return {"ok": False}
+        if not os.path.exists(src):
+            return {"ok": False}
+        item = next((i for i in core.history_get(limit=1000) if i.get("id") == rid), {})
+        stamp = (item.get("time") or "").replace(":", "-").replace(" ", "_") or str(rid)
+        try:
+            kind = webview.FileDialog.SAVE
+        except AttributeError:                       # pywebview أقدم من 6
+            kind = webview.SAVE_DIALOG
+        dest = self._c.window.create_file_dialog(kind, save_filename=f"emlaa_{stamp}.mp3",
+                                                 file_types=("MP3 (*.mp3)",))
+        if isinstance(dest, (list, tuple)):
+            dest = dest[0] if dest else None
+        if not dest:
+            return {"ok": False, "cancelled": True}
+        if not str(dest).lower().endswith(".mp3"):
+            dest = str(dest) + ".mp3"
+        try:
+            shutil.copyfile(src, dest)
+            return {"ok": True, "path": dest}
+        except OSError as e:
+            core.log_error(e, "recordings/download")
+            return {"ok": False}
 
     def history_delete(self, ids):
         core.history_delete(ids)

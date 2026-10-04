@@ -29,6 +29,9 @@ const ICON = {
   check: '<svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
+  download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
 };
 
 /* ═══════════ أدوات ═══════════ */
@@ -210,19 +213,69 @@ function renderChart() {
   }).join("");
 }
 
-/* مؤشّر طول التسجيل: أعمدة شكل موجة — عددها على قد المدة.
-   شكلها ثابت لكل تسجيل (من الـid) لكنه زخرفي — الصوت نفسه مش متخزّن. */
+/* مؤشّر طول التسجيل: أعمدة شكل موجة — عددها على قد المدة، وشكلها ثابت لكل تسجيل (من الـid).
+   آخر ١٠ تسجيلات صوتها متخزّن (i.audio): الموجة بتبقى زرار تشغيل، والأعمدة بتتلوّن مع التقدّم. */
 function waveHTML(i) {
-  if (!i.dur) return "";
-  const n = Math.max(8, Math.min(30, Math.round(i.dur * 1.6)));
+  if (!i.dur && !i.audio) return "";
+  const n = Math.max(8, Math.min(30, Math.round((i.dur || 0) * 1.6)));
   let seed = (i.id % 2147483647) || 7, bars = "";
   for (let k = 0; k < n; k++) {
     seed = (seed * 16807) % 2147483647;
     const env = Math.sin(Math.PI * (k + .5) / n);
     bars += `<i style="height:${Math.round(4 + (seed % 100) / 100 * 16 * (0.45 + env * .55))}px"></i>`;
   }
-  const sec = Math.round(i.dur);
-  return `<div class="wave" aria-hidden="true"><span class="wave-bars">${bars}</span><span class="wave-dur">${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}</span></div>`;
+  const sec = Math.round(i.dur || 0);
+  const dur = `<span class="wave-dur">${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}</span>`;
+  if (!i.audio) return `<div class="wave" aria-hidden="true"><span class="wave-bars">${bars}</span>${dur}</div>`;
+  return `<button class="wave playable" data-act="play" title="تشغيل التسجيل"><span class="wave-icon">${ICON.play}</span><span class="wave-bars">${bars}</span>${dur}</button>`;
+}
+
+/* مين فرّغ ومين نضّف: «Deepgram · nova-3 → Groq · qwen3.8-27b» (الموديل اللي اشتغل فعلًا) */
+function engineHTML(i) {
+  const e = i.engine;
+  if (!e || !e.stt) return "";
+  const short = m => String(m || "").split("/").pop();
+  const parts = [e.stt + (e.stt_model ? " · " + short(e.stt_model) : "")];
+  if (e.chat) parts.push(e.chat + (e.chat_model ? " · " + short(e.chat_model) : ""));
+  const full = [e.stt + (e.stt_model ? " " + e.stt_model : ""), e.chat ? e.chat + " " + (e.chat_model || "") : ""]
+    .filter(Boolean).join("  →  ");
+  return `<span class="engine" title="${esc(full)}">${esc(parts.join("  →  "))}</span>`;
+}
+
+/* ═══════════ تشغيل صوت التسجيل ═══════════ */
+const player = { id: null, audio: null };
+function paintWave(id) {
+  const el = document.querySelector(`.frow[data-id="${id}"] .wave.playable`);
+  if (!el) return;
+  const a = player.id === id ? player.audio : null;
+  const playing = !!a && !a.paused;
+  el.classList.toggle("playing", playing);
+  el.querySelector(".wave-icon").innerHTML = playing ? ICON.pause : ICON.play;
+  el.title = playing ? "إيقاف" : "تشغيل التسجيل";
+  const bars = el.querySelectorAll(".wave-bars i");
+  const on = a && a.duration ? Math.round(a.currentTime / a.duration * bars.length) : 0;
+  bars.forEach((b, k) => b.classList.toggle("on", k < on));
+}
+function stopPlayer() {
+  const id = player.id;
+  if (player.audio) player.audio.pause();
+  player.id = null;
+  player.audio = null;
+  if (id != null) paintWave(id);
+}
+async function togglePlay(id) {
+  if (player.id === id && player.audio) {
+    return player.audio.paused ? player.audio.play() : player.audio.pause();
+  }
+  stopPlayer();
+  const r = await api().history_audio(id);
+  if (!r.ok) return toast("الصوت مش متاح");
+  const a = new Audio(`data:${r.mime};base64,${r.data}`);
+  player.id = id;
+  player.audio = a;
+  ["play", "pause", "timeupdate"].forEach(ev => a.addEventListener(ev, () => paintWave(id)));
+  a.addEventListener("ended", stopPlayer);
+  a.play().catch(() => { stopPlayer(); toast("مقدرتش أشغّل الصوت"); });
 }
 function histVisible() {
   const q = $("#histSearch").value.trim().toLowerCase();
@@ -247,18 +300,23 @@ function renderHistory() {
     html += `<div class="frow${sel ? " selected" : ""}" data-id="${i.id}">
       <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
       <div class="row-body">
-        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span></div>
+        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span>${engineHTML(i)}</div>
         <div class="row-text">${esc(i.result)}</div>
         ${showRaw ? `<div class="row-raw"><b>الكلام زي ما اتقال</b>${esc(i.raw)}</div>` : ""}
       </div>
       ${waveHTML(i)}
       <div class="row-actions">
+        ${i.audio ? `<button class="icon-btn" data-act="dl" title="تنزيل MP3">${ICON.download}</button>` : ""}
         <button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>
         <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
       </div></div>`;
   }
   if (lastDay) html += `</div>`;
   $("#histList").innerHTML = html || `<div class="empty-state show">${S.history.length ? "مفيش نتايج للبحث ده." : "السجل فاضي — أول تسجيل هيظهر هنا."}</div>`;
+  if (player.id != null) {
+    // التسجيل اللي شغّال اتمسح → يقف؛ وإلا نرجّع شكله بعد ما الصف اتعمل من جديد
+    S.history.some(i => i.id === player.id && i.audio) ? paintWave(player.id) : stopPlayer();
+  }
   updateBulk();
 }
 $("#histSearch").addEventListener("input", renderHistory);
@@ -281,6 +339,13 @@ $("#histList").addEventListener("click", async e => {
     return updateBulk();
   }
   const act = e.target.closest("[data-act]");
+  if (act?.dataset.act === "play") return togglePlay(id);
+  if (act?.dataset.act === "dl") {
+    const r = await api().history_audio_save(id);
+    if (r.ok) toast("اتحفظ ✓");
+    else if (!r.cancelled) toast("مقدرتش أحفظ الملف");
+    return;
+  }
   if (act?.dataset.act === "copy") return copyText(item.result, act);
   if (act?.dataset.act === "del") {
     const r = await api().history_delete([id]);

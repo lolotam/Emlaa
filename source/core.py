@@ -190,10 +190,13 @@ def history_get(limit=100):
     return _read_list(HISTORY_PATH)[0][:limit]
 
 
-def history_add(mode, raw_text, result_text, dur=None):
-    """بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني)."""
+def history_add(mode, raw_text, result_text, dur=None, engine=None):
+    """
+    بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني،
+    engine = مين فرّغ ومين نضّف). بيرجّع الـid عشان الصوت يتحفظ بيه.
+    """
     if not result_text or not result_text.strip():
-        return
+        return None
     import datetime
     now = datetime.datetime.now()
     entry = {
@@ -208,6 +211,8 @@ def history_add(mode, raw_text, result_text, dur=None):
     }
     if dur:
         entry["dur"] = round(float(dur), 2)
+    if engine:
+        entry["engine"] = engine
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
         items.insert(0, entry)
@@ -215,6 +220,67 @@ def history_add(mode, raw_text, result_text, dur=None):
             _write_list(HISTORY_PATH, items[:history_cap()])
         except Exception as e:
             log_error(e, "history/write")
+    return entry["id"]
+
+
+# ── صوت آخر ١٠ تسجيلات (يتسمع ويتنزّل mp3 من السجل) ─────────────────────────
+RECORDINGS_DIR = os.path.join(BASE, "recordings")
+AUDIO_KEEP = 10
+
+
+def recording_path(rid):
+    return os.path.join(RECORDINGS_DIR, f"{int(rid)}.mp3")
+
+
+def recording_ids():
+    """الـid بتاع كل تسجيل صوته محفوظ."""
+    try:
+        names = os.listdir(RECORDINGS_DIR)
+    except FileNotFoundError:
+        return set()
+    return {int(n[:-4]) for n in names if n.endswith(".mp3") and n[:-4].isdigit()}
+
+
+def recording_save(rid, wav):
+    """يحوّل الـwav لـmp3 (‏64kbps ≈ ٨ كيلو للثانية) ويحفظه باسم الـid، وبعدين يشيل الزيادة."""
+    try:
+        import lameenc
+        with wave.open(wav, "rb") as w:
+            pcm, rate, ch = w.readframes(w.getnframes()), w.getframerate(), w.getnchannels()
+        enc = lameenc.Encoder()
+        enc.set_bit_rate(64)
+        enc.set_in_sample_rate(rate)
+        enc.set_channels(ch)
+        enc.set_quality(2)
+        data = enc.encode(pcm) + enc.flush()
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        tmp = recording_path(rid) + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, recording_path(rid))
+    except Exception as e:
+        log_error(e, "recordings/save")
+    recordings_prune()
+
+
+def recordings_prune():
+    """
+    الصوت بيفضل لآخر AUDIO_KEEP تسجيلات موجودة في السجل بس: أي ملف أقدم،
+    أو تسجيله اتمسح من السجل، بيتمسح (الـid = وقت التسجيل، فالأكبر = الأحدث).
+    """
+    with _store_lock:
+        items, ok = _read_list(HISTORY_PATH)
+        if not ok:                     # السجل بايظ = مانعرفش مين عايش — مانمسحش صوت حد
+            return
+        live = {i.get("id") for i in items}
+        ids = sorted(recording_ids(), reverse=True)
+        keep = set([i for i in ids if i in live][:AUDIO_KEEP])
+        for i in ids:
+            if i not in keep:
+                try:
+                    os.remove(recording_path(i))
+                except Exception as e:
+                    log_error(e, "recordings/prune")
 
 
 def history_cap():
@@ -231,6 +297,7 @@ def history_prune():
                 _write_list(HISTORY_PATH, items[:history_cap()])
             except Exception as e:
                 log_error(e, "history/prune")
+    recordings_prune()
 
 
 def history_clear():
@@ -240,6 +307,7 @@ def history_clear():
             os.remove(HISTORY_PATH)
     except Exception:
         pass
+    recordings_prune()
 
 
 def history_delete(ids):
@@ -251,6 +319,7 @@ def history_delete(ids):
             _write_list(HISTORY_PATH, items)
         except Exception as e:
             log_error(e, "history/write")
+    recordings_prune()
 
 
 def history_stats():
@@ -698,6 +767,13 @@ class Recorder:
             w.writeframes(audio.tobytes())
         return wav
 
+    def discard(self):
+        """يوقف التجميع ويرمي الصوت من غير ما يكتب ملف (زرار الإلغاء)."""
+        self._active = False
+        with self._lock:
+            self._frames = []
+        self._level = 0.0
+
     def close(self):
         try:
             self.stream.stop(); self.stream.close()
@@ -756,7 +832,9 @@ def paste_text(text):
 
     time.sleep(0.12)
     kb = Controller()
-    if CFG.get("insert_method") == "paste":
+    # نص فيه أكتر من سطر (زي البرومبت المتقسّم) لازم يتلزق مرة واحدة: الكتابة حرف حرف
+    # بتدوس Enter عند كل سطر، وفي ChatGPT / Claude ده بيبعت الرسالة بعد أول سطر.
+    if CFG.get("insert_method") == "paste" or "\n" in text:
         with kb.pressed(Key.ctrl):
             kb.press("v"); kb.release("v")
         return True
@@ -849,6 +927,18 @@ class App:
         cur_mode = getattr(self, "active_mode", "normal")
         threading.Thread(target=self.process, args=(wav, cur_mode), daemon=True).start()
 
+    def cancel(self):
+        """إلغاء التسجيل: الصوت بيترمي ومفيش تفريغ."""
+        if not self.recording:
+            return
+        self.recording = False
+        self._active_key = None               # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
+        try:
+            self.rec.discard()
+        except Exception as e:
+            log_error(e, "recorder/cancel")
+        self.on_state("ready", "اتلغى التسجيل")
+
     def process(self, wav, mode="normal"):
         self.busy = True
         self.on_state("work", mode)
@@ -860,7 +950,10 @@ class App:
                 dur = None
             cl = self.client()
             cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-            text = cl.transcribe(wav, CFG.get("language", "ar"))
+            # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
+            # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
+            lang = None if mode == "translate" else CFG.get("language", "ar")
+            text = cl.transcribe(wav, lang)
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
@@ -876,10 +969,12 @@ class App:
             else:
                 out = text
 
-            history_add(mode, text, out, dur)
+            rid = history_add(mode, text, out, dur, engine=cl.engine())
             self.on_text(out)
             if not paste_text(out):
                 self.on_unplaced(out)
+            if rid:
+                recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
             self.on_state("done", mode)
         except Exception as e:
             log_error(e, "process/transcribe")

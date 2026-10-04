@@ -396,6 +396,18 @@ tr.open .clip-text { -webkit-line-clamp: unset; user-select: text; }
 .wave-bars i { width: 2px; border-radius: 1px; background: var(--line-2); }
 .frow:hover .wave-bars i, .frow.selected .wave-bars i { background: var(--line-3); }
 .wave-dur { font: 500 11.5px var(--mono); color: var(--dim); width: 34px; text-align: left; }
+/* آخر ١٠ تسجيلات: الموجة زرار تشغيل، والأعمدة بتتلوّن مع التقدّم */
+.wave.playable { padding: 4px 6px; margin: -4px -6px; border-radius: var(--r-md); color: var(--muted); }
+.wave.playable:hover { background: var(--card-2); }
+.wave-icon { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: var(--card-2); color: var(--fg-2); border: 1px solid var(--line-2); }
+.wave-icon svg { width: 9px; height: 9px; fill: currentColor; stroke: none; }
+.wave.playable:hover .wave-icon { color: var(--fg); border-color: var(--line-3); }
+.wave.playing .wave-icon { background: var(--data); border-color: var(--data); color: #fff; }
+.frow .wave.playable .wave-bars i.on { background: var(--data); }
+/* مين فرّغ ومين نضّف */
+.engine { direction: ltr; font: 500 10.5px var(--mono); color: var(--dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* ── الإعدادات: صفوف مجمّعة ── */
 .group-h { font-size: 13px; font-weight: 600; color: var(--fg-2); margin: 22px 2px 8px; }

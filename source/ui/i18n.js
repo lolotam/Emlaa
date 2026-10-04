@@ -10,8 +10,12 @@ const EN = {
   "عام": "General", "الرئيسية": "Home", "المحتوى": "Content", "السجل": "History",
   "الحافظة": "Clipboard", "القاموس": "Dictionary", "النظام": "System", "الإعدادات": "Settings",
   "تظل بياناتك خاصة": "Your data stays private",
-  "السجل والحافظة محفوظين على جهازك بس. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.":
-    "History and clipboard are stored only on this device. Audio goes only to the transcription provider you chose, only while recording.",
+  "السجل والحافظة وصوت آخر ١٠ تسجيلات محفوظين على جهازك بس. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.":
+    "History, clipboard and the audio of your last 10 recordings are stored only on this device. Audio goes only to the transcription provider you chose, only while recording.",
+  // ── تشغيل وتنزيل صوت التسجيل ──
+  "تشغيل التسجيل": "Play recording", "إيقاف": "Pause", "تنزيل MP3": "Download MP3", "اتحفظ ✓": "Saved ✓",
+  "الصوت مش متاح": "Audio not available", "مقدرتش أشغّل الصوت": "Couldn't play the audio",
+  "مقدرتش أحفظ الملف": "Couldn't save the file",
   "الإصدار": "Version", "تحقق من التحديثات": "Check for updates",
   "فاتح / غامق": "Light / dark", "تصغير": "Minimize", "إغلاق (يفضل شغّال جنب الساعة)": "Close (keeps running in the tray)",
   "English / عربي": "English / عربي",
