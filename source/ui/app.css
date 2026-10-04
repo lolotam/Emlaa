@@ -426,6 +426,12 @@ label.srow:hover { background: var(--hover); }
 .srow-stack { flex-direction: column; align-items: stretch; gap: 10px; }
 .srow-stack .key-row .input { height: 36px; }
 .srow-stack .key-row .ghost-btn { height: 36px; }
+.style-list { display: flex; flex-direction: column; gap: 8px; }
+.style-row { display: flex; align-items: center; gap: 8px; }
+.style-row .input { height: 32px; width: 190px; flex: none; }
+.style-row .select { height: 32px; width: 130px; min-width: 130px; font-size: 12.5px; }
+.style-row .icon-btn { flex: none; }
+.style-add { align-self: start; height: 30px; }
 
 /* ── شريط التحديد العائم ── */
 .bulkbar { position: fixed; bottom: 18px; left: calc((100vw - 240px) / 2); transform: translateX(-50%);

@@ -18,7 +18,8 @@ class TestContract(unittest.TestCase):
 
     def test_smart_does_not_import_core(self):
         # الاتجاه واحد: core بيستورد smart، والعكس يعمل دورة استيراد
-        src = open(smart.__file__, encoding="utf-8").read()
+        with open(smart.__file__, encoding="utf-8") as f:
+            src = f.read()
         self.assertNotIn("import core", src)
 
 
@@ -145,6 +146,62 @@ class TestShouldBypass(unittest.TestCase):
     def test_common_egyptian_replies(self):
         for reply in ("آسف", "متشكر جدا".split()[0], "حلو أوي".split()[0], "مع السلامة"):
             self.assertTrue(smart.should_bypass(reply, "normal", _cfg()), reply)
+
+
+class TestAppProfile(unittest.TestCase):
+    def test_builtin_map_from_plan(self):
+        # حالات الخطة بالظبط — من غير أي override الأسلوب لازم يشتغل من أول تشغيل
+        self.assertEqual(smart.app_profile("Code", _cfg()), "dev")
+        self.assertEqual(smart.app_profile("WhatsApp", _cfg()), "chat")
+        self.assertEqual(smart.app_profile("OUTLOOK", _cfg()), "formal")
+        self.assertIsNone(smart.app_profile("chrome", _cfg()))
+
+    def test_override_beats_builtin(self):
+        self.assertEqual(smart.app_profile("chrome", _cfg(app_profiles={"chrome": "formal"})), "formal")
+        self.assertEqual(smart.app_profile("code", _cfg(app_profiles={"code": "chat"})), "chat")
+
+    def test_context_styles_off_disables_builtin_too(self):
+        self.assertIsNone(smart.app_profile("code", _cfg(context_styles=False)))
+
+    def test_builtin_values_are_valid_profiles(self):
+        self.assertTrue(set(smart.BUILTIN_PROFILES.values()) <= set(smart.PROFILES))
+        self.assertTrue(all(k == k.lower() and not k.endswith(".exe") for k in smart.BUILTIN_PROFILES))
+
+    def test_matching_profile_case_insensitive(self):
+        cfg = _cfg(app_profiles={"vscode": "dev"})
+        self.assertEqual(smart.app_profile("VSCode", cfg), "dev")
+        self.assertEqual(smart.app_profile("  VSCODE  ", cfg), "dev")
+        self.assertEqual(smart.app_profile("EXCEL", _cfg(app_profiles={"excel": "formal"})), "formal")
+
+    def test_no_override_for_other_apps(self):
+        cfg = _cfg(app_profiles={"vscode": "dev"})
+        self.assertIsNone(smart.app_profile("chrome", cfg))
+        self.assertIsNone(smart.app_profile("notepad", _cfg(app_profiles={})))
+
+    def test_empty_exe_is_none(self):
+        cfg = _cfg(app_profiles={"vscode": "dev"})
+        for exe in ("", None, "   ", "\t"):
+            self.assertIsNone(smart.app_profile(exe, cfg), repr(exe))
+
+    def test_disabled_by_context_styles(self):
+        cfg = _cfg(context_styles=False, app_profiles={"vscode": "dev"})
+        self.assertIsNone(smart.app_profile("vscode", cfg))
+
+    def test_missing_context_styles_key_defaults_on(self):
+        # إعدادات قديمة من قبل F5 مابهاش مفتاح context_styles — السلكت الافتراضي شغّال
+        self.assertEqual(smart.app_profile("excel", _cfg(app_profiles={"excel": "formal"})), "formal")
+
+    def test_invalid_stored_value_is_none(self):
+        # قيمة محفوظة غلط (نسخة قديمة أو تعديل يدوي) متبعتش للـmodel
+        for bad in ("poetic", "", None, "DEV"):
+            self.assertIsNone(smart.app_profile("vscode", _cfg(app_profiles={"vscode": bad})), repr(bad))
+
+    def test_non_dict_app_profiles_is_none(self):
+        self.assertIsNone(smart.app_profile("vscode", _cfg(app_profiles=["dev"])))
+        self.assertIsNone(smart.app_profile("vscode", _cfg(app_profiles=None)))
+
+    def test_only_valid_keys_exist(self):
+        self.assertEqual(smart.PROFILES, ("dev", "chat", "formal"))
 
 
 class TestLightClean(unittest.TestCase):

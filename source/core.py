@@ -121,6 +121,8 @@ DEFAULTS = {
     "polish":            True,
     "bypass_short":      True,    # ردود قصيرة من القايمة → من غير لفة LLM خالص (F2)
     "bypass_max_words":  3,       # حد عدد الكلمات اللي بيتسمح التخطّي فيه
+    "context_styles":    True,    # أساليب السياق: شكل الكتابة بيتغيّر حسب البرنامج (F5)
+    "app_profiles":      {},      # overrides: {اسم البرنامج: dev/chat/formal}
     "prompt_mode":       False,
     "auto_paste":        True,
     "insert_method":     "type",
@@ -194,11 +196,11 @@ def history_get(limit=100):
     return _read_list(HISTORY_PATH)[0][:limit]
 
 
-def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False):
+def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False, app=""):
     """
     بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني،
-    engine = مين فرّغ ومين نضّف، bypass = الـLLM اتتخطّت للرد القصير F2).
-    بيرجّع الـid عشان الصوت يتحفظ بيه.
+    engine = مين فرّغ ومين نضّف، bypass = الـLLM اتتخطّت للرد القصير F2،
+    app = اسم البرنامج اللي اتكتب قدامه F5). بيرجّع الـid عشان الصوت يتحفظ بيه.
     """
     if not result_text or not result_text.strip():
         return None
@@ -222,6 +224,10 @@ def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False
         # بيتكتب بس لو الـLLM اتتخطّت فعلًا — السجلات العادية والقديمة من غيره،
         # والواجهة بتقراه بـ .get
         entry["bypass"] = True
+    if app:
+        # F5: بيتكتب بس لو اسم البرنامج اتعرف فعلًا — السجلات القديمة والأقدم
+        # من غير المفتاح، والواجهة بتقراه بـ .get
+        entry["app"] = app
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
         items.insert(0, entry)
@@ -864,7 +870,8 @@ class Operation:
     ثابت (frozen) وبيتولد مرة واحدة في begin() — قبل كده كان «الوضع» بيتقرأ
     من متغيّر بيتنازع عليه ثريدين: الدوسة اللي فتحت التسجيل وقفلته من
     ثريد تاني كانت ممكن تقرأ الوضع الغلط أو توصل بيانات فوق عملية لسه شغّالة.
-    (حقول الهدف target_app / hwnd / selection… بتتملّأ في مهام تالية).
+    (target_app بيتعبأ في begin() — F5، وباقي حقول الهدف hwnd / selection…
+    بتتملّأ في مهام تالية).
     """
     mode: str
     target_app: str = ""
@@ -938,6 +945,9 @@ class App:
             self.busy = on
 
     def begin(self, mode="normal"):
+        # F5: اسم البرنامج بيتقعد على العملية قبل القفل — هو اللي هيحدد أسلوب
+        # السياق (dev/chat/formal) وقت التنظيف، ومبيغادرش يتغيّر في نص الدورة.
+        target_app = (_foreground_app() or "").strip().lower()
         with self._state_lock:
             # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
             # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
@@ -945,7 +955,7 @@ class App:
                 return
             self.recording = True
             self.active_mode = mode
-            self._op = Operation(mode=mode)
+            self._op = Operation(mode=mode, target_app=target_app)
         # فتح الميك جوه القفل كان بيقعد فيه: لو الجهاز اتفصل والستريم بيأخد
         # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
@@ -1032,11 +1042,13 @@ class App:
                     out = smart.light_clean(text)
                     bypass = True
                 else:
-                    out = cl.polish(text)
+                    # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
+                    out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
             else:
                 out = text
 
-            rid = history_add(cur_mode, text, out, dur, engine=cl.engine(), bypass=bypass)
+            rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
+                              bypass=bypass, app=op.target_app)
             self.on_text(out)
             if not paste_text(out):
                 self.on_unplaced(out)

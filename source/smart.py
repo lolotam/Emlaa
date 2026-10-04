@@ -143,15 +143,46 @@ def light_clean(text):
     return s
 
 
+# ── F5: أساليب السياق (بروفايل لكل برنامج) ────────────────────────────────────
+
+PROFILES = ("dev", "chat", "formal")
+
+# أسماء البرامج (اسم الـexe من غير .exe، حروف صغيرة) → الأسلوب الافتراضي.
+# المتصفحات مش هنا عن قصد: Gmail وغيره بيبقوا تاب جوّه كروم، وعنوان النافذة
+# مبنقراهوش — فالمتصفح ملوش أسلوب إلا لو المستخدم حدّده بنفسه.
+BUILTIN_PROFILES = {
+    **dict.fromkeys(("code", "cursor", "windsurf", "devenv", "idea64", "pycharm64", "webstorm64",
+                     "windowsterminal", "cmd", "powershell", "pwsh", "mintty", "wezterm-gui",
+                     "alacritty"), "dev"),
+    **dict.fromkeys(("whatsapp", "telegram", "slack", "discord", "teams", "ms-teams", "signal",
+                     "messenger"), "chat"),
+    **dict.fromkeys(("outlook", "olk", "winword", "thunderbird"), "formal"),
+}
+
+
+def app_profile(exe, cfg):
+    """
+    أي أسلوب (dev/chat/formal) يناسب البرنامج المفتوح؟ (F5) — بيرجّع المفتاح بس،
+    فاسم البرنامج نفسه عمره ما بيوصل للموديل. اختيار المستخدم (app_profiles)
+    بيغلب الخريطة الجاهزة، وقيمة محفوظة غلط معناها «من غير أسلوب».
+    """
+    if not cfg.get("context_styles", True):
+        return None
+    exe = (exe or "").strip().lower()
+    if not exe:
+        return None
+    overrides = cfg.get("app_profiles")
+    if isinstance(overrides, dict):
+        for name, prof in overrides.items():
+            if str(name).strip().lower() == exe:
+                return prof if prof in PROFILES else None
+    return BUILTIN_PROFILES.get(exe)
+
+
 # ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
 
 def fix_mixed(text):
     """يرتّب الترقيم والفراغات بين عربي وإنجليزي في جملة واحدة (F7)"""
-    raise NotImplementedError
-
-
-def app_profile(exe, cfg):
-    """أي أسلوب (dev/chat/formal) يناسب البرنامج المفتوح؟ (F5)"""
     raise NotImplementedError
 
 

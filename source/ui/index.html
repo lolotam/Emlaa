@@ -288,6 +288,12 @@
       <h3 class="group-h">الكتابة</h3>
       <div class="group">
         <label class="srow"><span class="srow-text"><b>تنظيف النص وتصحيحه</b><small>بيصلّح الترقيم والأخطاء ويحافظ على العامية</small></span><span class="switch"><input type="checkbox" id="sPolish"><i></i></span></label>
+        <label class="srow"><span class="srow-text"><b>أسلوب حسب البرنامج</b><small>بتغيّر شكل الكتابة تبع البرنامج اللي قدامه (تطوير / شات / رسمي)</small></span><span class="switch"><input type="checkbox" id="sStyle"><i></i></span></label>
+        <div class="srow srow-stack" id="styleBox">
+          <span class="srow-text"><b>أساليب لكل برنامج</b><small>اكتب اسم البرنامج من غير الامتداد (زي code أو chrome) واختار أسلوبه</small></span>
+          <div class="style-list" id="styleList"></div>
+          <button class="ghost-btn style-add" id="styleAdd" type="button">+ إضافة برنامج</button>
+        </div>
         <label class="srow"><span class="srow-text"><b>كتابة النص تلقائيًا مكان المؤشر</b><small>لو مفيش خانة كتابة، النص بيظهر على الشاشة ويتنسخ</small></span><span class="switch"><input type="checkbox" id="sPaste"><i></i></span></label>
         <div class="srow"><span class="srow-text"><b>طريقة الكتابة</b><small>الحرف بالحرف بيشتغل في كل الخانات</small></span>
           <select class="select" id="sInsert">

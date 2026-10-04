@@ -71,8 +71,8 @@ class FakeClient:
         self.last_chat = None
         return self.text
 
-    def polish(self, t):
-        self.calls.append(("polish",))
+    def polish(self, t, profile=None):
+        self.calls.append(("polish", profile))
         self.last_chat = ("fake", "m1")
         return "p:" + t
 
@@ -128,14 +128,16 @@ class TestOperation(unittest.TestCase):
 class TestBeginEnd(unittest.TestCase):
     def test_begin_reserves_state_and_operation(self):
         app = make_app()
-        app.begin("prompt")
+        with mock.patch.object(core, "_foreground_app", return_value="Chrome"):
+            app.begin("prompt")
         self.assertTrue(app.recording)
         self.assertFalse(app.busy)
         self.assertEqual(app.active_mode, "prompt")
         self.assertIsInstance(app._op, core.Operation)
         self.assertEqual(app._op.mode, "prompt")
-        # بقية حقول الهدف لسه فاضية — مهام تالية هتملّيها
-        self.assertEqual(app._op.target_app, "")
+        # F5: اسم البرنامج بيتحفظ على العملية (منصّفاً وصغير) — حقول الهدف
+        # التانية لسه فاضية ومهام تالية هتملّيها
+        self.assertEqual(app._op.target_app, "chrome")
         self.assertEqual(app._op.hwnd, 0)
         self.assertEqual(app._op.runtime_id, ())
         self.assertEqual(app.rec.started, 1)
@@ -143,8 +145,9 @@ class TestBeginEnd(unittest.TestCase):
 
     def test_begin_refused_when_recording(self):
         app = make_app()
-        app.begin("normal")
-        app.begin("prompt")
+        with mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("normal")
+            app.begin("prompt")
         self.assertEqual(app.rec.started, 1)
         self.assertEqual(app._op.mode, "normal")
         self.assertEqual(app.active_mode, "normal")
@@ -153,7 +156,8 @@ class TestBeginEnd(unittest.TestCase):
         # التفريغ شغّال = مفيش تسجيل جديد حتى لو recording مقفول
         app = make_app()
         app.busy = True
-        app.begin("normal")
+        with mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("normal")
         self.assertFalse(app.recording)
         self.assertEqual(app.rec.started, 0)
         self.assertIsNone(app._op)
@@ -161,13 +165,21 @@ class TestBeginEnd(unittest.TestCase):
     def test_begin_mic_failure_rolls_back_reservation(self):
         app = make_app()
         app.rec.ensure_ok = False
-        with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error"):
+        with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
             app.begin("normal")
         self.assertFalse(app.recording)
         self.assertFalse(app.busy)
         self.assertIsNone(app._op)
         self.assertEqual(app.rec.started, 0)
         self.assertIn(("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات"), app.events)
+
+    def test_begin_captures_foreground_app_case_insensitive(self):
+        # F5: الاسم بيتنصّف ويصغّر عشان يطابق overrides الإعدادات
+        app = make_app()
+        with mock.patch.object(core, "_foreground_app", return_value="  VSCode "):
+            app.begin("normal")
+        self.assertEqual(app._op.target_app, "vscode")
 
     def test_concurrent_begin_exactly_one_per_round(self):
         # اللي كان بيحصل: اتنين ثيردين بيروحوا begin في نفس اللحظة —
@@ -176,6 +188,9 @@ class TestBeginEnd(unittest.TestCase):
         beep = mock.patch.object(core, "beep")   # من غيره الاختبار بيطلّع 100 صفارة حقيقية
         beep.start()
         self.addCleanup(beep.stop)
+        fg = mock.patch.object(core, "_foreground_app", return_value="")
+        fg.start()
+        self.addCleanup(fg.stop)
         for round_no in range(100):
             barrier = threading.Barrier(2)
             errs = []
@@ -219,6 +234,7 @@ class TestBeginEnd(unittest.TestCase):
 
         rec.stop = blocking_stop
         with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111), \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -244,7 +260,8 @@ class TestBeginEnd(unittest.TestCase):
     def test_end_stop_failure_clears_busy(self):
         app = make_app()
         app.rec.stop_exc = RuntimeError("الميك اتقطع")
-        with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error") as log:
+        with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error") as log, \
+                mock.patch.object(core, "_foreground_app", return_value=""):
             app.begin("normal")
             app.end()
         self.assertFalse(app.recording)
@@ -326,7 +343,7 @@ class TestProcess(unittest.TestCase):
         hist.assert_called_once_with("prompt", "مرحبا بالعالم", "P:مرحبا بالعالم",
                                      None, engine={"stt": "fake", "stt_model": "m1",
                                                    "chat": "fake", "chat_model": "m1"},
-                                     bypass=False)
+                                     bypass=False, app="")
         rsave.assert_called_once_with(111, "WAV")
         self.assertEqual(app.events[-1], ("done", "prompt"))
         self.assertFalse(app.busy, "الـfinally المفروض يفكّ الحجز بعد العملية")
@@ -378,7 +395,7 @@ class TestProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish",)])
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
         hist.assert_called_once()
         self.assertEqual(hist.call_args[0][0], "normal")
         rsave.assert_called_once_with(7, "WAV")
@@ -456,7 +473,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish",)])
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
         self.assertEqual(app.texts, ["p:تمام شكرا يا رب"])
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
@@ -471,7 +488,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish",)])
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
     def test_prompt_mode_unaffected_by_bypass(self):
@@ -526,3 +543,38 @@ class TestHistoryBypassFlag(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestContextStyles(unittest.TestCase):
+    """F5: الأسلوب بيتحدد من البرنامج، واسم البرنامج نفسه مبيوصلش للموديل."""
+
+    def test_process_passes_builtin_profile_for_target_app(self):
+        app = make_app()
+        fake = FakeClient(text="الكود ده فيه مشكلة في الـ API")
+        app.client = lambda: fake
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "history_add", return_value=None) as hist, \
+                mock.patch.object(core, "paste_text", return_value=True):
+            app.process("WAV", core.Operation(mode="normal", target_app="code"))
+        self.assertIn(("polish", "dev"), fake.calls)
+        self.assertEqual(hist.call_args.kwargs["app"], "code")
+
+    def test_polish_appends_rule_after_base_prompt_and_never_sends_exe(self):
+        import providers
+        cl = providers.Client("groq", "test-key")
+        sent = {}
+        cl._chat = lambda system, text, temperature=0.2: sent.update(system=system) or text
+        cl.polish("نص قصير", profile="dev")
+        system = sent["system"]
+        self.assertIn(providers.POLISH_SYSTEM, system)
+        self.assertGreater(system.index(providers.STYLE_RULES["dev"]), system.index(providers.POLISH_SYSTEM))
+        for leak in ("code.exe", "WindowsTerminal", "Visual Studio Code"):
+            self.assertNotIn(leak, system)
+
+    def test_polish_without_profile_is_unchanged(self):
+        import providers
+        cl = providers.Client("groq", "test-key")
+        sent = {}
+        cl._chat = lambda system, text, temperature=0.2: sent.update(system=system) or text
+        cl.polish("نص قصير")
+        self.assertEqual(sent["system"], providers.POLISH_SYSTEM)

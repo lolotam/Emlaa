@@ -490,7 +490,8 @@ class Api:
                 "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
                 "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
-                "dictionary", "theme", "lang", "history_keep_last10", "models")},
+                "dictionary", "theme", "lang", "history_keep_last10", "models",
+                "context_styles", "app_profiles")},
             "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if keys.get(h)), None),
             "stats": core.history_stats(),
         }
@@ -616,9 +617,21 @@ class Api:
             if k in data:
                 cfg[k] = data[k]
         for k in ("polish", "prompt_mode", "auto_paste", "beep", "minimize_to_tray",
-                  "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10"):
+                  "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10",
+                  "context_styles"):
             if k in data:
                 cfg[k] = bool(data[k])
+        # F5: overrides لكل برنامج — {اسم البرنامج: dev/chat/formal} بس، واللي
+        # مش سليم (اسم فاضي، قيمة غلط) بيتساقط عشان ما يوصلش للـmodel.
+        if "app_profiles" in data and isinstance(data["app_profiles"], dict):
+            clean, seen = {}, set()
+            for name, prof in data["app_profiles"].items():
+                name = str(name).strip().lower()[:60]
+                prof = str(prof or "").strip().lower()
+                if name and prof in ("dev", "chat", "formal") and name not in seen:
+                    seen.add(name)
+                    clean[name] = prof
+            cfg["app_profiles"] = dict(list(clean.items())[:100])
         if data.get("theme") in ("dark", "light", "system"):
             cfg["theme"] = data["theme"]
         old_lang = cfg.get("lang", "ar")

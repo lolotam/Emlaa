@@ -635,6 +635,34 @@ function fillSelect(sel, list, value) {
   sel.innerHTML = list.map(o => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join("");
   sel.value = value ?? "";
 }
+
+/* ── أساليب السياق F5: override لكل برنامج (اسم exe بدون امتداد ← dev/chat/formal) ── */
+const STYLE_OPTS = [["dev", "تطوير"], ["chat", "شات"], ["formal", "رسمي"]];
+function styleRowHTML(exe, prof) {
+  const opts = STYLE_OPTS.map(([v, ar]) => `<option value="${v}"${v === prof ? " selected" : ""}>${ar}</option>`).join("");
+  return `<div class="style-row">
+    <input class="input style-exe" value="${esc(exe)}" placeholder="اسم البرنامج" maxlength="60" autocomplete="off">
+    <select class="select style-prof">${opts}</select>
+    <button class="icon-btn del style-del" type="button" title="حذف">${ICON.x}</button>
+  </div>`;
+}
+function renderStyleRows() {
+  const rows = S.boot.cfg.app_profiles || {};
+  const keys = Object.keys(rows);
+  $("#styleList").innerHTML = keys.length
+    ? keys.map(k => styleRowHTML(k, rows[k])).join("")
+    : `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
+  $("#styleBox").hidden = !S.boot.cfg.context_styles;
+}
+function collectStyles() {
+  const out = {};
+  $$("#styleList .style-row").forEach(r => {
+    const exe = r.querySelector(".style-exe").value.trim().toLowerCase();
+    const prof = r.querySelector(".style-prof").value;
+    if (exe && prof) out[exe] = prof;
+  });
+  return out;
+}
 function fillSettings() {
   const c = S.boot.cfg;
   S.provider = c.provider;
@@ -669,13 +697,30 @@ function fillSettings() {
   $("#sLang").value = c.lang === "en" ? "en" : "ar";
   $("#sKeep10").checked = !!c.history_keep_last10;
   $("#sTheme").onchange = e => applyTheme(e.target.value);      // معاينة فورية قبل الحفظ
-  const sw = { sPolish: "polish", sPaste: "auto_paste", sTray: "minimize_to_tray", sFloat: "floating_button",
-               sClip: "clipboard_history", sBeep: "beep", sUpd: "check_updates", sAutoUpd: "auto_update" };
+  const sw = { sPolish: "polish", sStyle: "context_styles", sPaste: "auto_paste", sTray: "minimize_to_tray", sFloat: "floating_button",
+                sClip: "clipboard_history", sBeep: "beep", sUpd: "check_updates", sAutoUpd: "auto_update" };
   Object.entries(sw).forEach(([id, k]) => { $("#" + id).checked = !!c[k]; });
+  renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
 }
 $("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
+$("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
+$("#styleAdd").addEventListener("click", () => {
+  const empty = $("#styleList .dict-empty");
+  if (empty) empty.remove();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = styleRowHTML("", "dev");
+  const row = wrap.firstElementChild;
+  $("#styleList").appendChild(row);
+  row.querySelector(".style-exe").focus();
+});
+$("#styleList").addEventListener("click", e => {
+  const b = e.target.closest(".style-del");
+  if (!b) return;
+  b.closest(".style-row").remove();
+  if (!$("#styleList .style-row")) renderStyleRows();
+});
 $("#saveBtn").addEventListener("click", async () => {
   const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value];
   const msg = $("#saveMsg");
@@ -692,7 +737,8 @@ $("#saveBtn").addEventListener("click", async () => {
     provider: S.provider, key: $("#setKey").value.trim(), model: S.model,
     hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2],
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
-    polish: $("#sPolish").checked, auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
+    polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
+    auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
