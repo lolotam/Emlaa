@@ -125,7 +125,7 @@ DEFAULTS = {
     "app_profiles":      {},      # overrides: {اسم البرنامج: dev/chat/formal}
     "prompt_mode":       False,
     "auto_paste":        True,
-    "insert_method":     "type",
+    "insert_method":     "auto",   # F3: auto = Ctrl+V للنص الطويل/المتعدد، وإلا حرف حرف
     "beep":              True,
     "minimize_to_tray":  True,
     "check_updates":     True,
@@ -802,64 +802,59 @@ def has_text_focus():
     True لو المؤشر واقف في خانة كتابة (Edit / Document قابل للكتابة)،
     False لو مفيش (سطح المكتب، صورة، زرار…)، None لو مقدرناش نعرف.
     بيستخدم UI Automation — بيشتغل مع كروم وVS Code والبرامج العادية.
+    (F3: الشغل اتنقّل لـwinput.focused_info — الكفاية هنا ترفيلة بنفس العقد القديم.)
     """
+    import winput
+    return winput.focused_info()["editable"]
+
+
+def _copy_to_clipboard(text):
+    """بيرجّع True/False هل نشري النص للحافظة نجح — مش بيقطع الشغل لو فشل."""
     try:
-        import comtypes, comtypes.client
-        comtypes.CoInitialize()             # كل تسجيل بيتعالج في ثريد جديد — COM لازم يتعمل لكل ثريد
-        from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
-        uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-        el = uia.GetFocusedElement()
-        if not el:
-            return False
-        ct = el.CurrentControlType
-        # الترمنال (Windows Terminal / cmd / ConEmu / mintty) مش بيقول عن نفسه إنه خانة كتابة
-        if (el.CurrentClassName or "") in ("TermControl", "ConsoleWindowClass", "PseudoConsoleWindow",
-                                           "VirtualConsoleClass", "mintty"):
-            return True
-        # 30043 = IsValuePatternAvailable · 30046 = ValueIsReadOnly · 30040 = IsTextPatternAvailable
-        if el.GetCurrentPropertyValue(30043):
-            return not el.GetCurrentPropertyValue(30046)
-        if ct == 50004:                                   # Edit
-            return True
-        if ct == 50030 and el.GetCurrentPropertyValue(30040):   # Document بنص (Word، Notepad)
-            return True
-        return False
-    except Exception as e:
-        log_error(e, "focus/uia")
-        return None
-
-
-def paste_text(text):
-    """
-    النتيجة بتتنسخ للحافظة دايمًا (آخر نسخة)، وبتتكتب مكان المؤشر لو فيه خانة كتابة.
-    بيرجّع True لو اتكتبت، False لو مفيش مكان تتكتب فيه (الواجهة بتعرضها ساعتها).
-    """
-    import pyperclip
-    from pynput.keyboard import Controller, Key
-    try:
-        pyperclip.copy(text)                  # نسخة احتياطية دايمًا
-    except Exception:
-        pass
-    if not CFG.get("auto_paste"):
-        return False
-    if has_text_focus() is False:             # None = مش عارفين → نكتب زي الأول
-        return False
-
-    time.sleep(0.12)
-    kb = Controller()
-    # نص فيه أكتر من سطر (زي البرومبت المتقسّم) لازم يتلزق مرة واحدة: الكتابة حرف حرف
-    # بتدوس Enter عند كل سطر، وفي ChatGPT / Claude ده بيبعت الرسالة بعد أول سطر.
-    if CFG.get("insert_method") == "paste" or "\n" in text:
-        with kb.pressed(Key.ctrl):
-            kb.press("v"); kb.release("v")
+        import pyperclip
+        pyperclip.copy(text)
         return True
-    # الافتراضي: يكتب حرف حرف — بيشتغل في الحقول اللي Ctrl+V مبيشتغلش فيها
-    try:
-        kb.type(text)
-    except Exception:
-        with kb.pressed(Key.ctrl):
-            kb.press("v"); kb.release("v")
-    return True
+    except Exception as e:
+        log_error(e, "clipboard/copy")
+        return False
+
+
+def paste_text(text, target=None):
+    """
+    بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
+      "placed"  = الأحداث اتحقنت كويس
+      "failed"  = نشر الحافظة أو SendInput فشل (مفيش إعادة حقن — R1 #12)
+      "handoff" = ممن متحقن (مفيش خانة كتابة / auto_paste مقفول / متعدد في
+                  ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
+    target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
+    لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
+    """
+    import winput
+    if target is None:
+        info = winput.focused_info()
+        info["exe"] = _foreground_app()
+        target = smart.insert_target(info, text, CFG.get("insert_method"))
+    cls, strategy, inj = target
+    if strategy == "handoff" or not CFG.get("auto_paste", True):
+        # مفيش حقن: ننسخ للمستخدم والواجهة تعرضه — غير الخانة الآمنة:
+        # دي عمرها ماتوصل للحافظة
+        if cls != "secure":
+            _copy_to_clipboard(inj)
+        return "handoff"
+    time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
+    if cls == "secure":
+        # خانة آمنة: كتابة بس — الحافظة مش طريقها
+        return "placed" if winput.type_text(inj) else "failed"
+    if strategy == "type":
+        _copy_to_clipboard(inj)                 # نسخة احتياطية — فشلها مش قاتل للكتابة
+        return "placed" if winput.type_text(inj) else "failed"
+    if strategy in ("ctrl_v", "shift_insert"):
+        # اللزق هو النص نفسه: فشل نشر الحافظة = فشل، ومفيش كتابة بديل
+        if not _copy_to_clipboard(inj):
+            return "failed"
+        fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
+        return "placed" if fn() else "failed"
+    return "handoff"
 
 
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
@@ -1047,11 +1042,22 @@ class App:
             else:
                 out = text
 
-            rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
-                              bypass=bypass, app=op.target_app)
-            self.on_text(out)
-            if not paste_text(out):
-                self.on_unplaced(out)
+            # F3 (R1 #1): تصنيف الهدف قبل السجل/الحافظة/الصوت — الهدف الآمن:
+            # مفيش حاجة من التسجيل ده بتطلع من هنا (لسجل، صوت، نسخ، ولا عرض النص).
+            import winput
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            target = smart.insert_target(info, out, CFG.get("insert_method"))
+            secure = target[0] == "secure"
+            rid = None
+            if not secure:
+                rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
+                                  bypass=bypass, app=op.target_app)
+                self.on_text(out)
+            if not secure or CFG.get("auto_paste", True):
+                res = paste_text(out, target)
+                if not secure and res in ("failed", "handoff"):
+                    self.on_unplaced(out)
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
             self.on_state("done", cur_mode)

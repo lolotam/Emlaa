@@ -21,7 +21,7 @@ const EN = {
   "English / عربي": "English / عربي",
   // ── الحالة ──
   "جاهز": "Ready", "بيسجّل…": "Recording…", "بيفرّغ الكلام…": "Transcribing…", "بيجهّز البرومبت…": "Building prompt…",
-  "بيترجم…": "Translating…", "اتكتب ✓": "Typed ✓", "في مشكلة": "Something went wrong", "محتاج مفتاح": "Needs an API key",
+  "بيترجم…": "Translating…", "اتبعت ✓": "Sent ✓", "في مشكلة": "Something went wrong", "محتاج مفتاح": "Needs an API key",
   // ── الرئيسية ──
   "اتكلم، وإملاء يكتب مكانك": "Speak, and Emlaa types for you",
   "دوسة على زرار من التلاتة تبدأ التسجيل، ودوسة تانية توقفه — والكلام يتكتب مكان المؤشر.":
@@ -76,7 +76,8 @@ const EN = {
   "الكتابة": "Typing", "تنظيف النص وتصحيحه": "Clean up and correct text", "بيصلّح الترقيم والأخطاء ويحافظ على العامية": "Fixes punctuation and mistakes, keeps your dialect",
   "كتابة النص تلقائيًا مكان المؤشر": "Type text at the cursor automatically",
   "لو مفيش خانة كتابة، النص بيظهر على الشاشة ويتنسخ": "If there's no text field, the text pops up on screen and is copied",
-  "طريقة الكتابة": "Typing method", "الحرف بالحرف بيشتغل في كل الخانات": "Letter by letter works in every field",
+  "طريقة الكتابة": "Typing method",
+  "«تلقائي»: الطويل والمتعدد بيتلزق، والقصير بيتكتب حرف حرف": "Auto: long or multi-line text is pasted, short text is typed letter by letter",
   "حرف حرف": "Letter by letter", "لزق Ctrl+V (أسرع)": "Paste with Ctrl+V (faster)",
   "أسلوب حسب البرنامج": "Per-app style",
   "بتغيّر شكل الكتابة تبع البرنامج اللي قدامه (تطوير / شات / رسمي)": "Changes the writing style to match the app in front of you (dev / chat / formal)",

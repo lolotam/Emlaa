@@ -64,7 +64,7 @@ STATE = {
     "work":      (AMBER,     "بفرّغ الكلام…"),
     "prompt":    (AMBER,     "بحوّله لبرومبت…"),
     "translate": ("#06b6d4", "بترجم الكلام…"),
-    "done":      (GREEN,     "اتكتب ✓"),
+    "done":      (GREEN,     "اتبعت ✓"),   # F3: «اتبعت» مش «اتكتب» — مبنقدرش نشوف هل الهدف استلم (R1 #12)
     "err":       (RED,       "في مشكلة"),
 }
 
@@ -503,7 +503,7 @@ class ResultToast(tk.Toplevel):
                         wraplength=360, justify="right", anchor="e", cursor="hand2")
         body.pack(fill="x", pady=(8, 2))
         body.bind("<Button-1>", lambda e: self._copy())
-        tk.Label(box, text=self._t("مكانش فيه خانة كتابة — اتحفظ في السجل كمان", "No text field was focused — also saved to History"), bg=self.BG,
+        tk.Label(box, text=self._t("اتنسخ — الصقه بنفسك · اتحفظ في السجل كمان", "Copied — paste it yourself · also saved to History"), bg=self.BG,
                  fg=DIM, font=(FONT, 8)).pack(anchor="e")
 
         for w in (self, box, body):

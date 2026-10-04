@@ -87,6 +87,11 @@ class FakeClient:
         return "T:" + t
 
 
+# F3: معلومات فوكس ثابتة للاختبارات — الهدف عادي (مش باسورد) من غير ما نعتمد
+# على النافذة المركّزة فعلياً وقت تشغيل الاختبار
+GUI_FOCUS = {"is_password": False, "class": "Edit", "editable": True}
+
+
 def make_app(rec=None):
     """App من غير __init__ عشان مافتحناش ميكروفون حقيقي."""
     app = core.App.__new__(core.App)
@@ -235,6 +240,7 @@ class TestBeginEnd(unittest.TestCase):
         rec.stop = blocking_stop
         with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
                 mock.patch.object(core, "history_add", return_value=111), \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -333,13 +339,16 @@ class TestProcess(unittest.TestCase):
         app.client = lambda: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
             app.process("WAV", core.Operation(mode="prompt"))
         self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
         self.assertEqual(app.texts, ["P:مرحبا بالعالم"])
-        paste.assert_called_once_with("P:مرحبا بالعالم")
+        paste.assert_called_once_with("P:مرحبا بالعالم", ("gui", "type", "P:مرحبا بالعالم"))
         hist.assert_called_once_with("prompt", "مرحبا بالعالم", "P:مرحبا بالعالم",
                                      None, engine={"stt": "fake", "stt_model": "m1",
                                                    "chat": "fake", "chat_model": "m1"},
@@ -355,6 +364,9 @@ class TestProcess(unittest.TestCase):
         app.client = lambda: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111), \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -391,6 +403,9 @@ class TestProcess(unittest.TestCase):
         app.client = lambda: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=7) as hist, \
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
@@ -400,7 +415,7 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(hist.call_args[0][0], "normal")
         rsave.assert_called_once_with(7, "WAV")
         self.assertEqual(app.texts, ["p:مرحبا بالعالم"])
-        paste.assert_called_once_with("p:مرحبا بالعالم")
+        paste.assert_called_once_with("p:مرحبا بالعالم", ("gui", "type", "p:مرحبا بالعالم"))
         self.assertEqual(app.events[-1], ("done", "normal"))
         self.assertFalse(app.busy)
         self.assertFalse(app.recording)
@@ -411,9 +426,12 @@ class TestProcess(unittest.TestCase):
         app.client = lambda: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=7), \
                 mock.patch.object(core, "recording_save"), \
-                mock.patch.object(core, "paste_text", return_value=False):
+                mock.patch.object(core, "paste_text", return_value="failed"):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.unplaced, ["p:مرحبا بالعالم"])
         self.assertFalse(app.busy)
@@ -436,6 +454,8 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
@@ -443,7 +463,7 @@ class TestBypassProcess(unittest.TestCase):
         self.assertEqual(fake.calls, [("transcribe", "ar")])
         self.assertIsNone(fake.last_chat, "مفيش chat = مفيش موديل شات شغل")
         self.assertEqual(app.texts, ["تمام"])
-        paste.assert_called_once_with("تمام")
+        paste.assert_called_once_with("تمام", ("gui", "type", "تمام"))
         self.assertEqual(hist.call_args.kwargs.get("bypass"), True)
         self.assertFalse(app.busy)
 
@@ -454,12 +474,14 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111), \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.texts, ["تمام"])
-        paste.assert_called_once_with("تمام")
+        paste.assert_called_once_with("تمام", ("gui", "type", "تمام"))
 
     def test_longer_text_still_polished(self):
         # 4 كلمات = فوق الحد 3 → الـLLM زي ما هي
@@ -469,6 +491,8 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -484,6 +508,8 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg(bypass_short=False)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -499,6 +525,8 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -514,6 +542,8 @@ class TestBypassProcess(unittest.TestCase):
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
@@ -553,6 +583,8 @@ class TestContextStyles(unittest.TestCase):
         fake = FakeClient(text="الكود ده فيه مشكلة في الـ API")
         app.client = lambda: fake
         with mock.patch.object(core, "log_error"), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=None) as hist, \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="normal", target_app="code"))

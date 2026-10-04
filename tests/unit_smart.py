@@ -204,6 +204,105 @@ class TestAppProfile(unittest.TestCase):
         self.assertEqual(smart.PROFILES, ("dev", "chat", "formal"))
 
 
+class TestInsertTarget(unittest.TestCase):
+    """F3: تصنيف الهدف واستراتيجية الحقن — قرار نقي من معلومات UIA واسم الـexe."""
+
+    def info(self, **over):
+        """معلومات هدف عادية (حد قابل للكتابة) — كل اختبار بيمسح مفتاح أو اتنين."""
+        base = {"is_password": False, "class": "", "exe": "", "editable": True}
+        base.update(over)
+        return base
+
+    def test_table_from_plan(self):
+        cases = [
+            # (info, text, method, الناتج المتوقع (نوع، استراتيجية، نص))
+            (self.info(is_password=True), "s3cret!", "auto",
+             ("secure", "type", "s3cret!")),
+            (self.info(is_password=True), "a\nb", "type",
+             ("secure", "type", "a b")),
+            (self.info(exe="MSTSC"), "hi", "auto",
+             ("remote", "type", "hi")),
+            (self.info(exe="mstsc"), "a\nb", "auto",
+             ("remote", "ctrl_v", "a\nb")),
+            (self.info(**{"class": "TermControl"}), "ls -la", "auto",
+             ("terminal", "shift_insert", "ls -la")),
+            (self.info(**{"class": "TermControl"}), "a\nb", "auto",
+             ("terminal", "handoff", "a\nb")),
+            (self.info(), "abcdefghij", "auto",
+             ("gui", "type", "abcdefghij")),
+            (self.info(), "a" * 41, "auto",
+             ("gui", "ctrl_v", "a" * 41)),
+            (self.info(), "a\nb", "auto",
+             ("gui", "ctrl_v", "a\nb")),
+            (self.info(), "hi", "type",
+             ("gui", "type", "hi")),
+        ]
+        for info, text, method, expected in cases:
+            self.assertEqual(smart.insert_target(info, text, method), expected,
+                             f"{info} | {text!r} | {method}")
+
+    def test_secure_newlines_become_spaces_even_with_crlf(self):
+        self.assertEqual(smart.insert_target(self.info(is_password=True), "a\r\nb\nc", "auto"),
+                         ("secure", "type", "a b c"))
+
+    def test_uia_failure_is_gui_not_secure(self):
+        # R1 #1: فشل UIA (None) = سلوك اليوم «gui» — عتباره secure كان هيخفّ السجل
+        info = self.info(is_password=None, editable=None)
+        self.assertEqual(smart.insert_target(info, "مرحبا", "auto"),
+                         ("gui", "type", "مرحبا"))
+
+    def test_no_text_field_is_handoff(self):
+        # UIA قال صريح إن مفيش خانة كتابة: نسخ + عرض بالواجهة، ممن يتحقن
+        self.assertEqual(smart.insert_target(self.info(editable=False), "مرحبا", "auto"),
+                         ("gui", "handoff", "مرحبا"))
+
+    def test_remote_exe_beats_no_text_field(self):
+        # UIA مبيشوفش جوّه جلسة RDP — بيشوف نافذة mstsc نفسها فبيقول editable=False،
+        # والكيبورد في الحقيقة رايح للجلسة. لو «مفيش خانة» كسب، عمرنا ما هنكتب في RDP.
+        self.assertEqual(smart.insert_target(self.info(editable=False, exe="mstsc"), "مرحبا", "auto"),
+                         ("remote", "type", "مرحبا"))
+
+    def test_terminal_by_exe(self):
+        self.assertEqual(smart.insert_target(self.info(exe="WindowsTerminal"), "echo hi", "auto"),
+                         ("terminal", "shift_insert", "echo hi"))
+        self.assertEqual(smart.insert_target(self.info(exe="conemu64"), "a\nb", "auto"),
+                         ("terminal", "handoff", "a\nb"))
+
+    def test_secure_beats_remote_exe(self):
+        # الباسورد جاي الأول دايما — حتى لو exe الجلسة البعيدة
+        self.assertEqual(smart.insert_target(self.info(is_password=True, exe="mstsc"), "x", "auto"),
+                         ("secure", "type", "x"))
+
+    def test_remote_exe_case_insensitive_and_stripped(self):
+        self.assertEqual(smart.insert_target(self.info(exe="  MSTSC "), "hi", "auto"),
+                         ("remote", "type", "hi"))
+
+    def test_gui_paste_method_always_ctrl_v(self):
+        self.assertEqual(smart.insert_target(self.info(), "مرحبا", "paste"),
+                         ("gui", "ctrl_v", "مرحبا"))
+        self.assertEqual(smart.insert_target(self.info(), "a\nb", "paste"),
+                         ("gui", "ctrl_v", "a\nb"))
+
+    def test_gui_type_method_keeps_legacy_multiline_paste(self):
+        # «type» القديمي: المتعدد لازم يتلزق مرة واحدة (Enter حرف حرف = إرسال مبكر)
+        self.assertEqual(smart.insert_target(self.info(), "a\nb", "type"),
+                         ("gui", "ctrl_v", "a\nb"))
+
+    def test_gui_auto_boundary_40_chars(self):
+        # > 40 = Ctrl+V، و40 بالظبط لسه حرف حرف
+        self.assertEqual(smart.insert_target(self.info(), "a" * 40, "auto")[1], "type")
+        self.assertEqual(smart.insert_target(self.info(), "a" * 41, "auto")[1], "ctrl_v")
+
+    def test_unknown_method_falls_back_to_legacy(self):
+        # قيمة محفوظة غلط = سلوك قديم (حرف حرف غير المتعدد) مش كارثة
+        self.assertEqual(smart.insert_target(self.info(), "مرحبا", "قلم"),
+                         ("gui", "type", "مرحبا"))
+
+    def test_none_inputs_do_not_raise(self):
+        self.assertEqual(smart.insert_target(None, None, None),
+                         ("gui", "type", ""))
+
+
 class TestLightClean(unittest.TestCase):
     def test_strips_and_collapses_spaces(self):
         self.assertEqual(smart.light_clean("  تمام   يا  رب "), "تمام يا رب")
@@ -230,3 +329,4 @@ class TestLightClean(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

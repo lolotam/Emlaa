@@ -22,7 +22,7 @@ const S = {
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
-  translate: "بيترجم…", done: "اتكتب ✓", err: "في مشكلة", off: "محتاج مفتاح",
+  translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
 };
 const ICON = {
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg>',
@@ -692,7 +692,7 @@ function fillSettings() {
   fillSelect($("#hkTranslate"), S.boot.hotkeys, c.hotkey_translate);
   fillSelect($("#hkOpen"), S.boot.openHotkeys, c.open_hotkey || "");
   $("#recMode").value = c.mode === "hold" ? "hold" : "toggle";
-  $("#sInsert").value = c.insert_method === "paste" ? "paste" : "type";
+  $("#sInsert").value = c.insert_method === "auto" || c.insert_method === "paste" ? c.insert_method : "type";
   $("#sTheme").value = c.theme || "dark";
   $("#sLang").value = c.lang === "en" ? "en" : "ar";
   $("#sKeep10").checked = !!c.history_keep_last10;

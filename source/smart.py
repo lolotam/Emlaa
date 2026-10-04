@@ -290,15 +290,88 @@ class HotkeyLogic:
         return []
 
 
+# ── F3: الحقن الهجين — تصنيف الهدف واستراتيجية الحقن ───────────────────────────
+# قرار «الهدف ده نوعه إيه، ونكتب فيه إزاي؟» هنا بس — winput (ويندوز) و core
+# (الحافظة ودورة التسجيل) بينفّذوا النتيجة.
+
+# برامج الجلسات البعيدة (RDP/VM): الحافظة المحلية كتير ماتوصلش جوّه الجلسة
+# (مشاركة الحافظة بتبقى مقفولة)، فالسطر الواحد بيتكتب بالكيبورد والمتعدد بـCtrl+V.
+REMOTE_EXES = frozenset({
+    "mstsc", "wfica32", "cdviewer", "vmware-view", "vmconnect", "msrdc"})
+
+# الترمنالات باسم الـexe، زيادة على كلاسات UIA في TERMINAL_CLASSES — الاتنين لازم:
+# ترمنال شغّال بصلاحيات أعلى ممكن مانعرفش نقرا اسم الـexe بتاعه، لكن UIA بتقرا الكلاس.
+TERMINAL_EXES = frozenset({
+    "windowsterminal", "conhost", "mintty", "alacritty", "wezterm-gui", "conemu64"})
+
+# كلاسات UIA للترمنالات اللي مش بيقولوا عن نفسهم إنهم خانة كتابة
+# (Windows Terminal / cmd / ConEmu / mintty). winput.focused_info بياخد
+# نفس القائمة لقرار «قابل للكتابة» — مصدر واحد للجانبين.
+TERMINAL_CLASSES = ("TermControl", "ConsoleWindowClass", "PseudoConsoleWindow",
+                    "VirtualConsoleClass", "mintty")
+
+# عتبة «تلقائي» للحدود العادية: أطول من ده → Ctrl+V بدل الكتابة حرف حرف
+# (اللزق أسرع وأأمّن للنص الطويل).
+AUTO_PASTE_THRESHOLD = 40
+
+
+def _gui_strategy(text, method):
+    """
+    استراتيجية الحد العادي (gui): «تلقائي» = الافتراضي الجديد — نص أطول من
+    AUTO_PASTE_THRESHOLD أو متعدّد الأسطر → Ctrl+V، وإلا كتابة حرف حرف؛
+    «paste» = دايمًا Ctrl+V؛ «type» والقيم القديمة = حرف حرف، غير إن
+    المتعدد لازم يتلزق مرة واحدة (كتابة حرف حرف بتدوس Enter عند كل سطر).
+    """
+    m = str(method or "auto").strip().lower()
+    if m == "paste":
+        return "ctrl_v"
+    multi = "\n" in text
+    if m == "auto":
+        return "ctrl_v" if (multi or len(text) > AUTO_PASTE_THRESHOLD) else "type"
+    return "ctrl_v" if multi else "type"
+
+
+def insert_target(info, text, method):
+    """
+    (نوع الهدف، استراتيجية الحقن، النص اللي يتحقن) من معلومات العنصر
+    المركّز (F3):
+      نوع    = secure | remote | terminal | gui
+      استراتيجيا = type | ctrl_v | shift_insert | handoff
+      النص    = بعد سياسة الأسطر لكل نوع (secure: أسطر → مسافات —
+                 Enter جوّه خانة باسورد = إرسال)
+
+    بيتنادى مرة لكل نتيجة، قبل السجل/الحافظة/الصوت (R1 #1): التصنيف
+    بيرافق العملية، والهدف الآمن عمره مايتمسح ولا يتنسخ ولا يتعرض.
+    فشل UIA (is_password / editable = None) بيتعامل «gui» مش «secure»
+    (سلوك النهارده) — لو اعتبرنا كل فشل خانة باسورد، السجل كان هيختفي بصمت.
+    """
+    info = info or {}
+    text = text or ""
+    if info.get("is_password") is True:
+        # خانة باسورد: كيبورد بس، والأسطر بتبقى مسافات (Enter فيها = إرسال)
+        return ("secure", "type", re.sub(r"[\r\n]+", " ", text))
+    exe = str(info.get("exe") or "").strip().lower()
+    cls_name = str(info.get("class") or "")
+    multi = "\n" in text
+    if exe in REMOTE_EXES:
+        # قبل فحص «قابل للكتابة»: UIA بيشوف نافذة برنامج الريموت نفسها مش الخانة اللي
+        # جوّه الجلسة، فبيقول editable=False — لو اتفحص الأول عمرنا ما هنكتب في RDP.
+        # سطر واحد: كتابة (الحافظة ممكن ماتوصلش للجلسة)؛ المتعدد: Ctrl+V
+        return ("remote", "ctrl_v" if multi else "type", text)
+    # UIA قال صراحة إن مفيش خانة كتابة: مفيش حقن — handoff = نسخ وعرض في الواجهة
+    if info.get("editable") is False:
+        return ("gui", "handoff", text)
+    if cls_name in TERMINAL_CLASSES or exe in TERMINAL_EXES:
+        # المتعدد في الترمنال ممكن «يتنفّذ» سطر سطر حسب وضع bracketed-paste في الـshell،
+        # ومينفعش نعرفه (R1 #4) — فمش بنحقنه، بنسلّمه للمستخدم
+        return ("terminal", "shift_insert" if not multi else "handoff", text)
+    return ("gui", _gui_strategy(text, method), text)
+
+
 # ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
 
 def fix_mixed(text):
     """يرتّب الترقيم والفراغات بين عربي وإنجليزي في جملة واحدة (F7)"""
-    raise NotImplementedError
-
-
-def insert_target(info, text, method):
-    """(نوع الهدف، استراتيجية الحقن) من معلومات UIA والاختيار (F3)"""
     raise NotImplementedError
 
 
