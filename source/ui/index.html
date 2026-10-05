@@ -322,6 +322,24 @@
           </select></div>
       </div>
 
+      <h3 class="group-h" id="offlineHead">التفريغ من غير إنترنت</h3>
+      <div class="group" id="offlineBox">
+        <div class="srow"><span class="srow-text"><b>الحالة</b><small id="offlineStatus">الموديل مش متثبّت</small></span>
+          <button class="ghost-btn" id="offlineRemove" type="button" disabled>إزالة الموديل</button></div>
+        <div class="srow"><span class="srow-text"><b>موديل التفريغ</b><small>الأصغر أسرع والأكبر أدق</small></span>
+          <select class="select" id="offlineModel"></select></div>
+        <div class="srow srow-stack" id="offlineDlRow">
+          <span class="srow-text"><b>تنزيل الموديل</b><small id="offlineDownloadNote">بيتنزّل مرة واحدة ويتخزّن على جهازك</small></span>
+          <button class="cta cta-sm" id="offlineDownload" type="button">تنزيل</button>
+          <div class="upd-bar" id="offlineBar" hidden><i></i></div>
+        </div>
+        <div class="srow"><span class="srow-text"><b>وضع التفريغ</b><small>إمتى تستخدم التفريغ المحلي</small></span>
+          <select class="select" id="offlineMode">
+            <option value="fallback">لما النت يقطع بس</option>
+            <option value="always">دايمًا — الصوت مايطلعش من الجهاز</option>
+          </select></div>
+      </div>
+
       <h3 class="group-h">البرنامج</h3>
       <div class="group">
         <div class="srow"><span class="srow-text"><b>اللغة</b><small>لغة الواجهة</small></span>

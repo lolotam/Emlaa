@@ -16,6 +16,7 @@ import webbrowser
 import core
 import providers
 import smart
+import offline
 
 UI_DIR = "ui"
 
@@ -481,7 +482,8 @@ class Controller:
             self.start_clipboard()
             self.start_open_hotkey()
             self.watch_show_request()
-            if keys.get(core.CFG.get("provider", providers.DEFAULT)):
+            if keys.get(core.CFG.get("provider", providers.DEFAULT)) or (
+                    core.CFG.get("offline_mode") == "always" and offline.installed()):
                 self.start_engine()
             self.watch_updates()
 
@@ -501,6 +503,9 @@ class Api:
 
     def __init__(self, ctrl):
         self._c = ctrl
+        # F9: تنزيل offline — تنزيل واحد في نفس الوقت بس (الملفات مشتركة)
+        self._offline_lock = threading.Lock()
+        self._offline_busy = False
 
     # ── بيانات أول ما الواجهة تفتح ──
     def bootstrap(self):
@@ -512,10 +517,18 @@ class Api:
             "version": c.version,
             "brand": c.brand,
             "hasKey": bool(keys.get(pid)),
+            "canRun": bool(keys.get(pid)) or (
+                cfg.get("offline_mode") == "always" and bool(offline.installed())),
             "state": c.state,
             "lastText": c.last_text,
             "update": c.update_info,
             "store": core.STORE,
+            "offline": {
+                "installed": offline.installed(),
+                "packaged": core._is_packaged(),
+                "models": [{"id": m, "size": round(sz / 1_000_000)}
+                           for m, (_u, _h, sz) in offline.MODELS.items()],
+            },
             "providers": [dict(id=p, name=providers.PROVIDERS[p]["name"],
                                tag=providers.PROVIDERS[p]["tag"], desc=providers.PROVIDERS[p]["desc"],
                                keyUrl=providers.PROVIDERS[p]["key_url"],
@@ -674,13 +687,16 @@ class Api:
         pid = data.get("provider") or cfg.get("provider", providers.DEFAULT)
         new_key = (data.get("key") or "").strip()
         keys = providers.read_keys(core.ENV_PATH)
-        if new_key or not keys.get(pid):
-            if not new_key:
-                return {"ok": False, "err": "محتاج مفتاح للمزوّد ده — الصقه في الخانة"}
+        # F9: وضع offline دايمًا + موديل مثبّت = مفيش حاجة لمفتاح — بنقبل الحفظ من غير مفتاح
+        offline_ok = ((data.get("offline_mode") or cfg.get("offline_mode")) == "always"
+                      and bool(offline.installed()))
+        if new_key:
             ok, err = providers.verify(pid, new_key)
             if not ok:
                 return {"ok": False, "err": err}
             providers.write_key(core.ENV_PATH, pid, new_key)
+        elif not keys.get(pid) and not offline_ok:
+            return {"ok": False, "err": "محتاج مفتاح للمزوّد ده — الصقه في الخانة"}
 
         old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
                   cfg.get("hotkey_edit"), cfg.get("mode"))
@@ -689,6 +705,11 @@ class Api:
                   "open_hotkey", "mode", "insert_method"):
             if k in data:
                 cfg[k] = data[k]
+        # F9: وضع وموديل offline — القيم اللي معروفة لنا بس
+        if "offline_mode" in data:
+            cfg["offline_mode"] = data["offline_mode"] if data["offline_mode"] in ("always", "fallback") else "fallback"
+        if "offline_model" in data:
+            cfg["offline_model"] = str(data["offline_model"] or "").strip()[:60]
         # F6: ممنوع يبقى زرارين أوضاع لنفس المفتاح (غير الفاضي) — دوسة واحدة
         # هتشتغل وضعين فوق بعض. بنفحص بعد ما القيم الجديدة اتطبّقت على cfg.
         _hk_seen = set()
@@ -750,6 +771,48 @@ class Api:
                 w.hide()
         c.tk_call(wave_setting)
         return {"ok": True, "boot": self.bootstrap()}
+
+    # ── التفريغ من غير إنترنت (F9) ──
+    def offline_status(self):
+        """حالة الموديل المحلي + قايمة الموديلات المتاحة بأحجامها بالميجا."""
+        return {
+            "installed": offline.installed(),
+            "mode": core.CFG.get("offline_mode", "fallback"),
+            "model": core.CFG.get("offline_model", ""),
+            "models": [{"id": m, "size": round(sz / 1_000_000)}
+                       for m, (_u, _h, sz) in offline.MODELS.items()],
+        }
+
+    def offline_download(self, model):
+        """
+        بيبدأ تنزيل موديل offline في الخلفية (مينفعش يحبس نداء pywebview). التقدّم
+        بيوصل للواجهة بـ onOfflineProgress {fraction}، والنتيجة بـ onOfflineDone
+        {ok, model|err}. تنزيل تاني وهو شغّال بيتقفل.
+        """
+        with self._offline_lock:
+            if self._offline_busy:
+                return {"ok": False, "err": "فيه تنزيل شغّال دلوقتي"}
+            if model not in offline.MODELS:
+                return {"ok": False, "err": "موديل offline مش معروف"}
+            self._offline_busy = True
+
+        def run():
+            try:
+                offline.download(model, progress=lambda f: self._c.push("onOfflineProgress", {"fraction": f}))
+                self._c.push("onOfflineDone", {"ok": True, "model": model})
+            except Exception as e:
+                core.log_error(e, "offline/download")
+                self._c.push("onOfflineDone", {"ok": False, "err": str(e)[:200]})
+            finally:
+                with self._offline_lock:
+                    self._offline_busy = False
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"ok": True}
+
+    def offline_remove(self):
+        offline.remove()
+        return {"ok": True}
 
     # ── متفرقات ──
     def check_update(self):

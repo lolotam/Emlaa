@@ -18,9 +18,11 @@ const S = {
   clipLimit: 200,
   provider: null,
   snipEditKey: null,
+  offline: null,
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
+const OFFLINE_MODEL_LABEL = { base: "أسرع وأقل دقة", "small-q5_1": "أدق — موصى بيه" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
   translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
@@ -101,7 +103,7 @@ async function setTheme(pref) {
 /* ═══════════ التنقل ═══════════ */
 function go(page) {
   if (!S.boot) return;
-  if (!S.boot.hasKey && page !== "welcome") page = "welcome";
+  if (!S.boot.canRun && page !== "welcome") page = "welcome";
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.go === page));
@@ -769,6 +771,42 @@ function collectStyles() {
   });
   return out;
 }
+/* ── التفريغ من غير إنترنت (F9) ── */
+function renderOffline() {
+  const o = S.offline;
+  if (!o) return;
+  const packaged = !!(S.boot.offline && S.boot.offline.packaged);
+  $("#offlineHead").hidden = packaged;
+  $("#offlineBox").hidden = packaged;
+  if (packaged) return;
+  const installed = o.installed;
+  const sz = installed ? ((o.models || []).find(m => m.id === installed) || {}).size : null;
+  $("#offlineStatus").textContent = installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت";
+  $("#offlineRemove").disabled = !installed;
+  $("#offlineModel").innerHTML = (o.models || []).map(m =>
+    `<option value="${esc(m.id)}">${esc(m.id)} ≈ ${m.size} MB — ${OFFLINE_MODEL_LABEL[m.id] || ""}</option>`).join("");
+  $("#offlineModel").value = (o.model && (o.models || []).some(m => m.id === o.model)) ? o.model : (installed || "small-q5_1");
+  $("#offlineMode").value = o.mode === "always" ? "always" : "fallback";
+}
+async function refreshOffline() {
+  S.offline = await api().offline_status();
+  renderOffline();
+}
+$("#offlineDownload").addEventListener("click", async () => {
+  const model = $("#offlineModel").value;
+  const r = await api().offline_download(model);
+  if (!r.ok) { toast(r.err || "مقدرتش أنزّل الموديل"); return; }
+  $("#offlineDownload").disabled = true;
+  $("#offlineBar").hidden = false;
+  $("#offlineBar i").style.width = "0%";
+  $("#offlineDownloadNote").textContent = "بينزّل… 0%";
+});
+$("#offlineRemove").addEventListener("click", async () => {
+  await api().offline_remove();
+  refreshOffline();
+  toast("اتشال الموديل");
+});
+
 function fillSettings() {
   const c = S.boot.cfg;
   S.provider = c.provider;
@@ -812,6 +850,7 @@ function fillSettings() {
   renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
+  refreshOffline();
 }
 $("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
@@ -856,6 +895,7 @@ $("#saveBtn").addEventListener("click", async () => {
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
+    offline_mode: $("#offlineMode").value, offline_model: $("#offlineModel").value,
   });
   btn.disabled = false;
   if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
@@ -976,10 +1016,10 @@ function applyBoot() {
   $("#promoName").textContent = b.brand.name;
   $("#promo").dataset.url = b.brand.url;
   $("#clipToggle").checked = !!b.cfg.clipboard_history;
-  $$(".nav-item").forEach(n => { n.disabled = !b.hasKey; });
+  $$(".nav-item").forEach(n => { n.disabled = !b.canRun; });
   renderKeys();
   renderStats(b.stats);
-  if (!b.hasKey) setState("off");
+  if (!b.canRun) setState("off");
 }
 
 /* ═══════════ أحداث من Python ═══════════ */
@@ -1006,6 +1046,24 @@ window.emlaa = {
   onUpdate(info) { showUpdate(info); },
   onUpdateProgress(p) { setUpdProgress(p); },
   onUpdateError(err) { updFail(err); },
+  onOfflineProgress(p) {
+    const f = Math.max(0, Math.min(1, Number(p.fraction) || 0));
+    const bar = $("#offlineBar");
+    bar.hidden = false;
+    bar.querySelector("i").style.width = (f * 100) + "%";
+    $("#offlineDownloadNote").textContent = `بينزّل… ${Math.round(f * 100)}%`;
+  },
+  onOfflineDone(r) {
+    $("#offlineDownload").disabled = false;
+    $("#offlineBar").hidden = true;
+    if (r.ok) {
+      toast("اتنزّل ✓");
+      refreshOffline();
+    } else {
+      $("#offlineDownloadNote").textContent = "بيتنزّل مرة واحدة ويتخزّن على جهازك";
+      toast(r.err || "مقدرتش أنزّل الموديل");
+    }
+  },
   go(page) { go(page); },
 };
 
@@ -1013,13 +1071,13 @@ window.emlaa = {
 async function start() {
   S.boot = await api().bootstrap();
   applyBoot();
-  setState(S.boot.hasKey ? S.boot.state : "off");
+  setState(S.boot.canRun ? S.boot.state : "off");
   fillWelcome();
   await loadHistory();
   S.clips = await api().clips();
   fillClipApps();
   if (S.boot.update) showUpdate(S.boot.update);
-  go(S.boot.hasKey ? "home" : "welcome");
+  go(S.boot.canRun ? "home" : "welcome");
 }
 if (window.pywebview && window.pywebview.api) start();
 else window.addEventListener("pywebviewready", start);
