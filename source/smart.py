@@ -163,14 +163,9 @@ BUILTIN_PROFILES = {
 }
 
 
-def app_profile(exe, cfg):
-    """
-    أي أسلوب (dev/chat/formal) يناسب البرنامج المفتوح؟ (F5) — بيرجّع المفتاح بس،
-    فاسم البرنامج نفسه عمره ما بيوصل للموديل. اختيار المستخدم (app_profiles)
-    بيغلب الخريطة الجاهزة، وقيمة محفوظة غلط معناها «من غير أسلوب».
-    """
-    if not cfg.get("context_styles", True):
-        return None
+def _profile_for(exe, cfg):
+    """البروفايل المسجّل للبرنامج: اختيار المستخدم (app_profiles) بيغلب الخريطة الجاهزة،
+    وقيمة محفوظة غلط معناها «مفيش». من غير ما يبص على context_styles."""
     exe = (exe or "").strip().lower()
     if not exe:
         return None
@@ -180,6 +175,24 @@ def app_profile(exe, cfg):
             if str(name).strip().lower() == exe:
                 return prof if prof in PROFILES else None
     return BUILTIN_PROFILES.get(exe)
+
+
+def app_profile(exe, cfg):
+    """
+    أي أسلوب (dev/chat/formal) يناسب البرنامج المفتوح؟ (F5) — بيرجّع المفتاح بس،
+    فاسم البرنامج نفسه عمره ما بيوصل للموديل. context_styles مقفول = مفيش أسلوب.
+    """
+    if not cfg.get("context_styles", True):
+        return None
+    return _profile_for(exe, cfg)
+
+
+def is_dev_app(exe, cfg):
+    """
+    هل الهدف برنامج تطوير؟ (F7) — مستقل عن context_styles: قفل قاعدة الأسلوب مايلغيش
+    إن نص برامج البرمجة بيفضل بايت-بايت من غير fix_mixed.
+    """
+    return _profile_for(exe, cfg) == "dev"
 
 
 # ── زرار التسجيل: منطق الدوس/التسيب (قرار نقي، بيتشغل من غير pynput) ─────
@@ -385,10 +398,30 @@ def insert_target(info, text, method):
 _ARABIC_CHARS = "\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF"
 _AR_LETTER = re.compile("[" + _ARABIC_CHARS + "]")
 
+
+def _arabic_letters():
+    """حروف العربية بس (فئة الحروف L) من نطاقاتها — من غير علامات الترقيم والأرقام.
+
+    النطاق 0600-06FF فيه ، ؛ ؟ وأرقام هندية جوّه الحروف — فلو استبعدناه كله في
+    الـlookbehind كانت «راجع،الAPI» عمرها ما تتصلّح. بناخد الحروف بس، فالترقيم
+    والأرقام قبل «ال/لل/بال» بيبقوا حد كلمة طبيعي.
+    """
+    out = []
+    for lo, hi in ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF),
+                   (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)):
+        for cp in range(lo, hi + 1):
+            ch = chr(cp)
+            if unicodedata.category(ch)[0] == "L":
+                out.append(ch)
+    return "".join(out)
+
+
+_ARABIC_LETTERS = _arabic_letters()
+
 # الحرف العاري قبل كلمة لاتيني: «لل/بال/ال» + تطويل اختياري + مسافات اختيارية.
 # الـlookbehind عشان كلمة عربي بتخلص في «ال» (زي «السائل») متتقسمش نصّ.
 _ARTICLE = re.compile(
-    r"(?<![" + _ARABIC_CHARS + r"])(لل|بال|ال)(\u0640*)[ \t]*([A-Za-z])")
+    r"(?<![" + _ARABIC_LETTERS + r"])(لل|بال|ال)(\u0640*)[ \t]*([A-Za-z])")
 
 _PUNCT_MAP = {",": "\u060c", "?": "\u061F", ";": "\u061B"}
 _PUNCT = re.compile(r"[,?;]")

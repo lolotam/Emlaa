@@ -458,10 +458,11 @@ class TestSecureOrdering(unittest.TestCase):
                 mock.patch.object(core.time, "sleep"):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(log, [], "auto_paste مقفول + خانة آمنة = مفيش أي أثر")
-        self.assertEqual(app.events[-1], ("done", "normal"))
+        self.assertNotIn("done", [s for s, _ in app.events],
+                         "مفيش «done» — مفيش حاجة اتكتبت ولا اتسلمت")
 
-    def test_secure_type_failure_is_silent(self):
-        # الخانة الآمنة مفيش ليها toast حتى لو الدقات فشلت (النص ممن يتعرض)
+    def test_secure_type_failure_reports_err(self):
+        # الخانة الآمنة: الدقات فشلت → "err" (اكتبها بنفسك) من غير "done" ومن غير عرض النص
         app = make_app()
         fake = FakeClient()
         app.client = lambda: fake
@@ -483,7 +484,7 @@ class TestSecureOrdering(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(log, ["type"])
         self.assertEqual(app.unplaced, [])
-        self.assertEqual(app.events[-1], ("done", "normal"))
+        self.assertEqual(app.events[-1], ("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك"))
 
     def test_gui_type_failure_shows_unplaced(self):
         app = make_app()

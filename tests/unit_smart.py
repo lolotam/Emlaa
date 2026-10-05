@@ -215,6 +215,28 @@ class TestAppProfile(unittest.TestCase):
         self.assertEqual(smart.PROFILES, ("dev", "chat", "formal"))
 
 
+class TestIsDevApp(unittest.TestCase):
+    """H4: is_dev_app بيجاوب «ده تطبيق تطوير؟» مستقل عن context_styles —
+    عشان استثناء fix_mixed للكود يفضل شغّال حتى لو أساليب السياق مقفولة."""
+
+    def test_builtin_dev_regardless_of_context_styles(self):
+        self.assertTrue(smart.is_dev_app("code", _cfg(context_styles=False)))
+        self.assertTrue(smart.is_dev_app("Code", _cfg(context_styles=False)))
+        self.assertTrue(smart.is_dev_app("code", _cfg()))
+        self.assertFalse(smart.is_dev_app("chrome", _cfg(context_styles=False)))
+
+    def test_override_beats_builtin(self):
+        self.assertFalse(smart.is_dev_app("code", _cfg(app_profiles={"code": "chat"})))
+        self.assertTrue(smart.is_dev_app("chrome", _cfg(app_profiles={"chrome": "dev"})))
+
+    def test_empty_and_invalid(self):
+        self.assertFalse(smart.is_dev_app("", _cfg()))
+        self.assertFalse(smart.is_dev_app(None, _cfg()))
+        self.assertFalse(smart.is_dev_app("   ", _cfg()))
+        self.assertFalse(smart.is_dev_app("vscode", _cfg(app_profiles={"vscode": "poetic"})))
+        self.assertFalse(smart.is_dev_app("vscode", _cfg(app_profiles=["dev"])))
+
+
 class TestInsertTarget(unittest.TestCase):
     """F3: تصنيف الهدف واستراتيجية الحقن — قرار نقي من معلومات UIA واسم الـexe."""
 
@@ -425,6 +447,18 @@ class TestFixMixed(unittest.TestCase):
                          "راجع www.example.com/الAPI")
         self.assertEqual(smart.fix_mixed("ابعت لـ الAPI@example.com"),
                          "ابعت لـ الAPI@example.com")
+
+    def test_arabic_punctuation_before_article_is_boundary(self):
+        # H5: الترقيم العربي (،) قبل «ال» حد كلمة — مش حرف عربي يمنع التطابق
+        self.assertEqual(smart.fix_mixed("راجع،الAPI"), "راجع،الـ API")
+        once = smart.fix_mixed("راجع،الAPI")
+        self.assertEqual(smart.fix_mixed(once), once)
+
+    def test_words_starting_or_ending_with_al_unchanged(self):
+        # «السائل» بيبدأ بـ«ال»، و«مثال» بيخلّص بـ«ال» — الاتنين كلمات عربية
+        # والـlookbehind (حروف بس) لازم يفضل مانع التقسيم
+        self.assertEqual(smart.fix_mixed("السائل API ده"), "السائل API ده")
+        self.assertEqual(smart.fix_mixed("مثال API كويس"), "مثال API كويس")
 
 
 if __name__ == "__main__":

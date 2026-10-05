@@ -987,6 +987,10 @@ class App:
         # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
             with self._state_lock:
+                # الدورة ممكن تكون اتلغت/اتبدلت ولسه شغّالة؟ لو _op بقى عملية تانية،
+                # الدولة ملكها — ممن نمسحها ولا ننشر خطأ ميك فوقها
+                if self._op is not op:
+                    return
                 self.recording = False
                 self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
@@ -1125,7 +1129,7 @@ class App:
             # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
             # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
             if (cur_mode == "normal" and CFG.get("polish", True)
-                    and smart.app_profile(op.target_app, CFG) != "dev"
+                    and not smart.is_dev_app(op.target_app, CFG)
                     and target[0] not in ("terminal", "secure")):
                 out = smart.fix_mixed(out)
                 target = (target[0], target[1], out)
@@ -1134,6 +1138,7 @@ class App:
                 rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
                                   bypass=bypass, app=op.target_app)
                 self.on_text(out)
+            res = None
             if not secure or CFG.get("auto_paste", True):
                 res = paste_text(out, target)
                 if not secure and res == "clip_failed":
@@ -1142,7 +1147,13 @@ class App:
                     self.on_unplaced(out)
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
-            self.on_state("done", cur_mode)
+            # "done" بس لما النتيجة انكتبت أو اتسلّمت للمستخدم. «clip_failed» ناشر
+            # "err" فوق فمينفعش يتغطى بـ"done". الخانة الآمنة لو الكتابة فشلت: "err"
+            # من غير "done" — مفيش حافظة تلزق منها، المستخدم لازم يكتبها بنفسه.
+            if res == "placed" or res == "handoff" or (not secure and res == "failed"):
+                self.on_state("done", cur_mode)
+            elif secure and res == "failed":
+                self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:
             log_error(e, "process/transcribe")
             self.on_state("err", friendly_error(e))

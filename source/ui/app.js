@@ -264,6 +264,12 @@ function stopPlayer() {
   player.audio = null;
   if (id != null) paintWave(id);
 }
+/* مسح صف من السجل لازم يبطل أي تشغيل/تحميل ليه لسه شغّال: بنزوّد التوكن
+   عشان الرد الرايح يُهمَل، ونوقف أي Audio شغّال دلوقتي. */
+function invalidatePlayback() {
+  playToken++;
+  stopPlayer();
+}
 async function togglePlay(id) {
   if (player.id === id && player.audio) {
     return player.audio.paused ? player.audio.play() : player.audio.pause();
@@ -275,6 +281,7 @@ async function togglePlay(id) {
   const r = await api().history_audio(id);
   if (token !== playToken) return;
   if (!r.ok) return toast("الصوت مش متاح");
+  if (!S.history.some(i => i.id === id)) return;   // الصف اتمسح والرد لسه رايح
   stopPlayer();                                  // اتأكد من جديد قبل ما نعمل Audio جديد
   const a = new Audio(`data:${r.mime};base64,${r.data}`);
   player.id = id;
@@ -354,6 +361,7 @@ $("#histList").addEventListener("click", async e => {
   }
   if (act?.dataset.act === "copy") return copyText(item.result, act);
   if (act?.dataset.act === "del") {
+    invalidatePlayback();
     const r = await api().history_delete([id]);
     S.history = r.items; renderStats(r.stats); renderLast(); renderRecent(); renderHistory();
     return toast("اتمسح");
@@ -398,6 +406,7 @@ $("#bulkDel").addEventListener("click", async e => {
   const n = c.set.size;
   if (!armed(e.currentTarget, `تأكيد مسح ${num(n)}`)) return;
   if (S.page === "history") {
+    invalidatePlayback();
     const r = await api().history_delete([...S.histSel]);
     S.histSel.clear();
     S.history = r.items; renderStats(r.stats); renderLast(); renderRecent(); renderChart(); renderHistory();

@@ -114,6 +114,7 @@ const EN = {
   "اتلغى التسجيل": "Recording cancelled",
   "مطلعش نص — قرّب من الميك وجرّب تاني": "No text came out — move closer to the mic and try again",
   "مقدرتش أكتب النص ولا أنسخه — جرّب تاني": "Couldn't type or copy the text — try again",
+  "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك": "Couldn't type into the password field — type it yourself",
   "مفيش ميكروفون متوصّل": "No microphone connected", "الميكروفون مش شغّال": "The microphone isn't working",
   "محطّتش مفتاح للمزوّد ده — افتح الإعدادات وحطّه": "No key for this provider — add one in Settings",
   "الحد المجاني خلص — استنى شوية أو غيّر المزوّد من الإعدادات": "Free quota used up — wait a bit or switch provider in Settings",

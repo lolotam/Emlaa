@@ -79,6 +79,39 @@ class BlockingEnsureRec:
         pass
 
 
+class FailingEnsureRec:
+    """ريكوردر وهمي: أول ensure_open بيسدّ وبيرجّع False (ميك فاشل)، والباقي
+    بيرجّع True فورًا — عشان نحاكي «أول begin فشل والقفل اتساب في النص،
+    والمستخدم لغى وبدأ عملية جديدة». """
+
+    def __init__(self):
+        self.started = 0
+        self.discarded = 0
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+        self.calls = 0
+
+    def ensure_open(self):
+        self.calls += 1
+        if self.calls == 1:
+            self.entered.set()
+            self.gate.wait(5)
+            return False
+        return True
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        return "WAV"
+
+    def discard(self):
+        self.discarded += 1
+
+    def close(self):
+        pass
+
+
 class FakeClient:
     """مزوّد وهمي: بيرجّع نصوص ثابتة وسجل بكل نداء."""
 
@@ -207,6 +240,29 @@ class TestBeginEnd(unittest.TestCase):
         self.assertIsNone(app._op)
         self.assertEqual(app.rec.started, 0)
         self.assertIn(("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات"), app.events)
+
+    def test_begin_cancel_new_begin_while_failing_ensure_open(self):
+        # H2: أول begin بيسدّ في ensure_open (هيرجّع False) — المستخدم لغى وبدأ
+        # عملية جديدة. لما الأول يرجع ممن يمسح الدولة ولا ينشر خطأ الميك فوق الجديد.
+        rec = FailingEnsureRec()
+        app = make_app(rec=rec)
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            t = threading.Thread(target=app.begin, args=("normal",))
+            t.start()
+            self.assertTrue(rec.entered.wait(5), "ensure_open ما بدأش يستنى")
+            app.cancel()                          # يلغي الأول ويشيل _op
+            self.assertFalse(app.recording)
+            app.begin("prompt")                   # عملية جديدة تملك الحالة
+            self.assertTrue(app.recording)
+            self.assertEqual(app._op.mode, "prompt")
+            rec.gate.set()                        # خلّي أول ensure_open يرجع False
+            t.join(10)
+            self.assertFalse(t.is_alive())
+        self.assertEqual(rec.started, 1, "الالتقاط بدأ مرة واحدة (للجديدة)")
+        self.assertTrue(app.recording)
+        self.assertEqual(app._op.mode, "prompt")
+        self.assertNotIn(("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات"), app.events)
 
     def test_begin_captures_foreground_app_case_insensitive(self):
         # F5: الاسم بيتنصّف ويصغّر عشان يطابق overrides الإعدادات
@@ -415,7 +471,7 @@ class TestProcess(unittest.TestCase):
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=111) as hist, \
                 mock.patch.object(core, "recording_save") as rsave, \
-                mock.patch.object(core, "paste_text", return_value=True) as paste:
+                mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="prompt"))
         self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
         self.assertEqual(app.texts, ["P:مرحبا بالعالم"])
@@ -479,7 +535,7 @@ class TestProcess(unittest.TestCase):
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=7) as hist, \
                 mock.patch.object(core, "recording_save") as rsave, \
-                mock.patch.object(core, "paste_text", return_value=True) as paste:
+                mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
         hist.assert_called_once()
@@ -506,6 +562,64 @@ class TestProcess(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.unplaced, ["p:مرحبا بالعالم"])
         self.assertFalse(app.busy)
+
+
+class TestProcessDoneState(unittest.TestCase):
+    """H1: «done» بيتنشر بس لما النتيجة انكتبت أو اتسلّمت — مش فوق «clip_failed»
+    ولا فشل كتابة خانة الباسورد الآمنة."""
+
+    def test_clip_failed_last_state_is_err(self):
+        # «clip_failed» ناشر "err" فوق — مينفعش يتغطى بـ"done" بعده
+        app = make_app()
+        fake = FakeClient()
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=7), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value="clip_failed"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.events[-1][0], "err")
+        self.assertFalse(app.busy)
+
+    def test_secure_failed_reports_err_and_no_unplaced(self):
+        # خانة آمنة فشل كتابتها: "err" من غير "done" ومن غير on_unplaced
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info",
+                           return_value={"is_password": True, "class": "Edit", "editable": True}), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value="failed"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.events[-1], ("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك"))
+        self.assertEqual(app.unplaced, [])
+        hist.assert_not_called()
+        self.assertFalse(app.busy)
+
+    def test_placed_publishes_done(self):
+        # الكتابة نجحت → «done» زي ما هي
+        app = make_app()
+        fake = FakeClient()
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=7), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value="placed"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.events[-1], ("done", "normal"))
 
 
 def _cfg(**over):
@@ -854,6 +968,14 @@ class TestFixMixedProcess(unittest.TestCase):
         # تطبيق dev: الكود يفضل شكلي التقني — polish شغل بالبروفايل من غير تصحيح
         app, fake, _ = self._run(target_app="code")
         self.assertIn(("polish", "dev"), fake.calls)
+        self.assertEqual(app.texts, [MIXED_RAW])
+
+    def test_context_styles_off_still_skips_fix_for_dev(self):
+        # H4: حتى لو context_styles مقفول، تطبيق dev لسه بياخد استثناء بايت-بايت
+        cfg = dict(core.DEFAULTS)
+        cfg["context_styles"] = False
+        app, fake, _ = self._run(target_app="code", cfg=cfg)
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
         self.assertEqual(app.texts, [MIXED_RAW])
 
     def test_terminal_target_skips_fix(self):
