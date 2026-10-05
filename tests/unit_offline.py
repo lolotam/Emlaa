@@ -13,6 +13,7 @@ import hashlib
 import zipfile
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.error
 from types import SimpleNamespace
@@ -303,6 +304,43 @@ class TestTranscribe(_BaseCase):
             text = offline.transcribe("w.wav", "ar")
         self.assertEqual(text, "النص المفرّغ")
         self.assertFalse(os.path.exists(seen["out_base"] + ".txt"))
+
+    def test_read_result_tolerates_coarse_mtime(self):
+        # NTFS بيسجّل mtime بساعة أخشن من time.time() — ملف اتكتب بعد start
+        # ممكن mtime بتاعه يطلع قبله بأجزاء من الثانية ولازم يتقبل
+        path = os.path.join(self._tmp.name, "r.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(" نص ")
+        start = time.time()
+        os.utime(path, (start - 0.02, start - 0.02))
+        self.assertEqual(offline._read_result(path, start), "نص")
+
+    def test_read_result_rejects_old_file(self):
+        path = os.path.join(self._tmp.name, "r.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("قديم")
+        start = time.time()
+        os.utime(path, (start - 60, start - 60))
+        self.assertIsNone(offline._read_result(path, start))
+
+    def test_stale_output_removed_before_run(self):
+        # ملف .txt سابق بنفس الاسم مايترجعش لو whisper ماكتبش حاجة
+        self._install("base")
+        seen = {}
+
+        def _run(cmd, timeout=None):
+            seen["existed"] = os.path.exists(cmd[cmd.index("-of") + 1] + ".txt")
+            return SimpleNamespace(returncode=0)
+
+        stale = os.path.join(self._tmp.name, "emlaa_offline_1234567.txt")
+        with open(stale, "w", encoding="utf-8") as f:
+            f.write("نص قديم")
+        os.utime(stale, (1234.6, 1234.6))   # mtime "بعد" start — الحارس لوحده ميكفيش
+        with mock.patch.object(offline.tempfile, "gettempdir", return_value=self._tmp.name),                 mock.patch.object(offline.time, "time", return_value=1234.567),                 mock.patch.object(offline, "_run", _run):
+            with self.assertRaises(RuntimeError):
+                offline.transcribe("w.wav", "ar")
+        self.assertFalse(seen["existed"])
+        self.assertFalse(os.path.exists(stale))
 
     def test_requires_model_installed(self):
         with self.assertRaises(RuntimeError):

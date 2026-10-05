@@ -284,10 +284,15 @@ def build_cmd(wav, model_path, language, out_base):
             "-t", str(_threads()), "-otxt", "-of", out_base]
 
 
+# ساعة mtime في NTFS أخشن من time.time() (لحد ~16ms)، فملف اتكتب بعد start
+# ممكن يطلع mtime بتاعه قبله بشوية — السماحية دي بتمنع رفض نتيجة سليمة.
+MTIME_SLACK = 2.0
+
+
 def _read_result(out_txt, start):
     """النص من .txt لو اتكتب بعد ما بدأنا ومش فاضي بعد القصّ — غير كده None."""
     try:
-        if os.path.getmtime(out_txt) < start:
+        if os.path.getmtime(out_txt) < start - MTIME_SLACK:
             return None
         with open(out_txt, encoding="utf-8") as f:
             text = f.read()
@@ -315,6 +320,11 @@ def transcribe(wav, language):
 
     with _lock:
         try:
+            # ملف قديم بنفس الاسم ميتقريش كأنه نتيجة التشغيل ده
+            try:
+                os.remove(out_txt)
+            except OSError:
+                pass
             cmd = build_cmd(wav, model_path, language, out_base)
             try:
                 r = _run(cmd, timeout=TRANSCRIBE_TIMEOUT)
