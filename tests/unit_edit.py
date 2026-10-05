@@ -120,9 +120,16 @@ def _join_new_threads(before, timeout=5.0):
     بيستنى كل ثريد اتبدأ بعد before — جوّه الترقيعات. غير كده ثريد الأسر/process
     بيكمّل بعد ما الاختبار يخلص وينادي UIA والحافظة والكيبورد الحقيقيين.
     """
+    alive = []
     for t in threading.enumerate():
         if t not in before and t is not threading.current_thread():
             t.join(timeout)
+            if t.is_alive():
+                alive.append(t.name)
+    # ثريد لسه شغّال بعد المهلة هيكمّل على الـAPIs الحقيقية لما الترقيعات تتفك —
+    # نفشل الاختبار وإحنا لسه جوّه الترقيعات بدل ما نسيبه يهرب
+    if alive:
+        raise AssertionError("ثريدات لسه شغّالة بعد الاختبار: %s" % ", ".join(alive))
 
 
 GUI_FOCUS = {"is_password": False, "class": "Edit", "editable": True}

@@ -351,5 +351,47 @@ class TestOfflineHandoffNeverCopiesPasswords(unittest.TestCase):
         self.assertEqual(app.events[-1][1], "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
 
 
+class TestClassicKeylessSave(unittest.TestCase):
+    """الواجهة الكلاسيك: offline دايمًا + موديل مثبّت = الإعدادات بتتحفظ من غير مفتاح."""
+
+    def _ui(self, mode, installed):
+        import emlaa
+        ui = emlaa.EmlaaClassic.__new__(emlaa.EmlaaClassic)
+        ui.cfg = cfg(offline_mode=mode)
+        ui._key_drafts = {}
+        ui.skey_var = mock.Mock(get=mock.Mock(return_value=""))
+        ui._settings_pid = mock.Mock(return_value="groq")
+        ui._apply = mock.Mock()
+        ui._set_smsg = mock.Mock()
+        p = mock.patch.object(offline, "installed", return_value=installed)
+        p.start(); self.addCleanup(p.stop)
+        k = mock.patch.object(providers, "read_keys", return_value={})
+        k.start(); self.addCleanup(k.stop)
+        return ui
+
+    def test_saves_without_key_in_always_with_pack(self):
+        ui = self._ui("always", "base")
+        ui._save()
+        ui._apply.assert_called_once_with("groq", "", verified=False)
+
+    def test_still_requires_key_otherwise(self):
+        for mode, inst in (("fallback", "base"), ("always", None)):
+            ui = self._ui(mode, inst)
+            ui._save()
+            ui._apply.assert_not_called()
+
+    def test_apply_never_writes_an_empty_key(self):
+        import emlaa
+        ui = emlaa.EmlaaClassic.__new__(emlaa.EmlaaClassic)
+        with mock.patch.object(providers, "write_key") as wk,                 mock.patch.object(core, "save_config", side_effect=RuntimeError("stop")):
+            ui.cfg = cfg()
+            for name in ("hk_norm_var", "hk_prmt_var", "hk_trns_var", "polish_var", "prompt_var",
+                         "paste_var", "tray_var", "upd_var", "float_var"):
+                setattr(ui, name, mock.Mock(get=mock.Mock(return_value="")))
+            with self.assertRaises(RuntimeError):
+                ui._apply("groq", "", verified=False)
+        wk.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

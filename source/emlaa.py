@@ -1265,6 +1265,11 @@ class EmlaaClassic(tk.Tk):
         need_check = key and (key != old_key or pid != old_pid)
 
         if not key:
+            # F9: وضع offline دايمًا + موديل مثبّت شغّال من غير مفتاح — باقي الإعدادات
+            # (الأزرار والتنضيف…) لازم تتحفظ برضه، من غير ما نكتب مفتاح فاضي
+            if self.cfg.get("offline_mode") == "always" and offline.installed():
+                self._apply(pid, "", verified=False)
+                return
             self._set_smsg(f"محطّتش مفتاح لـ{providers.meta(pid)['name']} — "
                            "من غيره مش هيعرف يفرّغ كلامك.", AMBER)
             return
@@ -1293,7 +1298,8 @@ class EmlaaClassic(tk.Tk):
     def _apply(self, pid, key, verified):
 
         """الحفظ الفعلي + التطبيق على طول من غير إعادة تشغيل."""
-        providers.write_key(core.ENV_PATH, pid, key)
+        if key:                                          # offline من غير مفتاح: منكتبش مفتاح فاضي
+            providers.write_key(core.ENV_PATH, pid, key)
 
         old_keys = (self.cfg.get("hotkey_normal"), self.cfg.get("hotkey_prompt"), self.cfg.get("hotkey_translate"))
         self.cfg["provider"]         = pid
@@ -1318,6 +1324,9 @@ class EmlaaClassic(tk.Tk):
 
         self._render_provider(); self._render_mode(); self._set_hint()
 
+        if not key:
+            self._set_smsg("اتحفظ ✓ — شغّال دلوقتي من غير إنترنت", GREEN)
+            return
         name = providers.meta(pid)["name"]
         self._set_smsg(f"اتحفظ ✓ — شغّال دلوقتي على {name}"
                        + (" والمفتاح اتجرّب وردّ تمام." if verified else "."), GREEN)
