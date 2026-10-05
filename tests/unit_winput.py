@@ -679,3 +679,21 @@ class TestFallbackBoundToCapturedTarget(unittest.TestCase):
         out, copy = self._run(fg_hwnd=10, focused_rid=(7, 7))
         self.assertEqual(out, "")
         copy.assert_not_called()
+
+
+class TestDelayedRenderingIsMarked(unittest.TestCase):
+    def test_sequence_advanced_by_our_read_is_marked_owned(self):
+        # delayed rendering: قراية النص نفسها بتزوّد الرقم — لازم يتوسم عشان المراقب ميسجلوش
+        clip = FakeClipboard("old", copy_result="selection")
+        real_read = clip.read
+        state = {"reads": 0}
+
+        def read_with_render():
+            state["reads"] += 1
+            text = real_read()
+            if state["reads"] == 2:          # القراية التانية = قراية التحديد بعد Ctrl+C
+                clip.seq += 1                # البرنامج «رندر» النص دلوقتي
+            return text
+        clip.read = read_with_render
+        self.assertEqual(clip.run(), "")     # الرقم اتغيّر → التحديد مش موثوق
+        self.assertIn(102, clip.marked())    # بس الرقم الجديد اتوسم «بتاعنا»

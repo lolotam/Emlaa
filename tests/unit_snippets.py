@@ -241,7 +241,6 @@ class TestSnippetsSet(unittest.TestCase):
         api = Api.__new__(Api)
         items = [
             {"trigger": "  إيميلي  ", "text": "  a@b.com  "},
-            {"trigger": "ايميلي", "text": "تكرار مطبّع"},
             {"trigger": "", "text": "x"},
             {"trigger": "   ", "text": "y"},
             "not-a-dict",
@@ -270,3 +269,17 @@ class TestSnippetsSet(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSnippetTriggerCollision(unittest.TestCase):
+    def test_renaming_onto_an_existing_trigger_is_rejected_not_dropped(self):
+        # A اتعدّل مفتاحه لمفتاح B: الحفظ لازم يترفض، وB ميتمسحش بصمت
+        import app_web
+        api = app_web.Api.__new__(app_web.Api)
+        before = [{"trigger": "رقم الآيبان", "text": "KW81"}, {"trigger": "العنوان", "text": "شارع"}]
+        with mock.patch.dict(core.CFG, {"snippets": list(before)}), \
+                mock.patch.object(core, "save_config") as save:
+            r = api.snippets_set([{"trigger": "العنوان", "text": "جديد"}, {"trigger": "العنوان", "text": "شارع"}])
+            self.assertFalse(r["ok"])
+            save.assert_not_called()
+            self.assertEqual(core.CFG["snippets"], before)

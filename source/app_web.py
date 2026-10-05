@@ -649,8 +649,12 @@ class Api:
             if not trigger or not text:
                 continue
             key = smart.normalize(trigger)
-            if not key or key in seen:
+            if not key:
                 continue
+            if key in seen:
+                # اتنين بنفس المفتاح (بعد التطبيع) — غالبًا تعديل غيّر مفتاح اختصار لمفتاح
+                # اختصار تاني موجود. منحفظش ومنسقطش واحد منهم بصمت؛ المستخدم يقرر
+                return {"ok": False, "err": f"فيه اختصار تاني بنفس الجملة «{trigger}» — غيّر واحد منهم"}
             seen.add(key)
             clean.append({"trigger": trigger[:60], "text": text[:2000]})
         core.CFG["snippets"] = clean[:100]

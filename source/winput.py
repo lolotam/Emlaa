@@ -572,7 +572,12 @@ def _selection_via_clipboard(cancel=None, expect=None):
         new = _read_clipboard_text()
         # N3: بعد قراية النص المحدد، رقم التسلسل لازم يفضل هو هو اللي قررنا
         # عليه — لو اتغيّر، النص اللي قريناه ممكن يكون بتاع حد تاني → نفشل.
-        if _clipboard_sequence() != seq_copy:
+        cur = _clipboard_sequence()
+        if cur != seq_copy:
+            # ممكن يكون «delayed rendering»: قرايتنا نفسها خلّت البرنامج يكتب النص فعلًا
+            # فالرقم زاد. بنوسمه «بتاعنا» عشان المراقب مايسجلش النص المحدد في السجل،
+            # ومنرجّعش الحافظة (لو حد تاني كتب، الكتابة فوقه أخطر من إننا نسيب التحديد)
+            _mark_owned(cur)
             return ""
         if cancel is not None and cancel.is_set():
             return ""                       # M2: اتلغينا بعد الحقن — الرجوع لسه في finally

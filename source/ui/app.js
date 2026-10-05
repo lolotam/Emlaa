@@ -593,13 +593,20 @@ function snipFormReset() {
 let snipChain = Promise.resolve();
 function queueSnippetMutation(mutator) {
   // .catch: لو حفظ فشل، السلسلة متقفش — غير كده كل تعديل بعده كان بيتجاهل بصمت
-  snipChain = snipChain.then(async () => {
+  const done = snipChain.then(async () => {
     const next = mutator([...(S.boot.cfg.snippets || [])]);
-    if (!next) return;
-    S.boot.cfg.snippets = await api().snippets_set(next);
+    if (!next) return false;
+    const r = await api().snippets_set(next);
+    if (!Array.isArray(r)) {                       // رفض من الحفظ (زي مفتاح متكرر)
+      toast((r && r.err) || "مقدرتش أحفظ الاختصارات — جرّب تاني");
+      return false;
+    }
+    S.boot.cfg.snippets = r;
     renderSnippets();
-  }).catch(() => { toast("مقدرتش أحفظ الاختصارات — جرّب تاني"); renderSnippets(); });
-  return snipChain;
+    return true;
+  }).catch(() => { toast("مقدرتش أحفظ الاختصارات — جرّب تاني"); renderSnippets(); return false; });
+  snipChain = done;
+  return done;
 }
 // التعديلات بتمسك الاختصار بمفتاحه (trigger) مش برقم الصف: الطابور بيتنفّذ على القايمة
 // بعد آخر حفظ، فرقم صف اتقرا قبل حذف سابق ممكن يشاور على اختصار تاني خالص
@@ -615,9 +622,11 @@ $("#snipForm").addEventListener("submit", e => {
     if (i >= 0) items[i] = { trigger, text };
     else items.push({ trigger, text });
     return items;
+  }).then(ok => {
+    // الفورم بيتفضّى بس لما الحفظ ينجح — لو اترفض، المستخدم ميخسرش اللي كتبه
+    if (ok) snipFormReset();
+    $("#snipInput").focus();
   });
-  snipFormReset();
-  $("#snipInput").focus();
 });
 $("#snipList").addEventListener("click", e => {
   const row = e.target.closest(".snip-row");
