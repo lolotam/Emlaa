@@ -541,10 +541,20 @@ class TestStripMarkers(unittest.TestCase):
         self.assertEqual(offline._strip_markers("[BLANK_AUDIO]"), "")
 
     def test_arabic_markers_stripped_real_words_kept(self):
-        # whisper بـ-l ar بيكتب العلامة بالعربي — ولازم تتشال زي الإنجليزي
+        # العلامة العربي بتتشال بس لو السطر كله علامات (مقطع سكوت)…
         self.assertEqual(offline._strip_markers("(موسيقى) [صمت]"), "")
-        self.assertEqual(offline._strip_markers("مرحبا (ضحك) بيك"), "مرحبا بيك")
+        self.assertEqual(offline._strip_markers("(موسيقى)\n[صمت]"), "")
+        # …لكن جوّه جملة ممكن تبقى كلام حقيقي: «سمّي الزر (صوت)» = اسم الزرار نفسه
+        self.assertEqual(offline._strip_markers("سمّي الزر (صوت) وخليه جنب الصورة"),
+                         "سمّي الزر (صوت) وخليه جنب الصورة")
         self.assertEqual(offline._strip_markers("اسمه [محمد] بس"), "اسمه [محمد] بس")
+
+    def test_english_marker_inline_removed_and_lines_kept(self):
+        # الإنجليزي عمره ما يبقى كلام عربي حقيقي — بيتشال في أي مكان؛ وفواصل الأسطر
+        # بين مقاطع whisper بتفضل زي ما كانت قبل الفلتر
+        self.assertEqual(offline._strip_markers("مرحبا [BLANK_AUDIO] بيك"), "مرحبا بيك")
+        self.assertEqual(offline._strip_markers("السطر الأول\n(موسيقى)\nالسطر التاني"),
+                         "السطر الأول\nالسطر التاني")
 
     def test_various_markers_all_stripped(self):
         self.assertEqual(offline._strip_markers("[BLANK_AUDIO] (music) *silence* [ Silence ] [no speech]"), "")

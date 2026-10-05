@@ -24,7 +24,9 @@ import providers  # noqa: E402
 # النهائي ييجي من تصنيف الموديل (OTHER → "ar").
 CASES = [
     # كلمات تقنية قوية = "en" أكيد
-    ("ظبط الكود ده", "en"),                       # كود
+    ("ظبط الداتابيز دي", "en"),                   # داتابيز
+    ("اكتب سكريبت إعلان لعطر جديد", None),       # سكريبت ملتبس (إعلان) — للتصنيف
+    ("اكتب رسالة للعملاء فيها كود خصم", None),   # كود ملتبس (خصم) — للتصنيف
     ("عايز ابليكيشن للسوبر ماركت", "en"),          # ابليكيشن (مصري)
     ("اعمل الويب سايت بتاعي", "en"),               # الويب سايت
     ("عايز اتعلم برمجة", "en"),                   # برمجة
@@ -64,7 +66,7 @@ class TestPromptLanguage(unittest.TestCase):
         for text in ("ويبقى الكلام ده بينا", "عايز اتعلم تطوير الذات", "الكوديه دي غريبه"):
             self.assertEqual(smart.prompt_language(text), None, text)
         # الكلمة القوية نفسها بسابقة/لاحقة عادية لسه بتتمسك
-        for text in ("الابليكيشن بتاعي بيقع", "عايز أكواد جاهزة", "وبرمجة"):
+        for text in ("الابليكيشن بتاعي بيقع", "عايز سيرفرات جاهزة", "وبرمجة"):
             self.assertEqual(smart.prompt_language(text), "en", text)
 
     def test_table(self):
@@ -88,7 +90,7 @@ class TestPromptLangClassifier(unittest.TestCase):
 
     def test_strong_case_skips_classifier(self):
         cl, calls = self._client("OTHER")
-        self.assertEqual(cl._prompt_lang("ظبط الكود ده"), "en")
+        self.assertEqual(cl._prompt_lang("ظبط الداتابيز دي"), "en")
         self.assertEqual(calls, [])                    # كلمة قوية = مفيش نداء تصنيف
 
     def test_latin_dominant_skips_classifier(self):
@@ -146,13 +148,13 @@ class TestToPromptDirective(unittest.TestCase):
         self.assertNotIn(providers.PROMPT_OUTPUT_AR, captured[0])
 
     def test_strong_case_skips_classifier(self):
-        # كلمة قوية (كود) = القرار "en" من غير نداء تصنيف، والـdirective إنجليزي
+        # كلمة قوية (داتابيز) = القرار "en" من غير نداء تصنيف، والـdirective إنجليزي
         cl = providers.Client("groq", "test-key")
         captured = []
         classified = []
         cl._chat = lambda system, text, temperature=0.2: captured.append(system) or text
         cl._chat_raw = lambda system, text, temperature=0.0: classified.append(text) or "OTHER"
-        cl.to_prompt("ظبط الكود ده")
+        cl.to_prompt("ظبط الداتابيز دي")
         self.assertEqual(len(captured), 1)
         self.assertEqual(classified, [])
         self.assertIn(providers.PROMPT_OUTPUT_EN, captured[0])
