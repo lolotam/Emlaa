@@ -48,7 +48,9 @@ PROVIDERS = {
         "stt":       "whisper-large-v3-turbo",
         "stt_alt":   ["whisper-large-v3"],
         "chat":      "qwen/qwen3.8-27b",
-        "chat_alt":  ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "allam-2-7b", "llama-3.3-70b-versatile"],
+        # llama-3.3-70b-versatile اتشال من Groq (404) — وقت حد الاستخدام كانت السلسلة كلها
+        # بتخلص عليه والنص يرجع خام. الأربعة دول شغّالين (اتأكدنا من /models 2026-10-05).
+        "chat_alt":  ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "allam-2-7b"],
     },
     "openai": {
         "name":      "OpenAI",
