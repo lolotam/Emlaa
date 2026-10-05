@@ -15,6 +15,7 @@
 من فوق هيتبني دورة استيراد.
 """
 import os
+import re
 import json
 import time
 import hashlib
@@ -514,6 +515,42 @@ def _read_result(out_txt, start):
     return text.strip() or None
 
 
+# ── علامات السكوت في مخرج whisper.cpp (F1) ─────────────────────────────────────
+# whisper.cpp بيرجّع توكنات زي "[BLANK_AUDIO]" أو "(music)" أو "*silence*" للسكوت
+# والضجيج بدل ما يكتب كلام. لو سابناها النص بيتحفظ في السجل ويتنسخ في الحافظة كأنه
+# تفريغ حقيقي. بنشيل التوكن الواقف لوحده بس (مش كلمة جوه جملة) لو محتواه واحد من
+# القايمة دي — بعد تجاهل حالة الحروف والمسافات والـunderscores.
+_NONSPEECH = frozenset({
+    "blankaudio", "silence", "music", "noise", "inaudible",
+    "applause", "laughter", "nospeech", "sound", "backgroundnoise",
+    # whisper بـ-l ar ممكن يكتب العلامة نفسها بالعربي: «(موسيقى)» / «[صمت]»
+    "موسيقى", "موسيقي", "صمت", "سكوت", "ضحك", "تصفيق", "ضوضاء", "صوت", "ضجيج",
+})
+
+_MARKER_RE = re.compile(r"\[[^\[\]\n]*\]|\([^()\n]*\)|\*[^*\n]*\*")
+
+
+def _marker_key(inner):
+    """اسم العلامة من غير حالة الحروف والمسافات والـunderscores — للمطابقة بس."""
+    return "".join(ch for ch in inner.lower() if ch.isalnum())
+
+
+def _strip_markers(text):
+    """
+    بيشيل علامات السكوت اللي واقفة لوحدها من نص whisper.cpp ويلمّ الفراغات.
+    الكلمات الحقيقية جوه الأقواس (مش في قايمة العلامات) بتفضل زي ما هي.
+    """
+    s = text or ""
+    if not s:
+        return s
+
+    def _drop(m):
+        tok = m.group(0)
+        return " " if _marker_key(tok[1:-1]) in _NONSPEECH else tok
+
+    return re.sub(r"\s+", " ", _MARKER_RE.sub(_drop, s)).strip()
+
+
 def transcribe(wav, language):
     """
     بيفرّغ wav بالموديل المثبّت ويرجّع النص. الملف المؤقت في temp وبيمسح دايمًا
@@ -572,4 +609,6 @@ def transcribe(wav, language):
 
     if text is None:
         raise RuntimeError("التفريغ offline رجّع نص فاضي")
-    return text
+    # F1: بنشيل علامات السكوت بعد التفريغ — لو الناتج فضى بعدها (whisper سمع
+    # سكوت/ضجيج بس) بنرجع "" مش نرمي، وApp.process هيقول للمستخدم «مطلعش نص».
+    return _strip_markers(text)

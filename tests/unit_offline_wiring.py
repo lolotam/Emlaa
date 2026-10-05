@@ -408,5 +408,32 @@ class TestClassicKeylessSave(unittest.TestCase):
         wk.assert_not_called()
 
 
+class TestOfflineSilenceMarkers(unittest.TestCase):
+    """F1: offline بيرجّع "" لما whisper يسمع سكوت/علامات بس — process يعرض «مطلعش نص»
+    من غير سجل ولا حافظة ولا handoff في الوضع العادي والترجمة."""
+
+    def test_normal_marker_only_shows_no_text_without_history_or_clipboard(self):
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", offline_text="")
+        app.process("WAV", core.Operation(mode="normal"))
+        m["paste"].assert_not_called()
+        m["history"].assert_not_called()
+        m["clip"].assert_not_called()
+        self.assertEqual(app.texts, [])
+        self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
+
+    def test_translate_marker_only_shows_no_text_without_handoff(self):
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", offline_text="")
+        app.process("WAV", core.Operation(mode="translate"))
+        m["paste"].assert_not_called()
+        m["history"].assert_not_called()
+        m["clip"].assert_not_called()
+        self.assertEqual(app.unplaced, [])
+        self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
+
+
 if __name__ == "__main__":
     unittest.main()

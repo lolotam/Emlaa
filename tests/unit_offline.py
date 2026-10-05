@@ -535,6 +535,59 @@ class TestTranscribe(_BaseCase):
                 offline.transcribe("w.wav", "ar")
 
 
+# ── F1: علامات السكوت في مخرج whisper.cpp ─────────────────────────────────────
+class TestStripMarkers(unittest.TestCase):
+    def test_marker_only_returns_empty(self):
+        self.assertEqual(offline._strip_markers("[BLANK_AUDIO]"), "")
+
+    def test_arabic_markers_stripped_real_words_kept(self):
+        # whisper بـ-l ar بيكتب العلامة بالعربي — ولازم تتشال زي الإنجليزي
+        self.assertEqual(offline._strip_markers("(موسيقى) [صمت]"), "")
+        self.assertEqual(offline._strip_markers("مرحبا (ضحك) بيك"), "مرحبا بيك")
+        self.assertEqual(offline._strip_markers("اسمه [محمد] بس"), "اسمه [محمد] بس")
+
+    def test_various_markers_all_stripped(self):
+        self.assertEqual(offline._strip_markers("[BLANK_AUDIO] (music) *silence* [ Silence ] [no speech]"), "")
+
+    def test_mixed_text_keeps_real_words(self):
+        self.assertEqual(offline._strip_markers("Hello [BLANK_AUDIO] world"), "Hello world")
+
+    def test_unknown_bracketed_words_kept(self):
+        self.assertEqual(offline._strip_markers("[دليل المستخدم]"), "[دليل المستخدم]")
+
+    def test_case_and_underscore_ignored(self):
+        self.assertEqual(offline._strip_markers("[Blank_Audio] [MUSIC]"), "")
+
+    def test_whitespace_collapsed(self):
+        self.assertEqual(offline._strip_markers("  a    [music]   b  "), "a b")
+
+
+class TestTranscribeMarkers(_BaseCase):
+    def _run_writing(self, text, returncode=0, raise_=None):
+        """fake لـoffline._run: بيكتب .txt عند out_base وبيرجّع returncode (أو بيرمي)."""
+        seen = {}
+
+        def _run(cmd, timeout=None):
+            out_base = cmd[cmd.index("-of") + 1]
+            seen["out_base"] = out_base
+            if raise_ is not None:
+                raise raise_
+            with open(out_base + ".txt", "w", encoding="utf-8") as f:
+                f.write(text)
+            return SimpleNamespace(returncode=returncode)
+
+        return _run, seen
+
+    def test_marker_only_output_returns_empty_not_raises(self):
+        # whisper اشتغل كويس (exit 0) بس سمع سكوت/ضجيج بس — لازم يرجّع "" مش يرمي
+        self._install("base")
+        fake_run, seen = self._run_writing("[BLANK_AUDIO] (music)")
+        with mock.patch.object(offline, "_run", fake_run):
+            text = offline.transcribe("w.wav", "ar")
+        self.assertEqual(text, "")
+        self.assertFalse(os.path.exists(seen["out_base"] + ".txt"))
+
+
 # ── فحص بصمة الحزمة (Task 20) ─────────────────────────────────────────────────
 class TestVerify(_BaseCase):
     def test_verify_match_is_cached(self):
