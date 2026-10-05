@@ -271,6 +271,15 @@ class TestPasteText(unittest.TestCase):
         self.assertFalse(ttype.called)
         self.assertFalse(cv.called)
 
+    def test_handoff_clipboard_failure_is_clip_failed(self):
+        # L3: handoff مع حافظة فاشلة = مفيش حاجة وصلت للمستخدم → clip_failed
+        # (مش "handoff" عشان process ميعلنش "done" فوقها)
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy", side_effect=RuntimeError("no clip")), \
+                mock.patch.object(core, "log_error"):
+            self.assertEqual(core.paste_text("hello", ("gui", "handoff", "hello")),
+                             "clip_failed")
+
     def test_secure_handoff_never_copies(self):
         # مسار دفاعي (مش بيرجع من insert_target): حتى لو جات، الحافظة تصل
         with self.patch_cfg(), \

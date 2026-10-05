@@ -644,6 +644,32 @@ class TestProcessDoneState(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.events[-1], ("done", "normal"))
 
+    def test_secure_auto_paste_off_publishes_err(self):
+        # L2: خانة آمنة + auto_paste مقفول = مفيش كتابة ولا نسخ — لازم رسالة
+        # خطأ بدل ما الواجهة تفضل واقفة على "work".
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        cfg = dict(core.DEFAULTS)
+        cfg["auto_paste"] = False
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", cfg), \
+                mock.patch("winput.focused_info",
+                           return_value={"is_password": True, "class": "Edit",
+                                         "editable": True}), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add") as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "paste_text") as paste:
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.events[-1],
+                         ("err", "الكتابة التلقائية مقفولة — خانة الباسورد مينفعش أنسخ لها"))
+        paste.assert_not_called()
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertFalse(app.busy)
+
 
 def _cfg(**over):
     """إعدادات وهمية لوحدات F2 — عشان الاختبار ميعتمدش على config.json الحقيقي."""
@@ -966,6 +992,80 @@ class TestSecurePrivacy(unittest.TestCase):
                 mock.patch.object(core, "paste_text", return_value="placed"):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(order, ["focused", "transcribe", "focused"])
+
+
+class TestProbePrivacy(unittest.TestCase):
+    """L1 (خصوصية): حالة «باسورد؟» بتتقرا من لحظة التسجيل (begin/end) على ثريد
+    دايمون — ومبتخفّضش أبدًا طول عمر العملية."""
+
+    def test_probe_begin_password_refuses_when_focus_moved(self):
+        # probe["begin"]=True (باسورد وقت التسجيل) وبعدين الفوكس كله عادي —
+        # مفيش موديل ولا سجل ولا حافظة ولا صوت، ورفض بخطأ الحركة.
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        op = core.Operation(mode="normal")
+        op.probe["begin"] = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add") as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "paste_text") as paste:
+            app.process("WAV", op)
+        self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للباسورد")
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        paste.assert_not_called()
+        self.assertEqual(app.texts, [])
+        self.assertEqual(app.events[-1],
+                         ("err", "الفوكس اتنقل من خانة الباسورد — مكتبتش حاجة"))
+
+    def test_probe_end_password_refuses_when_focus_moved(self):
+        # probe["end"]=True (باسورد لحظة الإيقاف) وبعدين الفوكس عادي — نفس الرفض.
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        op = core.Operation(mode="normal")
+        op.probe["end"] = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add") as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "paste_text") as paste:
+            app.process("WAV", op)
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        paste.assert_not_called()
+        self.assertEqual(app.events[-1],
+                         ("err", "الفوكس اتنقل من خانة الباسورد — مكتبتش حاجة"))
+
+    def test_begin_probe_runs_off_calling_thread(self):
+        # قراية «باسورد؟» في begin() لازم تحصل على ثريد دايمون مش على ثريد
+        # اللي نادى begin — UI Automation بيقدر يسدّ والـlistener لازم يفضل سريع.
+        app = make_app()
+        caller = threading.get_ident()
+        seen = []
+        done = threading.Event()
+
+        def focused():
+            seen.append(threading.get_ident())
+            done.set()
+            return GUI_FOCUS
+
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.focused_info", side_effect=focused):
+            app.begin("normal")
+        self.assertTrue(done.wait(1), "ثريد البروب ما قراش الفوكس")
+        self.assertEqual(len(seen), 1, "قراية الفوكس حصلت أكتر من مرة")
+        self.assertNotEqual(seen[0], caller, "البروب اشتغل على ثريد اللي نادى begin")
 
 
 class TestHistoryBypassFlag(unittest.TestCase):

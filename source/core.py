@@ -21,7 +21,7 @@ import wave
 import tempfile
 import threading
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # ── شهادات SSL جوّه الـexe ───────────────────────────────────────────────────
 # نثبّت مسار حزمة certifi كمتغيّر بيئة كمان — عشان أي نداء HTTPS بمكتبة
@@ -866,7 +866,10 @@ def paste_text(text, target=None):
         # مفيش حقن: ننسخ للمستخدم والواجهة تعرضه — غير الخانة الآمنة:
         # دي عمرها ماتوصل للحافظة
         if cls != "secure":
-            _copy_to_clipboard(inj)
+            # L3: لو نشر الحافظة فشل مفيش حاجة وصلت للمستخدم — منرجعش "handoff"
+            # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
+            if not _copy_to_clipboard(inj):
+                return "clip_failed"
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
     if cls == "secure":
@@ -888,6 +891,26 @@ def paste_text(text, target=None):
     return "handoff"
 
 
+def _probe_password(probe, key):
+    """
+    L1 (خصوصية): قراية «الخانة باسورد؟» على ثريد دايمون منفصل — UI Automation
+    بيقدر يسدّ ثواني، فممن نحبس بيه ثريد الـlistener (pynput لازم يفضل سريع)
+    ولا ثريد الواجهة. النتيجة بتتحفظ في probe[key] من لحظة النداء، والثريد نفسه
+    بيتسجّل في probe["threads"] عشان process يستناه ويرجع لحالة الخانة الحقيقية.
+    """
+    def run():
+        try:
+            import winput
+            info = winput.focused_info()
+            probe[key] = info.get("is_password") is True
+        except Exception:
+            probe[key] = False
+
+    t = threading.Thread(target=run, daemon=True)
+    probe.setdefault("threads", []).append(t)
+    t.start()
+
+
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Operation:
@@ -906,6 +929,10 @@ class Operation:
     runtime_id: tuple = ()
     selection: str = ""
     selection_hash: str = ""
+    # L1 (خصوصية): حامل متغيّر للـprobe — الـdict نفسه mutable رغم إن العملية
+    # frozen. فيه probe["begin"/"end"] (نتيجة قراية «باسورد؟» على ثريد دايمون)
+    # وprobe["threads"] (الثريدين اللي قرؤوا عشان process يستناهم).
+    probe: dict = field(default_factory=dict, compare=False)
 
 
 class App:
@@ -983,6 +1010,10 @@ class App:
             self.active_mode = mode
             op = Operation(mode=mode, target_app=target_app)
             self._op = op
+        # L1 (خصوصية): نقرا «باسورد؟» على ثريد دايمون من لحظة الحجز — عشان
+        # process يرجع لحالة الخانة وقت التسجيل نفسه، مش وقت بداية التفريغ
+        # (الفوكس ممكن يكون اتنقل في النص، وكلمة السر عمرها ما تضيع حمايتها).
+        _probe_password(op.probe, "begin")
         # فتح الميك جوه القفل كان بيقعد فيه: لو الجهاز اتفصل والستريم بيأخد
         # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
@@ -1030,6 +1061,10 @@ class App:
             self.busy = True
             op = self._op
             self._op = None
+        # L1 (خصوصية): نقرا «باسورد؟» كمان لحظة الإيقاف — قبل الصفارة ما توقف
+        # الريكوردر — عشان لو المستخدم كان واقف في خانة باسورد وقت ما وقّف.
+        if op is not None:
+            _probe_password(op.probe, "end")
         beep(500, 90)
         try:
             wav = self.rec.stop()
@@ -1070,10 +1105,22 @@ class App:
             # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
             # والوقت اللي التسجيل لسه واقف عليها. لو باسورد، نصها عمره ما يوصل
             # للموديل ولا يتعدّل (بيتكتب زي ما اتفرّغ).
+            # L1: نستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
+            # (أقصى ثانية واحدة في الإجمالي) — القراية هنا وحدها مش كفاية لأن
+            # الفوكس ممكن يكون اتنقل بين وقت التسجيل وبداية التفريغ.
+            probe = getattr(op, "probe", {})
+            deadline = time.time() + 1.0
+            for t in probe.get("threads") or ():
+                left = deadline - time.time()
+                if left > 0:
+                    t.join(left)
             import winput
             info = winput.focused_info()
             info["exe"] = _foreground_app()
-            early_secure = info.get("is_password") is True
+            # أي واحد (begin أو end أو القراية الحالية) شاف باسورد = العملية
+            # محمية طول عمرها — مش بنخفّضها أبدًا.
+            early_secure = (probe.get("begin") is True or probe.get("end") is True
+                            or info.get("is_password") is True)
             self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
                 with wave.open(wav, "rb") as w:
@@ -1153,6 +1200,11 @@ class App:
                     self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
                 elif not secure and res in ("failed", "handoff"):
                     self.on_unplaced(out)
+            else:
+                # L2: خانة آمنة واللزق التلقائي مقفول — مفيش كتابة ولا نسخ (الحافظة
+                # ممن توصلها الباسورد)، فالمستخدم لازم يكتبها بنفسه. من غير الرسالة
+                # دي الواجهة كانت بتفضل واقفة على "work".
+                self.on_state("err", "الكتابة التلقائية مقفولة — خانة الباسورد مينفعش أنسخ لها")
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
             # "done" بس لما النتيجة انكتبت أو اتسلّمت للمستخدم. «clip_failed» ناشر
