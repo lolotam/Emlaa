@@ -69,6 +69,14 @@ class TestPromptLanguage(unittest.TestCase):
         for text in ("الابليكيشن بتاعي بيقع", "عايز سيرفرات جاهزة", "وبرمجة"):
             self.assertEqual(smart.prompt_language(text), "en", text)
 
+    def test_contacts_and_links_do_not_count_as_english(self):
+        # العنوان/اللينك مش لغة الطلب — طلب عربي عادي فيه إيميل يروح للتصنيف مش "en"
+        for text in ("اكتب رسالة إلى support@example.com", "ابعت اللينك ده https://api.example.com/app لأمي",
+                     "اكتب تهنئة لـ @mohamed_ahmed_official"):
+            self.assertIsNone(smart.prompt_language(text), text)
+        # والطلب الإنجليزي فعلًا لسه "en" حتى لو فيه إيميل
+        self.assertEqual(smart.prompt_language("write a thank-you note to support@example.com"), "en")
+
     def test_table(self):
         for text, expected in CASES:
             self.assertEqual(smart.prompt_language(text), expected, text)

@@ -582,6 +582,10 @@ _LATIN_TECH_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(t) for t in TECH_LATIN_TERMS) + r")\b", re.I)
 
 
+# معرّفات مش كلام: إيميل، لينك، دومين بـwww، @حساب
+_IDENTIFIER_RE = re.compile(r"\S+@\S+|https?://\S+|www\.\S+|@\w+")
+
+
 def latin_dominant(text):
     """حروف لاتينية أكتر من عربي — بيستخدم في فحص لغة مخرج البرومبت (F2)."""
     s = str(text or "")
@@ -607,10 +611,14 @@ def prompt_language(text):
         return "ar"
     if _TECH_ARABIC_RE.search(normalize(s)):
         return "en"
-    lower = s.lower()
+    # إيميل أو لينك أو @حساب جوّه طلب عربي مش لغة الطلب: «اكتب رسالة إلى
+    # support@example.com» كانت حروف العنوان بتغلب الطلب، و«api»/«app» جوّه لينك
+    # كانت بتتحسب مصطلح تقني — فبنشيلهم قبل فحوص اللاتيني
+    bare = _IDENTIFIER_RE.sub(" ", s)
+    lower = bare.lower()
     if _LATIN_TECH_RE.search(lower) or any(p in lower for p in TECH_LATIN_PHRASES):
         return "en"
-    if latin_dominant(s):
+    if latin_dominant(bare):
         return "en"
     return None
 
