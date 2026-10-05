@@ -588,10 +588,15 @@ _LATIN_TECH_RE = re.compile(
 _IDENTIFIER_RE = re.compile(r"\S+@\S+|https?://\S+|www\.\S+|@\w+")
 
 
+def _is_ar_letter(c):
+    """حرف عربي فعلًا (فئة L) — مش رقم هندي ولا ، ؛ ؟ من نفس النطاق."""
+    return bool(_AR_LETTER.fullmatch(c)) and unicodedata.category(c).startswith("L")
+
+
 def latin_dominant(text):
     """حروف لاتينية أكتر من عربي — بيستخدم في فحص لغة مخرج البرومبت (F2)."""
     s = str(text or "")
-    ar = sum(1 for c in s if _AR_LETTER.fullmatch(c))
+    ar = sum(1 for c in s if _is_ar_letter(c))
     la = sum(1 for c in s if c.isascii() and c.isalpha())
     return la > ar
 
@@ -614,7 +619,7 @@ def prompt_language(text):
     # و TypeScript» حروفها اللاتيني أكتر بس هي طلب عربي (كتابة) — لازم توصل للتصنيف.
     # وبنشيل الإيميل/اللينك/@الحساب الأول عشان مايعدّوش كلام.
     bare = _IDENTIFIER_RE.sub(" ", s)
-    if not _AR_LETTER.search(bare) and latin_dominant(bare):
+    if not any(_is_ar_letter(c) for c in bare) and latin_dominant(bare):
         return "en"
     return None
 

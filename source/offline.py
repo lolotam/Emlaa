@@ -547,7 +547,13 @@ def _strip_line(line):
     if toks and not _MARKER_RE.sub("", line).strip() and all(
             _marker_key(t[1:-1]) in _NONSPEECH_AR for t in toks):
         return ""                      # السطر كله علامة عربي = مقطع سكوت
-    return re.sub(r"[ \t]+", " ", line).strip()
+    line = re.sub(r"[ \t]+", " ", line).strip()
+    # «[صمت].» / «[BLANK_AUDIO].»: لو مفضلش غير ترقيم بعد شيل العلامات = مفيش كلام
+    if not any(ch.isalnum() for ch in _MARKER_RE.sub("", line)):
+        toks = _MARKER_RE.findall(line)
+        if all(_marker_key(t[1:-1]) in _NONSPEECH_AR | _NONSPEECH_EN for t in toks):
+            return ""
+    return line
 
 
 def _strip_markers(text):

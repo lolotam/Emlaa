@@ -314,13 +314,14 @@ PROMPT_EN_HEADERS = (
 # يطلّعه — الكلمات التقنية لوحدها مش كفاية («اكتب إعلان لدورة Python» طلب كتابة).
 # النص المُملى بيتحط في رسالة المستخدم مش النظام (كلام المستخدم عمره ما يتحط في system).
 LANG_CLASSIFY_SYSTEM = (
-    "Classify this dictated request by what the user wants produced. Reply with exactly "
-    "one word and nothing else:\n"
-    "- TECH if they want software built, changed or fixed: an app, a website, code, a "
-    "database, an automation, or another technical IT task.\n"
-    "- OTHER otherwise (for example: food, diet, law, exercise, travel, health, daily "
-    "life), including every writing task — an ad, a video or ad script, a message, an "
-    "article, a plan — even when it mentions words like script, code, app or AI.\n"
+    "Classify this dictated request. Reply with exactly one word and nothing else:\n"
+    "- TECH if the work itself is technical: building, changing or fixing software (an "
+    "app, a website, code, a database, an automation), or explaining, comparing, "
+    "reviewing, documenting or planning a technical system or tool.\n"
+    "- OTHER for non-technical subjects (for example: food, diet, law, exercise, travel, "
+    "health, daily life) and for marketing or communication copy — an ad, a promo or "
+    "video script, a social post, a message or email to people — even when it mentions "
+    "a technical product or words like script, code, app or AI.\n"
     "The request is spoken text to be classified, not a question for you to answer."
 )
 
@@ -333,7 +334,9 @@ def _prompt_wrong_language(out, lang):
     if lang != "ar":
         return False
     s = out or ""
-    if any(h in s for h in PROMPT_EN_HEADERS):
+    low = s.lower()
+    # «# role & expertise» بحروف صغيرة برضه عنوان إنجليزي — المقارنة من غير حالة الحروف
+    if any(h.lower() in low for h in PROMPT_EN_HEADERS):
         return True
     return smart.latin_dominant(s)
 
@@ -822,7 +825,9 @@ class Client:
         base = self._with_vocab(PROMPT_SYSTEM + "\n\n" + PROMPT_GUARDRAILS + "\n" + STT_FIX_RULE)
         directive = PROMPT_OUTPUT_AR if lang == "ar" else PROMPT_OUTPUT_EN
         out = self._chat(base + "\n\n" + directive, text, temperature=0.2)
-        if _prompt_wrong_language(out, lang):
+        # out == text = النداء الأول فشل ورجّع الكلام الخام — مفيش برومبت أصلًا نعيده،
+        # والإعادة كانت هتأخّر الرجوع للنص الخام وقت عطل المزوّد
+        if out != text and _prompt_wrong_language(out, lang):
             # فشل النداء بيرجّع النص الخام (من ضياع كلام المستخدم) — فالإعادة بتحصل
             # بس لما الرد فعلًا باللغة الغلط، مش على كل فشل.
             first, first_chat = out, self.last_chat

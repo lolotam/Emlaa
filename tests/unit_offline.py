@@ -556,6 +556,11 @@ class TestStripMarkers(unittest.TestCase):
         self.assertEqual(offline._strip_markers("السطر الأول\n(موسيقى)\nالسطر التاني"),
                          "السطر الأول\nالسطر التاني")
 
+    def test_marker_with_trailing_punctuation_is_silence(self):
+        for t in ("[صمت].", "[BLANK_AUDIO].", "(موسيقى)…"):
+            self.assertEqual(offline._strip_markers(t), "", t)
+        self.assertEqual(offline._strip_markers("تمام."), "تمام.")
+
     def test_various_markers_all_stripped(self):
         self.assertEqual(offline._strip_markers("[BLANK_AUDIO] (music) *silence* [ Silence ] [no speech]"), "")
 

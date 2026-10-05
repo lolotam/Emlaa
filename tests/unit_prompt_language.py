@@ -34,6 +34,8 @@ ARABIC_OR_MIXED = [
     "اكتب إعلان لدورة JavaScript و TypeScript",
 ]
 ENGLISH = [
+    # أرقام هندية وعلامات ؟ من نفس النطاق العربي مش حروف — الطلب لسه إنجليزي
+    "write a thank-you note for ٢٠٢٦", "hello؟؟؟؟؟؟",
     "Need a React app for my store", "build a docker container for me",
     "write a short bio for my LinkedIn", "write a thank-you note to support@example.com",
 ]
@@ -188,6 +190,31 @@ class TestToPromptRetry(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(out, first)
         self.assertEqual(cl.last_chat, ("Groq", "m1"))
+
+    def test_lowercase_english_headers_trigger_the_retry(self):
+        cl = providers.Client("groq", "test-key")
+        calls = []
+        first = "# role & expertise\nخبير تسويق بخبرة طويلة في الإعلانات والحملات\n# الهدف\nنص عربي طويل"
+
+        def fake_chat(system, text, temperature=0.2):
+            calls.append(system)
+            return first if len(calls) == 1 else "# الدور والخبرة\nخبير"
+
+        cl._chat = fake_chat
+        with mock.patch.object(smart, "prompt_language", return_value="ar"):
+            cl.to_prompt("اكتب رسالة شكر لمديري")
+        self.assertEqual(len(calls), 2)
+
+    def test_no_retry_when_the_first_call_failed(self):
+        # _chat رجّع الكلام الخام (عطل) — مفيش برومبت نعيده؛ نرجع للنص الخام على طول
+        cl = providers.Client("groq", "test-key")
+        dictated = "اكتب رسالة فيها API و SDK و JSON و OAuth و webhook"
+        calls = []
+        cl._chat = lambda system, text, temperature=0.2: calls.append(system) or text
+        with mock.patch.object(smart, "prompt_language", return_value="ar"):
+            out = cl.to_prompt(dictated)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out, dictated)
 
     def test_en_never_retries(self):
         cl = providers.Client("groq", "test-key")
