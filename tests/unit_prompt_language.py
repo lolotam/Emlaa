@@ -30,6 +30,8 @@ ARABIC_OR_MIXED = [
     # الإيميل واللينك والحساب مش لغة الطلب — العنوان مايغلبش الطلب العربي
     "اكتب رسالة إلى support@example.com", "ابعت اللينك ده https://api.example.com/app لأمي",
     "اكتب تهنئة لـ @mohamed_ahmed_official",
+    # لاتيني أكتر من العربي بس فيه طلب عربي — مخلوط، مش «إنجليزي»
+    "اكتب إعلان لدورة JavaScript و TypeScript",
 ]
 ENGLISH = [
     "Need a React app for my store", "build a docker container for me",

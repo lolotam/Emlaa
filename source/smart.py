@@ -599,7 +599,8 @@ def latin_dominant(text):
 def prompt_language(text):
     """
     القرار المحلي للغة برومبت الطلب: "en" | "ar" | None (F2).
-      • "en" لو الطلب نفسه إنجليزي — أغلب حروفه لاتيني بعد شيل الإيميلات واللينكات.
+      • "en" لو الطلب نفسه إنجليزي — مفيش فيه حرف عربي وأغلبه لاتيني (بعد شيل
+        الإيميلات واللينكات).
       • "ar" للنص الفاضي بس.
       • None لأي طلب عربي أو مخلوط: القرار هنا بيتاخد من الموديل (providers._prompt_lang
         بيسأل TECH/OTHER حسب اللي المستخدم عايز يطلّعه). الكلمات التقنية مبتقررش
@@ -609,9 +610,11 @@ def prompt_language(text):
     s = str(text or "")
     if not s.strip():
         return "ar"
-    # إيميل أو لينك أو @حساب جوّه طلب عربي مش لغة الطلب: «اكتب رسالة إلى
-    # support@example.com» كانت حروف العنوان بتغلب الطلب
-    if latin_dominant(_IDENTIFIER_RE.sub(" ", s)):
+    # الطريق المختصر للإنجليزي بس لو مفيش ولا حرف عربي: «اكتب إعلان لدورة JavaScript
+    # و TypeScript» حروفها اللاتيني أكتر بس هي طلب عربي (كتابة) — لازم توصل للتصنيف.
+    # وبنشيل الإيميل/اللينك/@الحساب الأول عشان مايعدّوش كلام.
+    bare = _IDENTIFIER_RE.sub(" ", s)
+    if not _AR_LETTER.search(bare) and latin_dominant(bare):
         return "en"
     return None
 
