@@ -44,9 +44,14 @@ _SKIP_DLL = ("sdl2.dll",)
 
 CREATE_NO_WINDOW = 0x08000000   # عشان مفيش نافذة console تخطف لمّا الـCLI يشتغل
 TRANSCRIBE_TIMEOUT = 120        # ثواني — أقصى وقت لتفريغ مقطع واحد
+DOWNLOAD_TIMEOUT = 30           # ثواني — مهلة الاتصال/القراية لكل urlopen (نت متوقّف = نرفض بدل ما نعلّق للأبد)
 
 # قفل واحد بيرتّب التنزيل/المسح/التفريغ — كلهم بيلمسوا نفس الملفات
 _lock = threading.Lock()
+
+# قفل تاني للتنزيل بس: بيمسك عمليّة التنزيل كلها (من أول تنظيف الـstaging لحد الـcommit)
+# عشان تنزيلين ميشبّكوش فوق بعض — بس من غير ما يوقّف التفريغ والمسح (اللي واخدين _lock).
+_dl_lock = threading.Lock()
 
 # الاختبارات بتحط opener مزيّف هنا عشان التنزيل يمشي من غير شبكة
 _opener = None
@@ -76,7 +81,7 @@ def _open(url):
         return _opener(url)
     # core (اللي استوردناه في _dirs قبل التنزيل) بيحط SSL_CERT_FILE=certifi،
     # فالـurlopen العادي بيلاقي الشهادات جوّه الـexe
-    return urllib.request.urlopen(url)
+    return urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT)
 
 
 # ── المثبّت دلوقتي ────────────────────────────────────────────────────────────
@@ -202,7 +207,7 @@ def download(model, progress=None):
     model_url, model_sha, model_size = MODELS[model]
     total = WHISPER_CPP_SIZE + model_size
 
-    with _lock:
+    with _dl_lock:
         bin_dir, model_dir, staging, manifest_path = _dirs()
         os.makedirs(staging, exist_ok=True)
         _clear_staging(staging)
@@ -210,6 +215,8 @@ def download(model, progress=None):
 
         try:
             # الموديل الأول (الثقيل) وبعدين الـbin — عشان progress يمشي بالتتابع
+            # التنزيل والفك والفحص بيشتغلوا من غير _lock: التفريغ (transcribe)
+            # والمسح (remove) بياخدوا _lock، فمش لازم يستنّوا تنزيل 150–190 MB.
             model_file = os.path.join(staging, model + ".bin")
             _stream_download(model_url, model_file, model_sha, model_size,
                              progress, 0, total)
@@ -228,37 +235,40 @@ def download(model, progress=None):
             if progress:
                 progress(1.0)
 
-            # ننقل للمكان الحقيقي: bin وmodels، من غير ما نلمس الملفات القديمة غير بعد النجاح
-            os.makedirs(bin_dir, exist_ok=True)
-            os.makedirs(model_dir, exist_ok=True)
-            old_files = _manifest_files(manifest_path)
-            # المانيڨست بيتكتب آخر حاجة، بمسارات نسبية من جذر offline وأحجام حقيقية —
-            # للملفات اللي نقلناها بس، مش لأي حاجة قديمة قاعدة في bin
-            files = {}
-            for name in os.listdir(staging):
-                src = os.path.join(staging, name)
-                if not os.path.isfile(src):
-                    continue
-                if name == model + ".bin":
-                    rel = "models/" + name
-                elif name in ("whisper-cli.exe",) or name.lower().endswith(".dll"):
-                    rel = "bin/" + name
-                else:
-                    continue
-                dst = os.path.join(os.path.dirname(manifest_path), rel)
-                os.replace(src, dst)
-                files[rel] = os.path.getsize(dst)
+            # الـcommit بس (نقل الملفات + المانيڨست + مسح القديم) جوه _lock —
+            # هنا بنلمس bin/ وmodels/ الحقيقية، فمينفعش يبقى تنزيل/مسح فوق بعض.
+            with _lock:
+                # ننقل للمكان الحقيقي: bin وmodels، من غير ما نلمس الملفات القديمة غير بعد النجاح
+                os.makedirs(bin_dir, exist_ok=True)
+                os.makedirs(model_dir, exist_ok=True)
+                old_files = _manifest_files(manifest_path)
+                # المانيڨست بيتكتب آخر حاجة، بمسارات نسبية من جذر offline وأحجام حقيقية —
+                # للملفات اللي نقلناها بس، مش لأي حاجة قديمة قاعدة في bin
+                files = {}
+                for name in os.listdir(staging):
+                    src = os.path.join(staging, name)
+                    if not os.path.isfile(src):
+                        continue
+                    if name == model + ".bin":
+                        rel = "models/" + name
+                    elif name in ("whisper-cli.exe",) or name.lower().endswith(".dll"):
+                        rel = "bin/" + name
+                    else:
+                        continue
+                    dst = os.path.join(os.path.dirname(manifest_path), rel)
+                    os.replace(src, dst)
+                    files[rel] = os.path.getsize(dst)
 
-            manifest = {"model": model, "version": WHISPER_CPP_VERSION, "files": files}
-            tmp = manifest_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, manifest_path)
-            # بعد ما التثبيت الجديد اتثبّت: الموديل التاني (150–190 MB) وأي ملف من
-            # التثبيت القديم مش في الجديد كانوا هيفضلوا يتامى — remove() مش بيشوفهم
-            stale = set(old_files) - set(files)
-            stale |= {"models/" + m + ".bin" for m in MODELS if m != model}
-            _remove_inside(os.path.dirname(manifest_path), stale)
+                manifest = {"model": model, "version": WHISPER_CPP_VERSION, "files": files}
+                tmp = manifest_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(manifest, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, manifest_path)
+                # بعد ما التثبيت الجديد اتثبّت: الموديل التاني (150–190 MB) وأي ملف من
+                # التثبيت القديم مش في الجديد كانوا هيفضلوا يتامى — remove() مش بيشوفهم
+                stale = set(old_files) - set(files)
+                stale |= {"models/" + m + ".bin" for m in MODELS if m != model}
+                _remove_inside(os.path.dirname(manifest_path), stale)
         except Exception:
             _clear_staging(staging)
             raise
@@ -300,7 +310,13 @@ def remove():
                 os.remove(p)
             except OSError:
                 pass
-        _clear_staging(staging)
+        # الـstaging بتاع تنزيل شغّال مينفعش يتلمس — بنمسحه بس لو قدرنا ناخد _dl_lock
+        # من غير استنى (يعني مفيش تنزيل في النص). لو فشلنا فيه تنزيل شغّال: نسيب الـstaging.
+        if _dl_lock.acquire(blocking=False):
+            try:
+                _clear_staging(staging)
+            finally:
+                _dl_lock.release()
 
 
 # ── التفريغ ───────────────────────────────────────────────────────────────────

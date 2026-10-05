@@ -14,8 +14,10 @@ import zipfile
 import subprocess
 import tempfile
 import time
+import threading
 import unittest
 import urllib.error
+import http.client
 from types import SimpleNamespace
 from unittest import mock
 
@@ -515,6 +517,16 @@ class TestProviderNetworkMapping(unittest.TestCase):
                 with self.assertRaises(providers.NetworkError):
                     cl._gemini_transcribe(wav, "ar")
 
+    def test_deepgram_incomplete_read_raises_network_error(self):
+        # القراية قاطعة في النص (IncompleteRead) = قطع اتصال → NetworkError
+        cl = providers.Client("deepgram", "test-key")
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = _wav(tmp)
+            with mock.patch("urllib.request.urlopen",
+                            side_effect=http.client.IncompleteRead(b"x", 10)):
+                with self.assertRaises(providers.NetworkError):
+                    cl._deepgram_request(wav, "ar")
+
     def test_oa_transcribe_maps_connection_error(self):
         import openai
         import httpx
@@ -581,11 +593,130 @@ class TestIsNetworkError(unittest.TestCase):
         e = urllib.error.HTTPError("https://x", 401, "x", {}, io.BytesIO(b"{}"))
         self.assertFalse(smart.is_network_error(e))
 
+    def test_incomplete_read_true(self):
+        self.assertTrue(smart.is_network_error(http.client.IncompleteRead(b"x", 10)))
+
+    def test_remote_disconnected_true(self):
+        self.assertTrue(smart.is_network_error(http.client.RemoteDisconnected("x")))
+
     def test_runtime_error_false(self):
         self.assertFalse(smart.is_network_error(RuntimeError("x")))
 
     def test_value_error_false(self):
         self.assertFalse(smart.is_network_error(ValueError("x")))
+
+
+# ── P1: التنزيل ميمنعش التفريغ والمسح ─────────────────────────────────────────
+class _BlockingOpener:
+    """opener بيعمل block على الموديل URL لحد ما نسيب release — لمحاكاة تنزيل معلّق."""
+
+    def __init__(self, block_url):
+        self.block_url = block_url
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, url):
+        if url == self.block_url:
+            # علامة جوّه الـstaging عشان نتحقق إن remove() ممسحهاش وهو التنزيل شغّال
+            import core
+            staging = os.path.join(core.BASE, "offline", ".staging")
+            os.makedirs(staging, exist_ok=True)
+            with open(os.path.join(staging, "marker.tmp"), "wb") as f:
+                f.write(b"x")
+            self.started.set()
+            self.release.wait()
+            raise urllib.error.URLError("اتلغى التنزيل")
+        return io.BytesIO(b"")
+
+
+class TestDownloadLocking(_BaseCase):
+    def _patches(self, opener):
+        # "base" لازم يفضل في MODELS عشان installed() (الموديل المثبّت بتاع transcribe)
+        # يرجّع اسمه — غير كده التثبيت اللي بنعمله بـ_install("base") بيتشاف مش معروف.
+        models = {
+            "test-model": (MODEL_URL, _sha256(MODEL_BYTES), len(MODEL_BYTES)),
+            "base": (MODEL_URL, _sha256(MODEL_BYTES), len(MODEL_BYTES)),
+        }
+        return (
+            mock.patch.object(offline, "MODELS", models),
+            mock.patch.object(offline, "WHISPER_CPP_URL", ZIP_URL),
+            mock.patch.object(offline, "WHISPER_CPP_SHA256", _sha256(ZIP_BYTES)),
+            mock.patch.object(offline, "WHISPER_CPP_SIZE", len(ZIP_BYTES)),
+            mock.patch.object(offline, "_opener", opener),
+        )
+
+    def _fake_run(self, cmd, timeout=None):
+        out_base = cmd[cmd.index("-of") + 1]
+        with open(out_base + ".txt", "w", encoding="utf-8") as f:
+            f.write("النص")
+        return SimpleNamespace(returncode=0)
+
+    def _start_blocked_download(self, opener):
+        """بيشغّل download في ثريد، ويستنى لحد ما الـopener يوصل للـblock، ويرجّع الثريد."""
+
+        def _run_download():
+            try:
+                offline.download("test-model")
+            except urllib.error.URLError:
+                pass    # المتوقع: الـopener بيرمي بعد ما نسيبه
+
+        t = threading.Thread(target=_run_download)
+        t.daemon = True
+        # لو assertion فشل التنزيل لازم يتساب برضه — غير كده الاختبار اللي بعده بيعلّق على اللوك
+        self.addCleanup(t.join, 5)
+        self.addCleanup(opener.release.set)
+        t.start()
+        self.assertTrue(opener.started.wait(5), "التنزيل ماعملش block في الـopener")
+        return t
+
+    def test_transcribe_and_remove_not_blocked_by_download(self):
+        self._install("base")
+        opener = _BlockingOpener(MODEL_URL)
+        p1, p2, p3, p4, p5 = self._patches(opener)
+        with p1, p2, p3, p4, p5, mock.patch.object(offline, "_run", self._fake_run):
+            t = self._start_blocked_download(opener)
+
+            result = {}
+
+            def worker():
+                try:
+                    result["text"] = offline.transcribe("w.wav", "ar")
+                    offline.remove()
+                except Exception as e:      # pragma: no cover
+                    result["err"] = e
+
+            w = threading.Thread(target=worker)
+            w.start()
+            w.join(5)
+            self.assertFalse(w.is_alive(), "transcribe/remove استنّوا التنزيل")
+            self.assertNotIn("err", result)
+            self.assertEqual(result["text"], "النص")
+            opener.release.set()
+            t.join(5)
+
+    def test_remove_does_not_clear_staging_of_active_download(self):
+        self._install("base")
+        opener = _BlockingOpener(MODEL_URL)
+        p1, p2, p3, p4, p5 = self._patches(opener)
+        with p1, p2, p3, p4, p5:
+            t = self._start_blocked_download(opener)
+            r = threading.Thread(target=offline.remove, daemon=True)
+            r.start()
+            r.join(5)
+            self.assertFalse(r.is_alive(), "remove استنّى التنزيل")
+            staging = os.path.join(core.BASE, "offline", ".staging")
+            self.assertTrue(os.path.isdir(staging), "remove مسح staging بتاع تنزيل شغّال")
+            self.assertTrue(os.path.exists(os.path.join(staging, "marker.tmp")))
+            opener.release.set()
+            t.join(5)
+
+
+class TestOpenTimeout(unittest.TestCase):
+    def test_open_passes_download_timeout(self):
+        with mock.patch.object(offline, "_opener", None), \
+                mock.patch("urllib.request.urlopen") as uo:
+            offline._open("https://x/y")
+        uo.assert_called_once_with("https://x/y", timeout=offline.DOWNLOAD_TIMEOUT)
 
 
 if __name__ == "__main__":

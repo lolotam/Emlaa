@@ -15,6 +15,7 @@
 import re
 import socket
 import difflib
+import http.client
 import unicodedata
 import urllib.error
 
@@ -563,7 +564,9 @@ def is_network_error(err):
     بيرجّع True لـ:
       • providers.NetworkError (بنعرّفه بسمة is_network، من غير استيراد providers
         عشان smart يفضل نقي ومفيش دورة استيراد).
-      • ConnectionError / TimeoutError / socket.timeout (رفض اتصال أو مهلة).
+      • ConnectionError / TimeoutError / socket.timeout (رفض اتصال أو مهلة) —
+        ومنهم http.client.RemoteDisconnected (فئة فرعية من ConnectionResetError).
+      • http.client.IncompleteRead (السيرفر قفل قبل Content-Length المعلن).
       • urllib.error.URLError من غير حالة HTTP — ده DNS/رفض، مش رد جه بـstatus.
     HTTP status (401/429…) وأي خطأ تاني بيرجّع False — دي مشكلة مفتاح أو حد
     مش نت، وليها رسالة تانية.
@@ -573,6 +576,11 @@ def is_network_error(err):
     if getattr(err, "is_network", False):
         return True
     if isinstance(err, (ConnectionError, TimeoutError, socket.timeout)):
+        # RemoteDisconnected جوّه ConnectionError أصلًا (فئة فرعية من ConnectionResetError)
+        return True
+    # IncompleteRead: السيرفر قال Content-Length وقفل قبل ما يبعت الكل — النص ناقص،
+    # وده قطع اتصال مش رد سليم.
+    if isinstance(err, http.client.IncompleteRead):
         return True
     # URLError بيحتوي HTTPError كمان — اللي ليه .code/.status معناه رد وصل، مش شبكة
     if isinstance(err, urllib.error.URLError) and not isinstance(err, urllib.error.HTTPError):
