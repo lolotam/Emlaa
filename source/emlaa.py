@@ -23,7 +23,7 @@ import core
 import providers
 import winput
 
-APP_VERSION = "1.10"
+APP_VERSION = "1.11"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
