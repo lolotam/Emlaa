@@ -1133,6 +1133,10 @@ class App:
             self.recording = True
             self.active_mode = mode
             op = Operation(mode=mode, target_app=target_app)
+            if mode == "edit":
+                # حدث الإلغاء بيتعمل قبل ما العملية تتنشر: cancel() اللي ييجي قبل ما العامل
+                # يبدأ لازم يلاقيه، وإلا الأسر كان بيبدأ ويحقن Ctrl+C في اللي بعده
+                op.probe["cancel"] = threading.Event()
             self._op = op
         if mode == "edit":
             # F6: أسر التحديد (UIA/الحافظة) بيقدر يسدّ ثواني، فمينفعش يحصل على ثريد
@@ -1212,8 +1216,11 @@ class App:
         # محلي — عشان end()/cancel() يقدروا يقفلوه فورًا ويبطلوا أسر معلق في UIA،
         # مش بس بعد الـjoin بتاع الـ1.5 ثانية. برضه M2: بيوصل لجوّه الأسر — لو
         # فاضت الميزانية أو العملية بقت قديمة، ثريد الأسر بيبطل قبل ما يلمس الحافظة.
-        cancel = threading.Event()
-        op.probe["cancel"] = cancel
+        cancel = op.probe.setdefault("cancel", threading.Event())
+        with self._state_lock:
+            current = self.recording and self._op is op
+        if cancel.is_set() or not current:
+            return                                 # اتلغى قبل ما الأسر يبدأ — منلمسش حاجة
         captured = {}
 
         def _capture():

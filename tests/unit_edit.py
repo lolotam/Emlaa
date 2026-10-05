@@ -522,3 +522,29 @@ class TestSaveSettingsHotkey(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEditCancelBeforeWorker(unittest.TestCase):
+    def test_cancel_before_worker_starts_means_no_capture(self):
+        # cancel() بييجي قبل ما العامل يبدأ: الحدث لازم يكون موجود ساعتها والأسر ميبدأش خالص
+        app = make_app()
+        started = threading.Event()
+        real_thread = threading.Thread
+        held = []
+
+        class HeldThread(real_thread):
+            def start(self):
+                held.append(self)               # نأجّل بداية العامل لحد بعد cancel()
+
+        with mock.patch.object(core, "beep"), mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.capture_target", side_effect=lambda **k: started.set()) as capture, \
+                mock.patch.object(core.threading, "Thread", HeldThread):
+            app.begin("edit")
+            app.cancel()
+            for t in held:
+                real_thread.start(t)
+            for t in held:
+                t.join(2)
+        capture.assert_not_called()
+        self.assertFalse(app.recording)

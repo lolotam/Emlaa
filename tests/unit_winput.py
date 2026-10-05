@@ -466,7 +466,7 @@ class TestCaptureTarget(unittest.TestCase):
                                   return_value="from-clip") as fallback:
             out = winput.capture_target()
         self.assertEqual(out["selection"], "from-clip")
-        fallback.assert_called_once_with(None)
+        fallback.assert_called_once_with(None, (1, (9,)))   # بالهوية اللي اتأسرت
         self.assertNotIn("_uia_unsupported", out)
 
     def test_uia_empty_selection_never_injects_ctrl_c(self):
@@ -654,3 +654,28 @@ class TestOwnedClipSeqs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFallbackBoundToCapturedTarget(unittest.TestCase):
+    """لو الفوكس اتنقل وقت انتظار الموديفايرز، Ctrl+C كان هينسخ تحديد مستند تاني."""
+
+    def _run(self, fg_hwnd, focused_rid):
+        el = FakeElement(runtime_id=list(focused_rid), texts=[], class_name="Edit")
+        with mock.patch.object(winput, "_clipboard_safe_for_text", return_value=True), \
+                mock.patch.object(winput, "wait_modifiers_released", return_value=True), \
+                mock.patch.object(winput, "foreground_hwnd", return_value=fg_hwnd), \
+                mock.patch.object(winput, "_focused_element", return_value=el), \
+                mock.patch.object(winput, "_read_clipboard_text", return_value="old"), \
+                mock.patch.object(winput, "copy_selection", return_value=True) as copy:
+            out = winput._selection_via_clipboard(None, (10, (1, 2)))
+        return out, copy
+
+    def test_window_changed_during_wait_never_copies(self):
+        out, copy = self._run(fg_hwnd=99, focused_rid=(1, 2))
+        self.assertEqual(out, "")
+        copy.assert_not_called()
+
+    def test_element_changed_during_wait_never_copies(self):
+        out, copy = self._run(fg_hwnd=10, focused_rid=(7, 7))
+        self.assertEqual(out, "")
+        copy.assert_not_called()

@@ -515,19 +515,34 @@ def _wait_clipboard_change(seq_before, timeout=0.5):
     return None
 
 
-def _selection_via_clipboard(cancel=None):
+def _still_focused(hwnd, runtime_id):
+    """النافذة المقدمة (والعنصر المركّز لو معروف) لسه هما اللي اتأسروا؟"""
+    if foreground_hwnd() != int(hwnd or 0):
+        return False
+    if runtime_id:
+        el = _focused_element()
+        if el is None or _runtime_id(el) != tuple(runtime_id):
+            return False
+    return True
+
+
+def _selection_via_clipboard(cancel=None, expect=None):
     """
     الخطة البديلة لأسر التحديد (من غير UIA): نحفظ نص الحافظة، نحقن Ctrl+C، نقرا النص
     الجديد، ونرجّع النص القديم — بس لو الحافظة لسه «بتاعتنا» (نفس رقم التسلسل اللي
     عملناه): لو المستخدم نسخ حاجة في النص، نسخته الأحدث متتمسحش (R1 #7).
     بنرجع '' من غير ما نلمس الحافظة لو فيها محتوى غير نصي، أو لو مفيش حاجة اتنسخت.
     cancel = Event الإلغاء (M2): لو اتسيت، منحقنش Ctrl+C ومنرجّعش الحافظة.
+    expect = (hwnd, runtime_id) اللي اتأسروا: لو الفوكس اتنقل وقت انتظار الموديفايرز،
+    Ctrl+C كان هينسخ تحديد مستند تاني ويتنسب للهدف الأول — فبنرفض.
     """
     if cancel is not None and cancel.is_set():
         return ""
     if not _clipboard_safe_for_text():
         return ""
     if not wait_modifiers_released():
+        return ""
+    if expect is not None and not _still_focused(*expect):
         return ""
     # M3: نسجل الحافظة القديمة بعد ما الموديفايرز تتساب — لو المستخدم لسه ماسك
     # وساب بعد كده، القيمة دي هي اللي نرجعها (مش قيمة أقدم من وقت الدوسة).
@@ -639,7 +654,7 @@ def capture_target(cancel=None):
             allow_fallback = True
     try:
         if not out["selection"] and allow_fallback:
-            out["selection"] = _selection_via_clipboard(cancel)
+            out["selection"] = _selection_via_clipboard(cancel, (out["hwnd"], out["runtime_id"]))
     except Exception as e:
         try:
             import core
