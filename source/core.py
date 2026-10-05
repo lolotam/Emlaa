@@ -36,6 +36,7 @@ except Exception:
 
 import providers
 import smart     # القرارات النقية (تخطّي الردود القصيرة F2…) — core بيستورد smart، مش العكس
+import offline   # F9: تفريغ من غير إنترنت — مسار بديل من غير مفتاح ولا شبكة (بيتستورد core جوّه دواله بس)
 
 # ── مسار البيانات ────────────────────────────────────────────────────────────
 # لما يبقى .exe مبنيّ بـPyInstaller، __file__ بيبقى فولدر مؤقت — فبنستخدم
@@ -120,6 +121,8 @@ DEFAULTS = {
     "mode":              "toggle",  # ضغطة تبدأ وضغطة توقف (hold = امسك واتكلم)
     "mic":               "",
     "language":          "ar",
+    "offline_mode":      "fallback",  # F9: "fallback" = لما النت يقطع بس · "always" = دايمًا من غير شبكة
+    "offline_model":     "",          # آخر موديل offline اختاره المستخدم في الإعدادات
     "polish":            True,
     "bypass_short":      True,    # ردود قصيرة من القايمة → من غير لفة LLM خالص (F2)
     "bypass_max_words":  3,       # حد عدد الكلمات اللي بيتسمح التخطّي فيه
@@ -1352,19 +1355,47 @@ class App:
                     dur = w.getnframes() / float(w.getframerate())
             except Exception:
                 dur = None
-            cl = self.client()
-            cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-            # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
-            # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
-            cl.vocab_extra = [str(s.get("trigger") or "").strip()
-                              for s in (CFG.get("snippets") or [])
-                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
             # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
             # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
             lang = None if cur_mode == "translate" else CFG.get("language", "ar")
-            text = cl.transcribe(wav, lang)
+            # F9: مسار offline — "always" بيفرّغ من غير ما نبني Client خالص (من غير مفتاح)،
+            # و"fallback" بيرجع للموديل المحلي بس لو النت وقع والموديل مثبّت.
+            # N1: "always" = وضع خصوصية — الصوت عمره ما يروح لأي مزوّد. لو الموديل
+            # مش متثبّت منبنيش Client ولا ننادي مزوّد، نرفض على طول (من غير سجل/حافظة).
+            offline_used = False
+            offline_model = None
+            if CFG.get("offline_mode") == "always":
+                if not offline.installed():
+                    self.on_state("err", "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات")
+                    return
+                offline_used = True
+                offline_model = offline.installed()
+                text = offline.transcribe(wav, lang)
+            else:
+                cl = self.client()
+                cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+                # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
+                # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
+                cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                                  for s in (CFG.get("snippets") or [])
+                                  if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+                try:
+                    text = cl.transcribe(wav, lang)
+                except Exception as e:
+                    if smart.is_network_error(e) and offline.installed():
+                        offline_used = True
+                        offline_model = offline.installed()
+                        text = offline.transcribe(wav, lang)
+                    else:
+                        raise
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
+                return
+            # بعد تفريغ offline الموديل (LLM) عمره ما بيتنادي. البرومبت والترجمة محتاجين نت
+            # فبيتسلّموا للمستخدم؛ العادي بيكمّل في نفس مسار الكتابة تحت بالنص الخام —
+            # عشان قواعد الباسورد والحقن والسجل تفضل في مكان واحد
+            if offline_used and cur_mode != "normal":
+                self._offline_handoff(wav, op, text, dur, offline_model, early_secure)
                 return
 
             bypass = False
@@ -1376,6 +1407,11 @@ class App:
                 # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
                 # يندسّ في خانة باسورد.
                 out = text
+            elif offline_used:
+                # offline (الوضع العادي بس — البرومبت/الترجمة اتسلّموا فوق): مفيش لفة
+                # موديل، بس توسيع الاختصار محلي بالكامل فبيشتغل زي ما هو أونلاين
+                snippet = smart.match_snippet(text, CFG.get("snippets"))
+                out = snippet.get("text", "") if snippet is not None else text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
@@ -1425,7 +1461,7 @@ class App:
             # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
             # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
             if (cur_mode == "normal" and CFG.get("polish", True)
-                    and snippet is None
+                    and snippet is None and not offline_used
                     and not smart.is_dev_app(op.target_app, CFG)
                     and target[0] not in ("terminal", "secure")):
                 out = smart.fix_mixed(out)
@@ -1435,7 +1471,10 @@ class App:
                 # F8: في السجل النتيجة بتظهر «[اختصار] <المفتاح>» — مش نص الاختصار
                 # الكامل — عشان المستخدم يعرف إن اللي اتكتب ده كان اختصار مش إملاء.
                 history_result = ("[اختصار] " + str(snippet.get("trigger") or "")) if snippet is not None else out
-                rid = history_add(cur_mode, text, history_result, dur, engine=cl.engine(),
+                # engine بعد نداء الموديل — غير كده السجل مايعرفش موديل التنضيف
+                engine = ({"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
+                          if offline_used else cl.engine())
+                rid = history_add(cur_mode, text, history_result, dur, engine=engine,
                                   bypass=bypass, app=op.target_app)
                 self.on_text(out)
             res = None
@@ -1459,7 +1498,7 @@ class App:
             # "err" فوق فمينفعش يتغطى بـ"done". الخانة الآمنة لو الكتابة فشلت: "err"
             # من غير "done" — مفيش حافظة تلزق منها، المستخدم لازم يكتبها بنفسه.
             if res == "placed" or res == "handoff" or (not secure and res == "failed"):
-                self.on_state("done", cur_mode)
+                self.on_state("done", "اتفرّغ من غير إنترنت (من غير تحسين)" if offline_used else cur_mode)
             elif secure and res == "failed":
                 self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:
@@ -1471,6 +1510,30 @@ class App:
                 os.remove(wav)
             except Exception:
                 pass
+
+    def _offline_handoff(self, wav, op, text, dur, offline_model, early_secure):
+        """
+        F9: برومبت/ترجمة بعد تفريغ offline — التحويل نفسه محتاج نت، فالنص الخام بيتنسخ
+        وبيتعرض بدل ما يتكتب. من غير خانات الباسورد: نصها عمره ما يروح للحافظة ولا السجل.
+        """
+        if early_secure:
+            self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
+            return
+        # N2: فحص أخير للفوكس قبل أي نسخ/عرض/سجل — نفس قراية process المتأخرة.
+        # الفوكس ممكن يكون اتنقل لخانة باسورد بعد التفريغ، فنرفض من غير ما نلمس حاجة.
+        import winput
+        if winput.focused_info().get("is_password") is True:
+            self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
+            return
+        engine = {"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
+        cur_mode = op.mode
+        if _copy_to_clipboard(text):
+            self.on_unplaced(text)
+        else:
+            self.on_state("err", "مقدرتش أنسخ النص — جرّب تاني")
+            return
+        history_add(cur_mode, text, text, dur, engine=engine, app=op.target_app)
+        self.on_state("done", "اتفرّغ بس — التحويل محتاج إنترنت")
 
     def _process_edit(self, wav, op):
         """
@@ -1486,6 +1549,11 @@ class App:
         if _probe_password_seen(op):
             self.on_state("err", "مينفعش تعديل خانة باسورد")
             return
+        # F9/N1: التعديل في المكان بيحتاج الموديل (LLM) — وضع offline دايمًا مينفعش
+        # معاه سواء الموديل متثبّت ولا لأ: مينفعش نبني Client ولا ننادي أي مزوّد.
+        if CFG.get("offline_mode") == "always":
+            self.on_state("err", "التعديل محتاج إنترنت")
+            return
         cl = self.client()
         cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
         cl.vocab_extra = [str(s.get("trigger") or "").strip()
@@ -1496,7 +1564,15 @@ class App:
                 dur = w.getnframes() / float(w.getframerate())
         except Exception:
             dur = None
-        instruction = cl.transcribe(wav, CFG.get("language", "ar"))
+        try:
+            instruction = cl.transcribe(wav, CFG.get("language", "ar"))
+        except Exception as e:
+            # F9: النت وقع والموديل المحلي موجود — التفريغ ممكن يتعمل، بس التعديل
+            # نفسه محتاج الموديل، فنرفض من غير ما نلمس التحديد ولا نحقن حاجة.
+            if smart.is_network_error(e) and offline.installed():
+                self.on_state("err", "التعديل محتاج إنترنت")
+                return
+            raise
         if not instruction:
             self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
             return
@@ -1726,6 +1802,12 @@ def friendly_error(e):
         return "التسجيل طويل أوي — سجّل مقطع أقصر"
     if "500" in s or "502" in s or "503" in s or "overload" in s or "unavailable" in s:
         return "سيرفر المزوّد مضغوط دلوقتي — جرّب بعد شوية"
+    # F9: خطأ شبكة حقيقي (DNS/اتصال/مهلة) — لو الموديل المحلي مش مثبّت بنقترح عليه تنزيله
+    if smart.is_network_error(e):
+        msg = "مفيش اتصال بالنت — اتأكد من الاتصال وجرّب تاني"
+        if not offline.installed():
+            msg += chr(10) + "تقدر تنزّل التفريغ من غير إنترنت من الإعدادات"
+        return msg
     if "connect" in s or "timeout" in s or "timed out" in s or "urlopen" in s or "network" in s:
         return "مفيش اتصال بالنت — اتأكد من الاتصال وجرّب تاني"
 

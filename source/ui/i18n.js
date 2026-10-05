@@ -110,9 +110,23 @@ const EN = {
   "حفظ الإعدادات": "Save settings", "بحفظ…": "Saving…", "بتأكد من المفتاح…": "Checking the key…",
   "اتحفظ ✓ — التغييرات شغّالة دلوقتي": "Saved ✓ — changes are live", "كل وضع لازم يبقى ليه زرار مختلف": "Each mode needs a different key",
   "✓ المفتاح محفوظ": "✓ Key saved", "مفيش مفتاح": "No key",
+  // ── التفريغ من غير إنترنت (F9) ──
+  "التفريغ من غير إنترنت": "Offline transcription",
+  "الحالة": "Status", "الموديل مش متثبّت": "Model not installed",
+  "إزالة الموديل": "Remove model",
+  "الأصغر أسرع والأكبر أدق": "Smaller is faster, bigger is more accurate",
+  "تنزيل الموديل": "Download model", "تنزيل": "Download",
+  "بيتنزّل مرة واحدة ويتخزّن على جهازك": "Downloads once and is stored on your device",
+  "وضع التفريغ": "Transcription mode",
+  "إمتى تستخدم التفريغ المحلي": "When to use local transcription",
+  "لما النت يقطع بس": "Only when the internet drops",
+  "دايمًا — الصوت مايطلعش من الجهاز": "Always — audio never leaves this device",
+  "أسرع وأقل دقة": "Faster, less accurate", "أدق — موصى بيه": "More accurate — recommended",
+  "اتنزّل ✓": "Downloaded ✓", "اتشال الموديل": "Model removed", "مقدرتش أنزّل الموديل": "Couldn't download the model",
   // ── أول مرة ──
   "أهلاً بيك في إملاء": "Welcome to Emlaa", "اختار مزوّد التفريغ وحط مفتاحه — خطوة واحدة وتبدأ تتكلم.": "Pick a transcription provider and paste its key — one step and you're talking.",
   "الصق المفتاح هنا": "Paste the key here", "تأكيد وابدأ": "Confirm and start", "الصق المفتاح الأول": "Paste the key first",
+  "استخدمه من غير إنترنت ومن غير مفتاح": "Use it offline and without a key",
   "تمام — دوس على زرار التسجيل واتكلم": "All set — press record and speak",
   // ── تنبيهات ──
   "اتنسخ ✓": "Copied ✓", "مقدرتش أنسخ": "Couldn't copy", "المحرّك لسه بيجهز…": "The engine is still starting…",
@@ -122,6 +136,8 @@ const EN = {
   "مشكلة في قراية الصوت — جرّب تاني": "Couldn't read the audio — try again",
   "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف": "Recording was too short — speak a little, then stop",
   "اتلغى التسجيل": "Recording cancelled",
+  "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت": "Can't copy password-field text — the conversion needs the internet",
+  "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات": "Offline transcription isn't installed — download it from Settings",
   "مقدرتش أحفظ الاختصارات — جرّب تاني": "Couldn't save the snippets — try again",
   "مطلعش نص — قرّب من الميك وجرّب تاني": "No text came out — move closer to the mic and try again",
   "مقدرتش أكتب النص ولا أنسخه — جرّب تاني": "Couldn't type or copy the text — try again",
@@ -137,6 +153,13 @@ const EN = {
   "التسجيل طويل أوي — سجّل مقطع أقصر": "Recording too long — record a shorter clip",
   "سيرفر المزوّد مضغوط دلوقتي — جرّب بعد شوية": "The provider is overloaded — try again shortly",
   "مفيش اتصال بالنت — اتأكد من الاتصال وجرّب تاني": "No internet connection — check it and try again",
+  "تقدر تنزّل التفريغ من غير إنترنت من الإعدادات": "You can download offline transcription from Settings",
+  "اتفرّغ من غير إنترنت (من غير تحسين)": "Transcribed offline (no polishing)",
+  "اتفرّغ بس — التحويل محتاج إنترنت": "Transcribed only — converting needs internet",
+  "التعديل محتاج إنترنت": "Editing needs internet",
+  "مقدرتش أنسخ النص — جرّب تاني": "Couldn't copy the text — try again",
+  "فيه تنزيل شغّال دلوقتي": "A download is already running",
+  "موديل offline مش معروف": "Unknown offline model",
 };
 
 /* نصوص فيها أرقام بتتكتب من الكود */
@@ -161,6 +184,8 @@ const EN_PATTERNS = [
   [/^هاته من (.+)$/, "Get it from $1"],
   [/^(.+) بيفرّغ بس — التنظيف والبرومبت والترجمة هيشتغلوا بمفتاح (.+)$/, "$1 only transcribes — cleanup, prompt and translate will use your $2 key"],
   [/^(.+) بيفرّغ بس — ضيف مفتاح Groq أو Gemini كمان عشان التنظيف والبرومبت والترجمة يشتغلوا$/, "$1 only transcribes — add a Groq or Gemini key too so cleanup, prompt and translate work"],
+  [/^مثبّت: (.+)، ([\d.]+) MB$/, "Installed: $1, $2 MB"],
+  [/^(.+?) ≈ ([\d.]+) MB — (.+)$/, (m, id, size, label) => `${id} ≈ ${size} MB — ${tr(label)}`],
 ];
 
 /* أسماء وأوصاف المزوّدين (جاية من Python) */

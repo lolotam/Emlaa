@@ -115,6 +115,23 @@ class FakeEditClient:
         return self.result
 
 
+def _join_new_threads(before, timeout=5.0):
+    """
+    بيستنى كل ثريد اتبدأ بعد before — جوّه الترقيعات. غير كده ثريد الأسر/process
+    بيكمّل بعد ما الاختبار يخلص وينادي UIA والحافظة والكيبورد الحقيقيين.
+    """
+    alive = []
+    for t in threading.enumerate():
+        if t not in before and t is not threading.current_thread():
+            t.join(timeout)
+            if t.is_alive():
+                alive.append(t.name)
+    # ثريد لسه شغّال بعد المهلة هيكمّل على الـAPIs الحقيقية لما الترقيعات تتفك —
+    # نفشل الاختبار وإحنا لسه جوّه الترقيعات بدل ما نسيبه يهرب
+    if alive:
+        raise AssertionError("ثريدات لسه شغّالة بعد الاختبار: %s" % ", ".join(alive))
+
+
 GUI_FOCUS = {"is_password": False, "class": "Edit", "editable": True}
 
 
@@ -369,10 +386,12 @@ class TestBeginEdit(unittest.TestCase):
                 mock.patch("winput.capture_target",
                            return_value={"hwnd": 1, "runtime_id": (1,), "class": "Edit",
                                          "selection": "", "selection_hash": ""}):
+            before = set(threading.enumerate())
             app.begin("edit")
-        elapsed = time.time() - t0
+            elapsed = time.time() - t0
+            self.assertTrue(_wait_until(lambda: not app.recording, 3))
+            _join_new_threads(before)
         self.assertLess(elapsed, 0.2, "begin لازم يرجع فورًا من غير ما يستنى الأسر")
-        self.assertTrue(_wait_until(lambda: not app.recording, 3))
         self.assertEqual(app.rec.started, 0)
         self.assertIn(("err", "حدّد النص اللي عايز تعدّله الأول"), app.events)
 
@@ -422,11 +441,13 @@ class TestBeginEdit(unittest.TestCase):
                 mock.patch("winput.capture_target",
                            return_value={"hwnd": 7, "runtime_id": (3,), "class": "Edit",
                                          "selection": "نص محدد", "selection_hash": "abc"}):
+            before = set(threading.enumerate())
             app.begin("edit")
             self.assertTrue(_wait_until(lambda: app._op is not None and "cancel" in app._op.probe, 3))
-        op = app._op
-        self.assertIsInstance(op.probe.get("cancel"), threading.Event)
-        app.cancel()
+            op = app._op
+            self.assertIsInstance(op.probe.get("cancel"), threading.Event)
+            app.cancel()
+            _join_new_threads(before)
         self.assertTrue(op.probe["cancel"].is_set(), "cancel() لازم يقفل حدث الأسر")
 
     def test_end_sets_capture_cancel_event(self):
@@ -441,10 +462,12 @@ class TestBeginEdit(unittest.TestCase):
                            return_value={"hwnd": 7, "runtime_id": (3,), "class": "Edit",
                                          "selection": "نص محدد", "selection_hash": "abc"}), \
                 mock.patch("winput.focused_info", return_value=GUI_FOCUS):
+            before = set(threading.enumerate())
             app.begin("edit")
             self.assertTrue(_wait_until(lambda: app._op is not None and "cancel" in app._op.probe, 3))
             op = app._op
             app.end()
+            _join_new_threads(before)
         self.assertTrue(op.probe["cancel"].is_set(), "end() لازم يقفل حدث الأسر")
 
 
@@ -465,7 +488,7 @@ class TestSameTarget(unittest.TestCase):
 
     def test_hwnd_mismatch(self):
         import winput
-        with mock.patch.object(winput, "foreground_hwnd", return_value=8):
+        with mock.patch.object(winput, "foreground_hwnd", return_value=8),                 mock.patch.object(winput, "_focused_element", return_value=None):
             self.assertFalse(winput.same_target(self._op()))
 
     def test_runtime_id_mismatch(self):

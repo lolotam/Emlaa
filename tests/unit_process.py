@@ -21,6 +21,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import core  # noqa: E402
 
 
+# ترقيعات على مستوى الموديول (الاختبار اللي محتاج قيمة تانية بيرقّع فوقها): الاختبارات
+# عمرها ما تلمس الصوت ولا UI Automation الحقيقيين — begin()/cancel() بيصفّروا بـ
+# winsound.Beep، وعلى جهاز CI من غير كارت صوت ومن غير ديسكتوب حقيقي النداءات دي ممكن
+# تعلّق الـrun كله. واللوج بيروح لملف مؤقت مش emlaa-error.log الحقيقي.
+_module_patches = []
+
+
+def setUpModule():
+    tmp = tempfile.mkdtemp(prefix="emlaa_unit_process_")
+    # begin()/end() بيشغّلوا ثريدات بروب الباسورد اللي بتنادي winput.focused_info —
+    # من غير الترقيعة دي كانت بتنادي UI Automation الحقيقي على ديسكتوب الـCI
+    import winput
+    for p in (mock.patch.object(core, "beep"),
+              mock.patch.object(core, "ERR_LOG", os.path.join(tmp, "emlaa-error.log")),
+              mock.patch.object(core, "_foreground_app", return_value=""),
+              mock.patch.object(winput, "focused_info",
+                                return_value={"is_password": False, "class": "Edit", "editable": True})):
+        p.start()
+        _module_patches.append(p)
+
+
+def tearDownModule():
+    while _module_patches:
+        _module_patches.pop().stop()
+
+
 class StubRec:
     """ميكروفون وهمي: بيسجّل كل دعوة عشان الاختبار يتأكد مين بدأ ومين وقف."""
 

@@ -18,9 +18,11 @@ const S = {
   clipLimit: 200,
   provider: null,
   snipEditKey: null,
+  offline: null,
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
+const OFFLINE_MODEL_LABEL = { base: "أسرع وأقل دقة", "small-q5_1": "أدق — موصى بيه" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
   translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
@@ -101,7 +103,7 @@ async function setTheme(pref) {
 /* ═══════════ التنقل ═══════════ */
 function go(page) {
   if (!S.boot) return;
-  if (!S.boot.hasKey && page !== "welcome") page = "welcome";
+  if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.go === page));
@@ -769,6 +771,61 @@ function collectStyles() {
   });
   return out;
 }
+/* ── التفريغ من غير إنترنت (F9) ── */
+// keepForm: تحديث الحالة بس (بعد تنزيل/إزالة) — اختيار الوضع/الموديل اللي المستخدم
+// لسه ماحفظهوش بيفضل زي ما هو؛ غير كده «دايمًا» كان بيرجع «احتياطي» من غير ما يحس
+function renderOffline(keepForm) {
+  const o = S.offline;
+  if (!o) return;
+  const packaged = !!(S.boot.offline && S.boot.offline.packaged);
+  $("#offlineHead").hidden = packaged;
+  $("#offlineBox").hidden = packaged;
+  if (packaged) return;
+  const installed = o.installed;
+  const sz = installed ? ((o.models || []).find(m => m.id === installed) || {}).size : null;
+  $("#offlineStatus").textContent = installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت";
+  $("#offlineRemove").disabled = !installed && !o.residual;
+  const prevModel = $("#offlineModel").value, prevMode = $("#offlineMode").value;
+  $("#offlineModel").innerHTML = (o.models || []).map(m =>
+    `<option value="${esc(m.id)}">${esc(m.id)} ≈ ${m.size} MB — ${OFFLINE_MODEL_LABEL[m.id] || ""}</option>`).join("");
+  if (keepForm && prevMode) {
+    if ((o.models || []).some(m => m.id === prevModel)) $("#offlineModel").value = prevModel;
+    $("#offlineMode").value = prevMode;
+    return;
+  }
+  $("#offlineModel").value = (o.model && (o.models || []).some(m => m.id === o.model)) ? o.model : (installed || "small-q5_1");
+  $("#offlineMode").value = o.mode === "always" ? "always" : "fallback";
+}
+async function refreshOffline(keepForm) {
+  S.offline = await api().offline_status();
+  renderOffline(keepForm);
+}
+function setOfflineDownloading(on) {
+  $("#offlineDownload").disabled = on;
+  $("#offlineBar").hidden = !on;
+  $("#offlineBar i").style.width = "0%";
+  $("#offlineDownloadNote").textContent = on ? "بينزّل… 0%" : "بيتنزّل مرة واحدة ويتخزّن على جهازك";
+}
+$("#offlineDownload").addEventListener("click", async () => {
+  const model = $("#offlineModel").value;
+  // حالة «بينزّل» قبل النداء: onOfflineDone ممكن يوصل قبل ما الـpromise يرجع (فشل
+  // فوري)، ولو علّمناها بعده كان الزرار بيفضل مقفول للأبد ومفيش حدث تاني جاي
+  setOfflineDownloading(true);
+  let r;
+  try {
+    r = await api().offline_download(model);
+  } catch (e) {
+    r = { ok: false };
+  }
+  if (!r.ok) { setOfflineDownloading(false); toast(r.err || "مقدرتش أنزّل الموديل"); }
+});
+$("#offlineRemove").addEventListener("click", async () => {
+  await api().offline_remove();
+  refreshOffline(true);
+  refreshBoot();          // وضع «دايمًا» من غير مفتاح: من غير الموديل البرنامج مبقاش يقدر يشتغل
+  toast("اتشال الموديل");
+});
+
 function fillSettings() {
   const c = S.boot.cfg;
   S.provider = c.provider;
@@ -812,6 +869,7 @@ function fillSettings() {
   renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
+  refreshOffline();
 }
 $("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
@@ -856,6 +914,7 @@ $("#saveBtn").addEventListener("click", async () => {
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
+    offline_mode: $("#offlineMode").value, offline_model: $("#offlineModel").value,
   });
   btn.disabled = false;
   if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
@@ -874,6 +933,8 @@ function fillWelcome() {
   const hint = () => { $("#welHint").textContent = curProv().keyHint; renderGuide($("#welGuide")); };
   provCards($("#welProviders"), hint);
   hint();
+  // نسخة الـStore: مفيش تفريغ من غير إنترنت — بنخبّي الزرار زي قسم الـoffline
+  $("#welOffline").hidden = !!(S.boot.offline && S.boot.offline.packaged);
 }
 $("#welGetKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#welGo").addEventListener("click", async () => {
@@ -891,6 +952,13 @@ $("#welGo").addEventListener("click", async () => {
   applyBoot();
   go("home");
   toast("تمام — دوس على زرار التسجيل واتكلم");
+});
+$("#welOffline").addEventListener("click", () => {
+  go("settings");
+  requestAnimationFrame(() => {
+    const el = $("#offlineHead");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 });
 
 /* ═══════════ الشريط الجانبي والنافذة ═══════════ */
@@ -966,6 +1034,11 @@ function updFail(err) {
   $("#updGo").textContent = "جرّب تاني";
 }
 
+async function refreshBoot() {
+  S.boot = await api().bootstrap();
+  applyBoot();
+}
+
 function applyBoot() {
   const b = S.boot;
   applyTheme(b.cfg.theme || "dark");
@@ -976,10 +1049,11 @@ function applyBoot() {
   $("#promoName").textContent = b.brand.name;
   $("#promo").dataset.url = b.brand.url;
   $("#clipToggle").checked = !!b.cfg.clipboard_history;
-  $$(".nav-item").forEach(n => { n.disabled = !b.hasKey; });
+  $$(".nav-item").forEach(n => { n.disabled = !b.canRun; });
   renderKeys();
   renderStats(b.stats);
-  if (!b.hasKey) setState("off");
+  if (!b.canRun) setState("off");
+  else if (S.state === "off") setState("ready");
 }
 
 /* ═══════════ أحداث من Python ═══════════ */
@@ -1006,6 +1080,23 @@ window.emlaa = {
   onUpdate(info) { showUpdate(info); },
   onUpdateProgress(p) { setUpdProgress(p); },
   onUpdateError(err) { updFail(err); },
+  onOfflineProgress(p) {
+    const f = Math.max(0, Math.min(1, Number(p.fraction) || 0));
+    const bar = $("#offlineBar");
+    bar.hidden = false;
+    bar.querySelector("i").style.width = (f * 100) + "%";
+    $("#offlineDownloadNote").textContent = `بينزّل… ${Math.round(f * 100)}%`;
+  },
+  onOfflineDone(r) {
+    setOfflineDownloading(false);
+    if (r.ok) {
+      toast("اتنزّل ✓");
+      refreshOffline(true);
+      refreshBoot();
+    } else {
+      toast(r.err || "مقدرتش أنزّل الموديل");
+    }
+  },
   go(page) { go(page); },
 };
 
@@ -1013,13 +1104,13 @@ window.emlaa = {
 async function start() {
   S.boot = await api().bootstrap();
   applyBoot();
-  setState(S.boot.hasKey ? S.boot.state : "off");
+  setState(S.boot.canRun ? S.boot.state : "off");
   fillWelcome();
   await loadHistory();
   S.clips = await api().clips();
   fillClipApps();
   if (S.boot.update) showUpdate(S.boot.update);
-  go(S.boot.hasKey ? "home" : "welcome");
+  go(S.boot.canRun ? "home" : "welcome");
 }
 if (window.pywebview && window.pywebview.api) start();
 else window.addEventListener("pywebviewready", start);
