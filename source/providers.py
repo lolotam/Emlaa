@@ -20,6 +20,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+import smart      # عشان نعرف خطأ النت (smart.is_network_error) من غير ما نكرّر المنطق
+
 
 # ── شهادات SSL (مهم للـexe) ──────────────────────────────────────────────────
 # لما البرنامج يتبني .exe بـPyInstaller، مكتبة openai/httpx مبتلاقيش ملف
@@ -386,6 +388,18 @@ def _http_msg(e):
     return str(e)
 
 
+class NetworkError(RuntimeError):
+    """
+    فشل في الاتصال بالنت (DNS/اتصال/مهلة) — مش مفتاح غلط ولا حد استخدام.
+
+    ليه كلاس منفصل بدل RuntimeError عادية: المتصل (smart.is_network_error و
+    verify) بيفرّق بيها عشان يقول للمستخدم «اتأكد من النت» بدل رسالة مفتاح غلط.
+    سمة is_network بتخلّي smart يتعرّف عليها من غير ما يستورد providers — عشان
+    مفيش دورة استيراد بين الاتنين.
+    """
+    is_network = True
+
+
 # ── عميل موحّد ───────────────────────────────────────────────────────────────
 class Client:
     """
@@ -510,7 +524,8 @@ class Client:
                     err.status = e.code   # عشان المتصل يفرّق 400 عن غيرها
                     raise err
                 except Exception as e:
-                    err = RuntimeError(_http_msg(e))
+                    err = (NetworkError(str(e)) if smart.is_network_error(e)
+                           else RuntimeError(_http_msg(e)))
                     err.status = None     # خطأ شبكة: مفيش حالة HTTP
                     raise err
         if last_err:
@@ -520,6 +535,7 @@ class Client:
         return "", language
 
     def _oa_transcribe(self, wav_path, language):
+        from openai import APIConnectionError, APITimeoutError
         candidates = self._stt_models()
         last_err = None
         for i, model in enumerate(candidates):
@@ -528,9 +544,13 @@ class Client:
             try:
                 with open(wav_path, "rb") as f:
                     tr = self._openai().audio.transcriptions.create(
-                        model=model, file=f, prompt=self._stt_prompt(language), **kw)
+                        model=model, file=f, prompt=self._stt_prompt(language),
+                        timeout=self._stt_timeout(), **kw)
                 self.last_stt_model = model
                 return (getattr(tr, "text", "") or "").strip()
+            except (APIConnectionError, APITimeoutError) as e:
+                # النت (DNS/اتصال/مهلة) — منكررش موديل تاني، الموديلات كلها على نفس الشبكة
+                raise NetworkError(str(e)) from e
             except Exception as e:
                 last_err = e
                 s = str(e).lower()
@@ -543,6 +563,17 @@ class Client:
         if last_err:
             raise last_err
         return ""
+
+    def _stt_timeout(self):
+        """
+        ١٠ ثواني للاتصال + نفس مهلة القراية الحالية. httpx بيقدر يفصل connect
+        عن read، فعشان مفيش نت مقطوع يقعد معلّق ١٢٠ ثانية، بنقلّل مهلة الاتصال
+        بس — القراية (رفع الصوت واستلام النص) بيفضل بمهلة الـSDK الافتراضية.
+        """
+        import httpx
+        cur = getattr(self._openai(), "timeout", None)
+        read = getattr(cur, "read", None) or 600.0
+        return httpx.Timeout(read, connect=10.0)
 
     def _gemini_transcribe(self, wav_path, language="ar"):
         audio = base64.b64encode(open(wav_path, "rb").read()).decode("ascii")
@@ -574,7 +605,7 @@ class Client:
                     continue          # الموديل مش متاح للمفتاح ده → جرّب البديل
                 raise RuntimeError(_http_msg(e))
             except Exception as e:
-                raise RuntimeError(_http_msg(e))
+                raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
         if last_err:
             raise RuntimeError(_http_msg(last_err))
         return ""
@@ -765,7 +796,7 @@ class Client:
                     continue
                 raise last
             except Exception as e:
-                raise RuntimeError(_http_msg(e))
+                raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
         raise last or RuntimeError("مفيش موديل متاح")
 
 
