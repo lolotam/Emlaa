@@ -173,14 +173,43 @@ def type_text(text):
     return True
 
 
+def _paste(mod_vk, key_vk, key_flags):
+    """
+    اللزق: modifier↓ · key↓ · key↑ · modifier↑. لو SendInput حقن أول الأحداث
+    بس (جزء من التسلسل)، المفاتيح اللي اتدست من غير ما تنساب لازم تنساب —
+    بنبعت key-up بتاعها (بأفضل جهد) وبنرجّع False. (F6: Ctrl/Shift ميفضلوش
+    ماسكين لو الحقن قطع في النص.)
+    """
+    events = [
+        _kb_event(mod_vk, 0, 0),
+        _kb_event(key_vk, 0, key_flags),
+        _kb_event(key_vk, 0, key_flags | KEYEVENTF_KEYUP),
+        _kb_event(mod_vk, 0, KEYEVENTF_KEYUP),
+    ]
+    u = _user32()
+    n = len(events)
+    inserted = int(u.SendInput(n, (INPUT * n)(*events), ctypes.sizeof(INPUT)))
+    if inserted == n:
+        return True
+    # المفاتيح اللي down اتحقن بس up لسه ما اتحقنش — بنرجع كل واحد up
+    # بترتيب عكسي لترتيب الدوس، عشان الموديفاير مايفضلش ماسك.
+    pressed = {}
+    for ev in events[:inserted]:
+        if ev.u.ki.dwFlags & KEYEVENTF_KEYUP:
+            pressed.pop(ev.u.ki.wVk, None)
+        else:
+            pressed[ev.u.ki.wVk] = ev
+    releases = [_kb_event(vk, 0, ev.u.ki.dwFlags | KEYEVENTF_KEYUP)
+                for vk, ev in reversed(list(pressed.items()))]
+    if releases:
+        u.SendInput(len(releases), (INPUT * len(releases))(*releases),
+                    ctypes.sizeof(INPUT))
+    return False
+
+
 def paste_ctrl_v():
     """Ctrl+V بأحداث SendInput (0x11↓ 0x56↓ 0x56↑ 0x11↑). True لو الكل اتحقن."""
-    return _send([
-        _kb_event(VK_CONTROL, 0, 0),
-        _kb_event(VK_V, 0, 0),
-        _kb_event(VK_V, 0, KEYEVENTF_KEYUP),
-        _kb_event(VK_CONTROL, 0, KEYEVENTF_KEYUP),
-    ])
+    return _paste(VK_CONTROL, VK_V, 0)
 
 
 def paste_shift_insert():
@@ -188,12 +217,7 @@ def paste_shift_insert():
     Shift+Insert — زرار اللزق اللي بيشتغل في الـconhost والـTerminals:
     0x10↓ · 0x2D↓ (EXTENDED) · 0x2D↑ · 0x10↑. True لو الكل اتحقن.
     """
-    return _send([
-        _kb_event(VK_SHIFT, 0, 0),
-        _kb_event(VK_INSERT, 0, KEYEVENTF_EXTENDEDKEY),
-        _kb_event(VK_INSERT, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
-        _kb_event(VK_SHIFT, 0, KEYEVENTF_KEYUP),
-    ])
+    return _paste(VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY)
 
 
 # معرّفات خصائص UIA: IsPassword 30019 · IsValuePatternAvailable 30043 ·

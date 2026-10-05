@@ -11,6 +11,7 @@ The following are stored **only on your computer** and are never sent to us:
 - **API keys** you enter for your chosen transcription provider.
 - **Settings** (hotkeys, language, theme, chosen models).
 - **History** of your dictations (by default, only the last 10 are kept).
+- **Audio of your last 10 recordings**, stored as MP3 files in a `recordings` folder in the app's data folder (next to `Emlaa.exe` for the portable version, `%LOCALAPPDATA%\Emlaa` for the Microsoft Store version), for replay and download. They stay on your device and are deleted when you delete their history entry, when you clear the history, or when newer recordings push them out.
 - **Clipboard history**, if you turn it on. Content that password managers mark as private is never saved. You can turn this feature off and delete entries at any time.
 - **Your dictionary** of custom words.
 - An **error log**, used only for troubleshooting.
@@ -19,7 +20,7 @@ In the Microsoft Store version these files are kept in `%LOCALAPPDATA%\Emlaa`. I
 
 ## Microphone and audio
 
-Emlaa records audio **only while you are dictating**, after you press your hotkey or the record button. The recording is sent **directly from your computer to the transcription provider you selected**, using **your own API key**, and the temporary audio file is deleted right after transcription. The audio never passes through any server operated by us.
+Emlaa records audio **only while you are dictating**, after you press your hotkey or the record button. The recording is sent **directly from your computer to the transcription provider you selected**, using **your own API key**, and the temporary audio file is deleted right after transcription. A copy of your **last 10 recordings** is kept on your device as MP3 files (in a `recordings` folder in the app's data folder (next to `Emlaa.exe` for the portable version, `%LOCALAPPDATA%\Emlaa` for the Microsoft Store version)) for replay and download; these are deleted when you delete their history entry, when you clear the history, or when newer recordings push them out. The audio never passes through any server operated by us.
 
 ## Third-party providers
 

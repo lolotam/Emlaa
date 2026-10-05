@@ -244,6 +244,7 @@ function engineHTML(i) {
 
 /* ═══════════ تشغيل صوت التسجيل ═══════════ */
 const player = { id: null, audio: null };
+let playToken = 0;
 function paintWave(id) {
   const el = document.querySelector(`.frow[data-id="${id}"] .wave.playable`);
   if (!el) return;
@@ -267,9 +268,14 @@ async function togglePlay(id) {
   if (player.id === id && player.audio) {
     return player.audio.paused ? player.audio.play() : player.audio.pause();
   }
+  // دوسة تانية سريعة لازم تلغي الرد اللي لسه رايح — كل نداء بياخد توكن،
+  // وأي رد توكنه مش آخر واحد بيتهمل (غير كده كان اتنين Audio يشغلوا مع بعض).
+  const token = ++playToken;
   stopPlayer();
   const r = await api().history_audio(id);
+  if (token !== playToken) return;
   if (!r.ok) return toast("الصوت مش متاح");
+  stopPlayer();                                  // اتأكد من جديد قبل ما نعمل Audio جديد
   const a = new Audio(`data:${r.mime};base64,${r.data}`);
   player.id = id;
   player.audio = a;

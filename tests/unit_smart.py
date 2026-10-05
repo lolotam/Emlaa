@@ -96,6 +96,17 @@ class TestShouldBypass(unittest.TestCase):
     def test_short_english_reply(self):
         self.assertTrue(smart.should_bypass("Yes please", "normal", _cfg()))
 
+    def test_multiword_english_outside_list_not_bypassed(self):
+        # F7: «Git Hub» / «Open AI» كلمتين إنجليزي برّا القايمة — مش تخطّي،
+        # لازم يعدّوا على الموديل (أسماء منتجات ممكن تحتاج تصحيح)
+        self.assertFalse(smart.should_bypass("Git Hub", "normal", _cfg()))
+        self.assertFalse(smart.should_bypass("Open AI", "normal", _cfg()))
+
+    def test_digits_still_bypass(self):
+        # الأرقام وحدها (١٥ / 123) بتعدّي من غير قايمة
+        self.assertTrue(smart.should_bypass("تمام 123", "normal", _cfg()))
+        self.assertTrue(smart.should_bypass("123", "normal", _cfg()))
+
     def test_punctuation_and_spelling_variants_ignored(self):
         # التطبيع مش العرض: «شكرًا» و«شكرا» و«إيوه» كلها تاخد نفس القرار
         self.assertTrue(smart.should_bypass("تمام!", "normal", _cfg()))
@@ -360,6 +371,15 @@ FIX_MIXED_FIXTURES = [
     ("ابعت لـ a@b.com, مش شغال", "ابعت لـ a@b.com, مش شغال"),
     ("The API, which is fast", "The API, which is fast"),
     ("اكتب `print(a, b)` في الـ console", "اكتب `print(a, b)` في الـ console"),
+    # جوه backticks (كود) بايت-بايت (F4) — «?»/«,» جوه الكود مش بتتعرب
+    ("اكتب `سؤال?` هنا", "اكتب `سؤال?` هنا"),
+    ("اكتب `سؤال,` هنا", "اكتب `سؤال,` هنا"),
+    # فتحة backtick من غير قفلة: الباقي كله كود (F4)
+    ("اكتب `سؤال? هنا", "اكتب `سؤال? هنا"),
+    # روابط وإيميلات بايت-بايت حتى لو فيهم «الAPI» (F5)
+    ("راجع https://example.com/الAPI", "راجع https://example.com/الAPI"),
+    ("راجع www.example.com/الAPI", "راجع www.example.com/الAPI"),
+    ("ابعت لـ الAPI@example.com", "ابعت لـ الAPI@example.com"),
     # «السائل» كلمة عربي بتخلص في «ال» — القاعدية ماتقسمهاش
     ("السائل API ده", "السائل API ده"),
     ("", ""),
@@ -388,6 +408,23 @@ class TestFixMixed(unittest.TestCase):
 
     def test_none_input(self):
         self.assertEqual(smart.fix_mixed(None), "")
+
+    def test_code_span_contents_untouched(self):
+        # F4: اللي جوّه backticks يفضل بايت-بايت — «?» جوّه الكود مش «؟»
+        self.assertEqual(smart.fix_mixed("اكتب `سؤال?` هنا"), "اكتب `سؤال?` هنا")
+
+    def test_unmatched_backtick_treats_rest_as_code(self):
+        # F4: فتحة backtick من غير قفلة — الباقي كله كود ومبيتعدلش
+        self.assertEqual(smart.fix_mixed("اكتب `سؤال? هنا"), "اكتب `سؤال? هنا")
+
+    def test_url_and_email_spans_untouched(self):
+        # F5: «الAPI» جوّه رابط أو إيميل مايتعدلش — المقالة بتتخطّى الرابط كله
+        self.assertEqual(smart.fix_mixed("راجع https://example.com/الAPI"),
+                         "راجع https://example.com/الAPI")
+        self.assertEqual(smart.fix_mixed("راجع www.example.com/الAPI"),
+                         "راجع www.example.com/الAPI")
+        self.assertEqual(smart.fix_mixed("ابعت لـ الAPI@example.com"),
+                         "ابعت لـ الAPI@example.com")
 
 
 if __name__ == "__main__":

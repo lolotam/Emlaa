@@ -441,9 +441,10 @@ class WaveOverlay(tk.Toplevel):
             x0, x1 = edge, self.W - edge
             col = "#ffffff" if self._mode == "normal" else glow_col
 
-        if not core.CFG.get("polish", True):
-            # التفريغ الحرفي: «خام» جنب الموجة عشان المستخدم يعرف إن الكلام
-            # هيتكتب زي ما اتقال من غير LLM — المجال بيتقصّ ~18px بس على
+        if self._mode == "normal" and not core.CFG.get("polish", True):
+            # التفريغ الحرفي (الوضع العادي بس): «خام» جنب الموجة عشان المستخدم
+            # يعرف إن الكلام هيتكتب زي ما اتقال من غير LLM — البرومبت والترجمة
+            # بيستخدموا الموديل، فمفيش «خام» عندهم. المجال بيتقصّ ~18px بس على
             # يمين الموجة، والزرارين والقياسات دي كلها مكانها ثابت
             x1 -= 18
             c.create_text(x1 + 9, cy, text="خام", fill="#8b8d98", font=(FONT, 8))

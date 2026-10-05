@@ -950,7 +950,8 @@ class App:
                 return
             self.recording = True
             self.active_mode = mode
-            self._op = Operation(mode=mode, target_app=target_app)
+            op = Operation(mode=mode, target_app=target_app)
+            self._op = op
         # فتح الميك جوه القفل كان بيقعد فيه: لو الجهاز اتفصل والستريم بيأخد
         # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
@@ -959,8 +960,17 @@ class App:
                 self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
             return
+        # F1: فتح الميك ممكن ياخد وقت (ريكونكت)، وجوّه الوقت ده end()/cancel()
+        # بيقدروا يقفلوا recording ويشيلوا _op. بنفحص تاني جوّه القفل إن الدورة
+        # لسه ملكنا (نفس الـOperation) — غير كده منبدأش تسجيل يتيم (rec.start
+        # + on_state("rec")) من غير عملية تملكه.
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+            # start جوّه القفل (بيقلب فلاج بس): لو اتعمل بعد الصفارة (90ms)، cancel في
+            # النص كان بيعمل discard والـstart يرجّع التسجيل يتيم تاني
+            self.rec.start()
         beep(880, 90)
-        self.rec.start()
         self.on_state("rec", mode)
 
     def end(self):
@@ -1023,6 +1033,14 @@ class App:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
+            # F2 (خصوصية): بنجيب معلومات الفوكس مرة واحدة قبل خطوة الإخراج — لو
+            # الخانة باسورد، نصها عمره ما يوصل للموديل ولا يتعدّل (بيتكتب زي ما
+            # اتفرّغ). التصنيف تحت بيستخدم نفس الـinfo — مفيش نداء تاني.
+            import winput
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            secure = info.get("is_password") is True
+
             bypass = False
             if cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
@@ -1030,6 +1048,10 @@ class App:
             elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
+            elif secure:
+                # خانة باسورد في الوضع العادي: مفيش لفة LLM ولا تنضيف — النص
+                # بيتكتب زي ما اتفرّغ. (التحويلين فوق المستخدم اختارهم بنفسه.)
+                out = text
             elif CFG.get("polish", True):
                 if smart.should_bypass(text, cur_mode, CFG):
                     # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
@@ -1044,11 +1066,7 @@ class App:
 
             # F3 (R1 #1): تصنيف الهدف قبل السجل/الحافظة/الصوت — الهدف الآمن:
             # مفيش حاجة من التسجيل ده بتطلع من هنا (لسجل، صوت، نسخ، ولا عرض النص).
-            import winput
-            info = winput.focused_info()
-            info["exe"] = _foreground_app()
             target = smart.insert_target(info, out, CFG.get("insert_method"))
-            secure = target[0] == "secure"
             # F7: بعد مخرج الوضع العادي (polish أو تخطّي الرد القصير) بنصلّح
             # النص المختلط: الحرف العاري قبل الكلمة اللاتيني على شكله المثالي
             # («للـ branch») والترقيم العربي — بس من غير تطبيقات dev (الكود لازم

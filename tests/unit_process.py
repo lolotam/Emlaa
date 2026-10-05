@@ -50,6 +50,34 @@ class StubRec:
         pass
 
 
+class BlockingEnsureRec:
+    """ريكوردر وهمي: ensure_open بيستنى على Event — بيحاكي ريكونكت الميك البطيء
+    (F1) عشان نحاكي المستخدم اللي وقّف/لغى والنص ده."""
+
+    def __init__(self):
+        self.started = 0
+        self.discarded = 0
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+
+    def ensure_open(self):
+        self.entered.set()
+        self.gate.wait(5)
+        return True
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        return "WAV"
+
+    def discard(self):
+        self.discarded += 1
+
+    def close(self):
+        pass
+
+
 class FakeClient:
     """مزوّد وهمي: بيرجّع نصوص ثابتة وسجل بكل نداء."""
 
@@ -331,6 +359,24 @@ class TestBeginEnd(unittest.TestCase):
         self.assertIsNone(app._op)
         self.assertEqual(app.rec.discarded, 0)
 
+    def test_begin_cancelled_while_ensure_open_blocks_does_not_start(self):
+        # F1: ensure_open بيسدّ (ريكونكت)، والمستخدم بيلغي في النص — لما يرجّع
+        # begin لازم يشوف إن الدورة اتلغت ومايبدأش تسجيل يتيم (rec.start).
+        rec = BlockingEnsureRec()
+        app = make_app(rec=rec)
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            t = threading.Thread(target=app.begin, args=("normal",))
+            t.start()
+            self.assertTrue(rec.entered.wait(5), "ensure_open ما بدأش يستنى")
+            app.cancel()                       # بيقفل recording ويشيل _op
+            self.assertFalse(app.recording)
+            rec.gate.set()                     # خلّي ensure_open يرجع
+            t.join(10)
+            self.assertFalse(t.is_alive())
+        self.assertEqual(rec.started, 0, "rec.start اتندى رغم إن التسجيل اتلغى")
+        self.assertFalse(app.recording)
+
 
 class TestProcess(unittest.TestCase):
     def test_process_reads_mode_from_operation(self):
@@ -552,6 +598,34 @@ class TestBypassProcess(unittest.TestCase):
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
 
+class TestSecurePrivacy(unittest.TestCase):
+    """F2 (خصوصية): خانة باسورد عمرها ما توصل للموديل في الوضع العادي."""
+
+    def test_secure_focus_skips_polish_and_pastes_raw(self):
+        # الباسورد بيتكتب زي ما اتفرّغ — مفيش polish ولا fix_mixed، والتصنيف
+        # بييجي من نفس معلومات الفوكس (مفيش نداء focused_info تاني).
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info",
+                           return_value={"is_password": True, "class": "Edit",
+                                         "editable": True}), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value=True) as paste:
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar")],
+                         "الباسورد ممن يوصل polish/light_clean")
+        self.assertEqual(app.texts, [])
+        paste.assert_called_once_with("s3cret!", ("secure", "type", "s3cret!"))
+        hist.assert_not_called()
+        self.assertFalse(app.busy)
+
+
 class TestHistoryBypassFlag(unittest.TestCase):
     def test_bypass_key_stored_only_when_true(self):
         # التسجيل القديم (من غير bypass) يفضل زي ما هو، والجديد بس ياخد المفتاح
@@ -569,10 +643,6 @@ class TestHistoryBypassFlag(unittest.TestCase):
         self.assertNotIn("bypass", items[1])             # القديم من غير المفتاح
         # السجل القديم بيتقرا من غير KeyError — الويتس مايتغيّرش بسبب المفتاح الجديد
         self.assertEqual(items[1]["result"], "مرحبا بالعالم")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestContextStyles(unittest.TestCase):
@@ -721,4 +791,8 @@ class TestFixMixedProcess(unittest.TestCase):
         app, fake, _ = self._run(text="تمام, شكرا")
         self.assertEqual(fake.calls, [("transcribe", "ar")])
         self.assertEqual(app.texts, ["تمام، شكرا"])
+
+
+if __name__ == "__main__":
+    unittest.main()
 

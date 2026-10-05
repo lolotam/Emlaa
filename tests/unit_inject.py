@@ -127,10 +127,25 @@ class TestPasteShortcuts(unittest.TestCase):
         ])
 
     def test_partial_send_is_failure(self):
+        # F6: الحقن الجزئي = فشل، ومعاه نداء متابعة بيبعث key-up للمفاتيح الماسكة
         with _FakeU32(0.5) as fake:
             self.assertFalse(winput.paste_ctrl_v())
             self.assertFalse(winput.paste_shift_insert())
-        self.assertEqual(len(fake.calls), 2)
+        # كل زرار: نداء الحقن (4 أحداث → اتحقن 2) + نداء key-up متابعة (2)
+        self.assertEqual(len(fake.calls), 4)
+
+    def test_partial_insert_releases_held_modifier(self):
+        # F6: SendInput حقن Ctrl↓ بس (1 من 4) — من غير متابعة كان Ctrl يفضل
+        # ماسك. المتابعة لازم تحتوي key-up للموديفاير اللي اتدس.
+        with _FakeU32(0.25) as fake:          # 4 * 0.25 = 1 → أول حدث بس
+            self.assertFalse(winput.paste_ctrl_v())
+        self.assertGreaterEqual(len(fake.calls), 2, "مفيش نداء متابعة للـkey-up")
+        _, evs2 = fake.calls[1]
+        self.assertTrue(any(e.u.ki.wVk == winput.VK_CONTROL and
+                            (e.u.ki.dwFlags & winput.KEYEVENTF_KEYUP) for e in evs2),
+                        "المتابعة لازم فيها key-up لـCtrl")
+        for e in evs2:
+            self.assertEqual(e.u.ki.dwExtraInfo, winput.EMLAA_TAG)
 
 
 # ── core.paste_text: العقد الجديد placed/failed/handoff ──────────────────────

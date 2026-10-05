@@ -58,9 +58,10 @@ def word_count(text):
 
 # ── F2: تخطّي الردود القصيرة ─────────────────────────────────────────────────
 
-# قايمة تسمح مش تمنع (R1 #15): التوكن اللي كله لاتيني أو أرقام بيتقبل زي ما
-# هو، بس أي كلمة عربي مش من الردود العادية (اسم شخص، منتج، «دوكر») بتمشي polish
-# عادي — فالتخطّي شغال آمن حتى والقاموس فاضي.
+# قايمة تسمح مش تمنع (R1 #15 + F7): الكلمة اللاتيني لازم تكون من الردود
+# الإنجليزي الجاهزة، والأرقام وحدها بتعدّي — بس أي كلمة عربي مش من الردود
+# العادية (اسم شخص، منتج، «دوكر») أو كلمة إنجليزي برّا القايمة («Git Hub»)
+# بتمشي polish عادي — فالتخطّي شغال آمن حتى والقاموس فاضي.
 # العناصر محفوظة بالشكل المطبّع عشان الكتابات المختلفة لنفس الكلمة
 # (شكرًا/شكراً) يلاقي نفس العنصر.
 SHORT_REPLIES = frozenset({
@@ -110,9 +111,9 @@ SHORT_REPLIES = frozenset({
 })
 
 
-def _is_latin_or_digit(tok):
-    """توكن كله حروف لاتيني وأرقام — مفيش لهجي عربي يتصلّح."""
-    return all((c.isascii() and c.isalpha()) or c.isdecimal() for c in tok)
+def _is_pure_digits(tok):
+    """توكن كله أرقام (٣ أو 3) — الأرقام وحدها بتعدّي من غير قايمة."""
+    return bool(tok) and all(c.isdecimal() for c in tok)
 
 
 def should_bypass(text, mode, cfg):
@@ -122,13 +123,15 @@ def should_bypass(text, mode, cfg):
     القايمة تسمح مش تمنع: أي كلمة عربي مش في القايمة (اسم شخص، منتج،
     «دوكر»…) تعني polish عادي — لو الـLLM مش هتعرفها هي اللي هتصلّحها
     (زي «دوكر» ← Docker)، فأسلم اتجاه هو «نمشي اللفة الكاملة» مش «نخفّ».
+    الكلمة اللاتيني كمان لازم تكون من القايمة (F7): «Git Hub» أو «Open AI»
+    مش تخطّي — بس الأرقام وحدها (١٢٣ أو 123) بتعدّي من غير قايمة.
     """
     if mode != "normal" or not cfg.get("polish", True) or not cfg.get("bypass_short", True):
         return False
     tokens = normalize(text).split()
     if not tokens or len(tokens) > cfg.get("bypass_max_words", 3):
         return False
-    return all(tok in SHORT_REPLIES or _is_latin_or_digit(tok) for tok in tokens)
+    return all(tok in SHORT_REPLIES or _is_pure_digits(tok) for tok in tokens)
 
 
 def light_clean(text):
@@ -392,7 +395,10 @@ _PUNCT = re.compile(r"[,?;]")
 # إشارة الترقيم دي متخلّية جوه لينك (scheme:// أو www.) أو إيميل
 _URL_BEFORE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s]*\Z")
 _EMAIL_BEFORE = re.compile(r"[\w.%+-]+@[^\s]*\Z")
-_CODE_SPLIT = re.compile(r"(`+)")
+# F4/F5: أي حاجة محمية بايت-بايت من القاعدتين (article والترقيم):
+# جوه backticks (كود)، أو لينك كامل (scheme:// أو www.)، أو إيميل — مصدر
+# واحد للتقسيم عشان القاعدتين ميتفرقوش.
+_PROTECTED = re.compile(r"`+|(?:[A-Za-z][A-Za-z0-9+.-]*://|www\.)[^\s]*|[\w.%+-]+@[^\s]+")
 
 
 def _fix_article(s):
@@ -433,10 +439,29 @@ def _arabize_punct(s):
     return _PUNCT.sub(_one, s)
 
 
-def _outside_code(s, fn):
-    """القاعدة على النص العادي بس — جوه backticks (كود) بيتعدّى حاله زي ما هو:
-    تغيير فاصلة جوه `print(a, b)` غلط في حد ذاته."""
-    return "".join(p if p.startswith("`") else fn(p) for p in _CODE_SPLIT.split(s))
+def _outside_protected(s, fn):
+    """
+    بيطبّق القاعدة (article أو ترقيم) على النص العادي بس. المحمي: جوه
+    backticks (كود — F4)، الروابط (scheme:// أو www.)، والإيميلات (F5) —
+    كل دول بيفضلوا بايت-بايت. فتحة backtick من غير قفلة: الباقي كله بيتعامل
+    كود (تعليق كود ناقص) زي ما هو.
+    """
+    out = []
+    i = 0
+    inside = False
+    while i < len(s):
+        m = _PROTECTED.search(s, i)
+        if m is None:
+            out.append(s[i:] if inside else fn(s[i:]))
+            break
+        start = m.start()
+        out.append(s[i:start] if inside else fn(s[i:start]))
+        tok = m.group(0)
+        out.append(tok)
+        if tok.startswith("`"):
+            inside = not inside
+        i = m.end()
+    return "".join(out)
 
 
 def _arabic_dominant(s):
@@ -458,9 +483,9 @@ def fix_mixed(text):
     s = str(text or "")
     if not s:
         return s
-    s = _outside_code(s, _fix_article)
+    s = _outside_protected(s, _fix_article)
     if _arabic_dominant(s):
-        s = _outside_code(s, _arabize_punct)
+        s = _outside_protected(s, _arabize_punct)
     return s
 
 

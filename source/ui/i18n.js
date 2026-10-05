@@ -111,6 +111,7 @@ const EN = {
   "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات": "Microphone unavailable — plug it in or pick another in Settings",
   "مشكلة في قراية الصوت — جرّب تاني": "Couldn't read the audio — try again",
   "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف": "Recording was too short — speak a little, then stop",
+  "اتلغى التسجيل": "Recording cancelled",
   "مطلعش نص — قرّب من الميك وجرّب تاني": "No text came out — move closer to the mic and try again",
   "مفيش ميكروفون متوصّل": "No microphone connected", "الميكروفون مش شغّال": "The microphone isn't working",
   "محطّتش مفتاح للمزوّد ده — افتح الإعدادات وحطّه": "No key for this provider — add one in Settings",
