@@ -20,6 +20,7 @@ import json
 import wave
 import tempfile
 import threading
+import collections
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -425,11 +426,36 @@ def clip_clear():
         _clip_save([])
 
 
+# ── أرقام تسلسل الحافظة «بتاعتنا» ────────────────────────────────────────────
+# لما أسر التحديد (winput.capture_target) بيكتب ويرجّع نصوص في الحافظة، رقم
+# التسلسل بيتغيّر كذا مرة — والـClipboardWatcher كان هيسجّل النصوص دي كأنها نسخ
+# حقيقية من المستخدم. بنحتفظ بآخر 64 رقم تسلسل وسمناهم، والـwatcher بيتخطاهم.
+_owned_clip_lock = threading.Lock()
+_owned_clip_seqs = collections.deque(maxlen=64)
+
+
+def mark_clip_owned(seq):
+    """يوسّم رقم تسلسل حافظة كـ«بتاعنا» — الـClipboardWatcher يتخطاه."""
+    try:
+        seq = int(seq)
+    except (TypeError, ValueError):
+        return
+    with _owned_clip_lock:
+        _owned_clip_seqs.append(seq)
+
+
+def _clip_is_owned(seq):
+    """True لو رقم التسلسل ده من عمليات الحافظة بتاعتنا."""
+    with _owned_clip_lock:
+        return seq in _owned_clip_seqs
+
+
 class ClipboardWatcher:
     """
     بيراقب الحافظة (بيقرا رقم التغيير من الويندوز كل نص ثانية) وبيحفظ أي نص جديد.
     بيحترم علامة «ExcludeClipboardContentFromMonitorProcessing» اللي برامج
-    الباسوردات بتحطها — فالباسوردات المنسوخة منها مش بتتحفظ.
+    الباسوردات بتحطها — فالباسوردات المنسوخة منها مش بتتحفظ. وبيتخطى أي رقم
+    تسلسل اتوسم «بتاعنا» (mark_clip_owned) — التغييرات اللي إحنا عملناها بنفسنا.
     """
 
     def __init__(self, on_new=None):
@@ -462,6 +488,8 @@ class ClipboardWatcher:
                     last = seq
                     continue
                 last = seq
+                if _clip_is_owned(seq):
+                    continue
                 if u32.IsClipboardFormatAvailable(excl) or not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
                     continue
                 text = None

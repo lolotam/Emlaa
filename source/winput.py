@@ -19,6 +19,8 @@
 focused_info: الكلاسات دي بيانات قرار، ومصدر واحد للجانبين.
 """
 import ctypes
+import hashlib
+import time
 from ctypes import wintypes
 
 import smart
@@ -223,6 +225,16 @@ def paste_shift_insert():
 # معرّفات خصائص UIA: IsPassword 30019 · IsValuePatternAvailable 30043 ·
 # IsTextPatternAvailable 30040 · ValueIsReadOnly 30046 ·
 # ControlType Edit 50004 / Document 50030
+def _uia():
+    """جذر UIA (IUIAutomation) — الـbootstrap الوحيد: CoInitialize لكل ثريد
+    (COM بيتعمل لكل ثريد)، وCreateObject مرة واحدة. بيرمي لو فشل — اللي يناده
+    هو اللي يقرر يبتلع ولا يسجّل."""
+    import comtypes, comtypes.client
+    comtypes.CoInitialize()
+    from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
+    return comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
+
+
 def focused_info():
     """
     (F3) خصائص العنصر المركّز بنداء UIA واحد — بيحط محل جسم
@@ -235,11 +247,7 @@ def focused_info():
     """
     out = {"is_password": None, "class": "", "editable": None}
     try:
-        import comtypes, comtypes.client
-        comtypes.CoInitialize()             # كل تسجيل بيتعالج في ثريد جديد — COM لازم يتعمل لكل ثريد
-        from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
-        uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-        el = uia.GetFocusedElement()
+        el = _uia().GetFocusedElement()
         if not el:
             out["editable"] = False
             return out
@@ -264,6 +272,315 @@ def focused_info():
         except Exception:
             pass
         return out
+
+
+# ── أسر الهدف للتعديل في المكان (F6) ────────────────────────────────────────
+# التعديل في المكان: المستخدم بيحدد نص، يدوس زرار التسجيل، يكلّم، والنص المحدد
+# بيتبدّل بالنتيجة. عشان نبدّله بعدين محتاجين نعرف مكانه بالظبط: HWND المقدمة،
+# معرّف العنصر المركّز (RuntimeId)، والنص المحدد. النص بنجيبه بـUIA (TextPattern)
+# من غير ما نلمس الحافظة؛ ولو UIA فشل بنرجع للخطة البديلة: نحفظ نص الحافظة،
+# نحقن Ctrl+C، نقرا النص الجديد، ونرجع الحافظة زي ما كانت.
+# كل اللي بيلمس الحافظة أو الحقن أو UIA بيعدّي على دوال مستقلة (patchable)
+# عشان الاختبارات تشتغل من غير حافظة حقيقية ولا أحداث كيبورد حقيقية.
+
+VK_C = 0x43
+VK_MENU = 0x12
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
+
+# صيغ الحافظة النصية — بنعتبرها «نص» لما نقرر إن آمن نكتب فوقها ونسيبها.
+CF_TEXT = 1
+CF_OEMTEXT = 7
+CF_UNICODETEXT = 13
+CF_LOCALE = 16
+
+# الموديفايرز اللي لازم تسيب قبل ما نحقن Ctrl+C: لو المستخدم لسه ماسك زرار
+# التسجيل (مثلاً Alt) وماسكيناه إحنا كمان، التركيبة هتتبعت غلط.
+_MODIFIERS = (VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN)
+
+# id نمط النص في UIA — comtypes مابيحطوش كثابت، فبنستخدم القيمة العددية.
+_TEXT_PATTERN_ID = 10014
+
+_clip32 = None
+
+
+def _clipboard32():
+    """user32 بـargtypes/restype لعمليات الحافظة والمفاتيح — patchable في الاختبارات."""
+    global _clip32
+    if _clip32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.OpenClipboard.argtypes = [wintypes.HWND]
+        u.OpenClipboard.restype = wintypes.BOOL
+        u.CloseClipboard.argtypes = []
+        u.CloseClipboard.restype = wintypes.BOOL
+        u.EnumClipboardFormats.argtypes = [wintypes.UINT]
+        u.EnumClipboardFormats.restype = wintypes.UINT
+        u.GetClipboardSequenceNumber.argtypes = []
+        u.GetClipboardSequenceNumber.restype = wintypes.DWORD
+        u.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        u.GetAsyncKeyState.restype = ctypes.c_short
+        u.GetForegroundWindow.argtypes = []
+        u.GetForegroundWindow.restype = wintypes.HWND
+        _clip32 = u
+    return _clip32
+
+
+def foreground_hwnd():
+    """HWND النافذة اللي قدام المستخدم — 0 لو مقدرناش نقراه."""
+    try:
+        return int(_clipboard32().GetForegroundWindow())
+    except Exception:
+        return 0
+
+
+def modifiers_held():
+    """True لو أي موديفاير (Ctrl/Shift/Alt/Win) ماسك دلوقتي."""
+    u = _clipboard32()
+    for vk in _MODIFIERS:
+        try:
+            if u.GetAsyncKeyState(vk) & 0x8000:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def wait_modifiers_released(timeout=0.5):
+    """
+    بيستنى (poll كل 10ms) لحد ما الموديفايرز تتساب — عشان حقنة Ctrl+C متتلخبطش
+    مع زرار التسجيل اللي المستخدم لسه سايبه. بيرجّع True لو اتسابت في الوقت،
+    وFalse لو خلص الوقت ولسه ماسك.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not modifiers_held():
+            return True
+        time.sleep(0.01)
+    return not modifiers_held()
+
+
+def _focused_element():
+    """العنصر المركّز (IUIAutomationElement) أو None — نفس bootstrap بتاع focused_info."""
+    try:
+        return _uia().GetFocusedElement()
+    except Exception:
+        return None
+
+
+def _runtime_id(el):
+    """معرّف وقت التشغيل (RuntimeId) → tuple من ints. () لو فشل."""
+    try:
+        return tuple(int(x) for x in el.GetRuntimeId())
+    except Exception:
+        return ()
+
+
+def _selection_text(el):
+    """
+    النص المحدد جوّه العنصر عن طريق UIA TextPattern (GetSelection → GetText) — مابيلمسش
+    الحافظة. '' = النمط مدعوم ومفيش تحديد؛ None = النمط مش مدعوم (الخطة البديلة بالحافظة).
+    الفرق مهم: في VS Code مثلًا Ctrl+C من غير تحديد بينسخ السطر كله، فلو UIA قال «مفيش
+    تحديد» مانجربش الحافظة.
+    """
+    try:
+        from comtypes.gen.UIAutomationClient import IUIAutomationTextPattern
+        raw = el.GetCurrentPattern(_TEXT_PATTERN_ID)
+        if raw is None:
+            return None
+        pat = raw.QueryInterface(IUIAutomationTextPattern)
+        ranges = pat.GetSelection()
+        parts = []
+        for i in range(ranges.Length):
+            t = ranges.GetElement(i).GetText(-1)
+            if t:
+                parts.append(t)
+        return "".join(parts)
+    except Exception:
+        return None
+
+
+def clipboard_text_formats():
+    """
+    صيغ الحافظة النصية الموجودة دلوقتي (CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT).
+    [] لو الحافظة فاضية أو مفيش نص — CloseClipboard دايمًا في finally.
+    """
+    u = _clipboard32()
+    found = []
+    try:
+        if not u.OpenClipboard(None):
+            return []
+        try:
+            fmt = 0
+            while True:
+                fmt = u.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                if fmt in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT):
+                    found.append(fmt)
+        finally:
+            u.CloseClipboard()
+    except Exception:
+        return []
+    return found
+
+
+def _clipboard_safe_for_text():
+    """
+    True لو آمن نكتب نص في الحافظة — يعني مش فيها محتوى غير نصي (صورة/ملف)
+    هيضيع لما نرجع النص القديم. الحافظة الفاضية آمنة.
+    """
+    u = _clipboard32()
+    try:
+        if not u.OpenClipboard(None):
+            return False
+        try:
+            fmt = 0
+            while True:
+                fmt = u.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                if fmt not in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT, CF_LOCALE):
+                    return False
+        finally:
+            u.CloseClipboard()
+        return True
+    except Exception:
+        return False
+
+
+def _read_clipboard_text():
+    """نص الحافظة الحالي — '' لو مفيش نص أو فشل."""
+    try:
+        import pyperclip
+        return pyperclip.paste()
+    except Exception:
+        return ""
+
+
+def _write_clipboard_text(text):
+    """نشر نص للحافظة. بيرجّع True لو نجح."""
+    try:
+        import pyperclip
+        pyperclip.copy(text or "")
+        return True
+    except Exception:
+        return False
+
+
+def _clipboard_sequence():
+    """رقم تسلسل الحافظة الحالي — عشان نعرف امتى تتغيّر ونوسم أرقامنا."""
+    try:
+        return int(_clipboard32().GetClipboardSequenceNumber())
+    except Exception:
+        return 0
+
+
+def _mark_owned(seq):
+    """يوسّم رقم تسلسل كـ«بتاعنا» — core.ClipboardWatcher يتخطاه (ميسجّلهوش)."""
+    if not seq:
+        return
+    try:
+        import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+        core.mark_clip_owned(seq)
+    except Exception:
+        pass
+
+
+def copy_selection():
+    """Ctrl+C بأحداث SendInput (0x11↓ 0x43↓ 0x43↑ 0x11↑) موسوم EMLAA_TAG."""
+    return _paste(VK_CONTROL, VK_C, 0)
+
+
+def _wait_clipboard_change(seq_before, timeout=0.5):
+    """
+    بيستنى تغيّر رقم تسلسل الحافظة بعد Ctrl+C، وبيوسم الرقم الجديد «بتاعنا» أول ما يظهر
+    (قبل القراية) — عشان الـClipboardWatcher مايلحقش يسجّل النص المحدد في سجل الحافظة.
+    بيرجّع الرقم الجديد، أو None لو مفيش تغيير في الوقت (مفيش تحديد اتنسخ).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        seq = _clipboard_sequence()
+        if seq != seq_before:
+            _mark_owned(seq)
+            return seq
+        time.sleep(0.02)
+    return None
+
+
+def _selection_via_clipboard():
+    """
+    الخطة البديلة لأسر التحديد (من غير UIA): نحفظ نص الحافظة، نحقن Ctrl+C، نقرا النص
+    الجديد، ونرجّع النص القديم — بس لو الحافظة لسه «بتاعتنا» (نفس رقم التسلسل اللي
+    عملناه): لو المستخدم نسخ حاجة في النص، نسخته الأحدث متتمسحش (R1 #7).
+    بنرجع '' من غير ما نلمس الحافظة لو فيها محتوى غير نصي، أو لو مفيش حاجة اتنسخت.
+    """
+    if not _clipboard_safe_for_text():
+        return ""
+    old = _read_clipboard_text()
+    if not wait_modifiers_released():
+        return ""
+    seq_before = _clipboard_sequence()
+    if not copy_selection():
+        return ""
+    seq_copy = _wait_clipboard_change(seq_before)
+    if seq_copy is None:
+        return ""                          # مفيش تحديد اتنسخ — الحافظة زي ما هي
+    new = _read_clipboard_text()
+    if _clipboard_sequence() == seq_copy:  # لسه بتاعتنا → نرجّع نص المستخدم
+        if _write_clipboard_text(old):
+            _mark_owned(_clipboard_sequence())
+    return new
+
+
+def _selection_hash(text):
+    """بصمة sha1 للنص المحدد — عشان نتأكد بعدين إن التحديد لسه زي ما أسرناه."""
+    if not text:
+        return ""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def capture_target():
+    """
+    أسر هدف التعديل في المكان: HWND المقدمة + معرّف العنصر المركّز + النص المحدد.
+    بيشتغل من ثريد عامل (مش ثريد الواجهة): _uia بتعمل CoInitialize للثريد ده.
+    عمره ما يرمي: أي فشل بيرجّع dict بقيم فارغة/صفر — والـcaller (Task 12)
+    هو اللي يقرر يتعامل معاها إزاي.
+    """
+    out = {"hwnd": 0, "runtime_id": (), "class": "", "selection": "",
+           "selection_hash": ""}
+    try:
+        out["hwnd"] = foreground_hwnd()
+    except Exception:
+        pass
+    try:
+        el = _focused_element()
+        if el is not None:
+            out["runtime_id"] = _runtime_id(el)
+            out["class"] = el.CurrentClassName or ""
+            sel = _selection_text(el)
+            out["selection"] = sel if sel is not None else ""
+            out["_uia_unsupported"] = sel is None
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "capture/uia")
+        except Exception:
+            pass
+    try:
+        if not out["selection"] and out.pop("_uia_unsupported", True):
+            out["selection"] = _selection_via_clipboard()
+        out.pop("_uia_unsupported", None)
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "capture/clipboard")
+        except Exception:
+            pass
+    try:
+        out["selection_hash"] = _selection_hash(out["selection"])
+    except Exception:
+        pass
+    return out
 
 
 # ── الكبسولة العائمة: منع تفعيل النافذة (WS_EX_NOACTIVATE) ────────────────────
