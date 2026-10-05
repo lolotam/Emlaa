@@ -7,6 +7,7 @@
 import os
 import sys
 import time
+import threading
 import unittest
 from unittest import mock
 
@@ -239,15 +240,58 @@ class TestProcessEdit(unittest.TestCase):
         self.assertEqual(app.events[-1], ("err", "معرفتش أعدّل النص — جرّب تاني"))
         self.assertFalse(app.busy)
 
+    def _run_real_paste(self, op, same=True, copy_ok=True, focus=None, fake=None):
+        """يشغّل _process_edit بـpaste_text الحقيقي (مش mock) عشان نختبر guard/copy."""
+        app = make_app()
+        fake = fake or FakeEditClient()
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.same_target", return_value=same), \
+                mock.patch("winput.focused_info", return_value=focus or GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=7) as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "_copy_to_clipboard", return_value=copy_ok) as clip, \
+                mock.patch("winput.type_text", return_value=True) as ttype, \
+                mock.patch.object(core.time, "sleep"):
+            app.process("WAV", op)
+        return app, fake, hist, rsave, clip, ttype
+
     def test_same_target_false_does_not_type_and_unplaces(self):
-        app, fake, hist, rsave, paste_fn, clip = self._run(
+        # M6: الهدف اتغيّر بعد الانتظار → paste_text يسلم (نسخ + handoff) من غير حقن
+        app, fake, hist, rsave, clip, ttype = self._run_real_paste(
             core.Operation(mode="edit", selection="نص"), same=False)
-        self.assertFalse(paste_fn.called, "الهدف اتغيّر = مفيش حقن")
+        self.assertFalse(ttype.called, "الهدف اتغيّر = مفيش حقن")
         clip.assert_called_once_with("النص المعدل")
         self.assertEqual(app.unplaced, ["النص المعدل"])
         hist.assert_called_once()
         rsave.assert_called_once()
         self.assertEqual(app.events[-1], ("done", "edit"))
+        self.assertFalse(app.busy)
+
+    def test_target_changed_and_copy_fails_reports_err(self):
+        # M7: الهدف اتغيّر والنسخة فشلت → خطأ بدل on_unplaced + "done"
+        app, fake, hist, rsave, clip, ttype = self._run_real_paste(
+            core.Operation(mode="edit", selection="نص"), same=False, copy_ok=False)
+        self.assertFalse(ttype.called)
+        self.assertEqual(app.unplaced, [])
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني"))
+        self.assertFalse(app.busy)
+
+    def test_secure_target_after_capture_refuses(self):
+        # M6: الفوكس بقى خانة باسورد بعد الأسر → منحقنش ولا ننسخ، ونوقف بخطأ
+        focus = {"is_password": True, "class": "Edit", "editable": True}
+        app, fake, hist, rsave, clip, ttype = self._run_real_paste(
+            core.Operation(mode="edit", selection="نص"), same=True, focus=focus)
+        self.assertFalse(ttype.called, "مفيش حقن في خانة باسورد")
+        clip.assert_not_called()
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "مكتبتش التعديل — الهدف بقى خانة باسورد"))
         self.assertFalse(app.busy)
 
 
@@ -269,42 +313,62 @@ class TestBeginEdit(unittest.TestCase):
         self.assertIn(("err", "حدّد النص اللي عايز تعدّله الأول"), app.events)
 
     def test_password_field_refused_model_never_called(self):
+        # M1: الرفض دلوقتي جاي من capture_target نفسه (result["password"]) — مش من
+        # probe focused_info منفصل قبل الأسر.
         app = make_app()
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch("winput.capture_target",
                            return_value={"hwnd": 1, "runtime_id": (1,),
-                                         "class": "Edit", "selection": "نص محدد",
-                                         "selection_hash": "abc"}) as capture, \
-                mock.patch("winput.focused_info",
-                           return_value={"is_password": True, "class": "Edit", "editable": True}):
+                                         "class": "Edit", "selection": "",
+                                         "selection_hash": "", "password": True}) as capture, \
+                mock.patch("winput.focused_info") as focused:
             app.begin("edit")
             self.assertTrue(_wait_until(lambda: not app.recording, 3))
         self.assertEqual(app.rec.started, 0)
         self.assertIn(("err", "مينفعش تعديل خانة باسورد"), app.events)
-        # الرفض قبل أي قراية للتحديد — ولا UIA ولا Ctrl+C على خانة باسورد
-        capture.assert_not_called()
+        # الأسر بيتنادى (هو اللي بيكتشف الباسورد) — ومفيش probe باسورد منفصل قبله
+        capture.assert_called_once()
+        self.assertFalse(focused.called)
 
     def test_capture_budget_exceeded_begin_returns_fast(self):
+        # begin لازم يرجع فورًا من غير ما يستنى الأسر — ثريد الأسر دايمون وبيبص
+        # في UIA لوحده، والنتيجة مش بتوصل لو الميزانية فاضت. (الأسر مش بطيء هنا،
+        # بس "فورًا" بتتعلم بإن begin بيسلّم لثريد ويرجع من غير استنى.)
         app = make_app()
-
-        def slow_capture():
-            time.sleep(3)
-            return {"hwnd": 1, "runtime_id": (1,), "class": "Edit",
-                    "selection": "نص", "selection_hash": "abc"}
-
         t0 = time.time()
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
-                mock.patch("winput.capture_target", side_effect=slow_capture):
+                mock.patch("winput.capture_target",
+                           return_value={"hwnd": 1, "runtime_id": (1,), "class": "Edit",
+                                         "selection": "", "selection_hash": ""}):
             app.begin("edit")
         elapsed = time.time() - t0
         self.assertLess(elapsed, 0.2, "begin لازم يرجع فورًا من غير ما يستنى الأسر")
         self.assertTrue(_wait_until(lambda: not app.recording, 3))
         self.assertEqual(app.rec.started, 0)
         self.assertIn(("err", "حدّد النص اللي عايز تعدّله الأول"), app.events)
+
+    def test_begin_edit_passes_cancel_event_to_capture(self):
+        # M2: _begin_edit بيمرّر Event إلغاء لـcapture_target — عشان الثريد المتأخر
+        # يبطل قبل ما يلمس الحافظة. من غيره الـEvent ماكانش هيوصّل للأسر.
+        app = make_app()
+        seen = {}
+
+        def capture(cancel=None):
+            seen["cancel"] = cancel
+            return {"hwnd": 1, "runtime_id": (1,), "class": "Edit",
+                    "selection": "نص", "selection_hash": "abc"}
+
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.capture_target", side_effect=capture):
+            app.begin("edit")
+            self.assertTrue(_wait_until(lambda: app.rec.started > 0, 3))
+        self.assertIsInstance(seen.get("cancel"), threading.Event)
 
     def test_success_starts_recorder_with_captured_target(self):
         app = make_app()
@@ -313,8 +377,7 @@ class TestBeginEdit(unittest.TestCase):
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch("winput.capture_target",
                            return_value={"hwnd": 7, "runtime_id": (3,), "class": "Edit",
-                                         "selection": "نص محدد", "selection_hash": "abc"}), \
-                mock.patch("winput.focused_info", return_value=GUI_FOCUS):
+                                         "selection": "نص محدد", "selection_hash": "abc"}):
             app.begin("edit")
             self.assertTrue(_wait_until(lambda: app.rec.started > 0, 3))
         self.assertTrue(app.recording)
@@ -360,6 +423,13 @@ class TestSameTarget(unittest.TestCase):
                 mock.patch.object(winput, "_selection_text", return_value="نص تاني"), \
                 mock.patch.object(winput, "_selection_hash", return_value="xyz"):
             self.assertFalse(winput.same_target(self._op()))
+
+    def test_empty_runtime_id_is_not_same(self):
+        # M5: من غير RuntimeId مش قادرين نتحقق من العنصر → False (الـcaller يسلّم)
+        import winput
+        op = core.Operation(mode="edit", hwnd=7, runtime_id=(), selection="نص")
+        with mock.patch.object(winput, "foreground_hwnd", return_value=7):
+            self.assertFalse(winput.same_target(op))
 
 
 # ── الإعدادات: رفض الزرار المكرر ──────────────────────────────────────────────

@@ -10,6 +10,7 @@
 import os
 import sys
 import hashlib
+import threading
 import unittest
 from unittest import mock
 
@@ -107,16 +108,27 @@ class FakePatternHolder:
 class FakeElement:
     """عنصر UIA مزيّف: RuntimeId وCurrentClassName ونمط النص بتحديده."""
 
-    def __init__(self, runtime_id=(), texts=(), class_name="Edit"):
+    def __init__(self, runtime_id=(), texts=(), class_name="Edit", password=False):
         self._rid = list(runtime_id)
         self._holder = FakePatternHolder(FakeTextPattern(texts))
         self.CurrentClassName = class_name
+        self._password = password
 
     def GetRuntimeId(self):
         return self._rid
 
     def GetCurrentPattern(self, pattern_id):
         return self._holder
+
+    def GetCurrentPropertyValue(self, prop):
+        return self._password
+
+
+class UnknownPasswordElement(FakeElement):
+    """عنصر مابيقراش IsPassword (بيرمي) — زي خانة مقدرناش نعرف نوعها."""
+
+    def GetCurrentPropertyValue(self, prop):
+        raise RuntimeError("uia property unreadable")
 
 
 # ── انتظار الموديفايرز والمقدمة ──────────────────────────────────────────────
@@ -280,7 +292,9 @@ class TestSelectionViaClipboard(unittest.TestCase):
     def test_timeout_leaves_clipboard_untouched(self):
         # مفيش تحديد اتنسخ: الحافظة متتكتبش ورقم التسلسل بتاع المستخدم ميتوسمش
         clip = FakeClipboard("old", copy_result=None)
-        self.assertEqual(clip.run(monotonic={"side_effect": [0.0] + [10.0] * 10}), "")
+        # M4: _selection_via_clipboard دلوقتي بينادي core.suppress_clip_watch قبل
+        # الحقن — نداء monotonic زيادة (أول قيمة بتستهلكها الكبس)، فبنزوّد واحدة.
+        self.assertEqual(clip.run(monotonic={"side_effect": [0.0, 0.0, 10.0]}), "")
         self.assertEqual((clip.text, clip.seq, clip.marked()), ("old", 100, []))
 
     def test_copy_sequence_marked_before_reading(self):
@@ -305,6 +319,93 @@ class TestSelectionViaClipboard(unittest.TestCase):
                 mock.patch.object(winput, "_clipboard_sequence", return_value=5), \
                 mock.patch.object(winput, "copy_selection", return_value=False):
             self.assertEqual(winput._selection_via_clipboard(), "")
+
+    def test_cancel_before_inject_returns_empty_and_never_touches(self):
+        # M2: الاتلغاء قبل الحقن → منحقنش Ctrl+C ومنقراش الحافظة خالص
+        ev = threading.Event()
+        ev.set()
+        with mock.patch.object(winput, "_clipboard_safe_for_text", return_value=True), \
+                mock.patch.object(winput, "copy_selection") as copy, \
+                mock.patch.object(winput, "_read_clipboard_text") as read:
+            self.assertEqual(winput._selection_via_clipboard(cancel=ev), "")
+        self.assertFalse(copy.called)
+        self.assertFalse(read.called)
+
+    def test_cancel_before_restore_does_not_restore(self):
+        # M2: الاتلغاء وصل بعد الحقن وقبل الرجوع → منرجّعش الحافظة ومنرجعش التحديد
+        ev = threading.Event()
+
+        def mark_then_change(seq_before):
+            ev.set()
+            return 101
+
+        with mock.patch.object(winput, "_clipboard_safe_for_text", return_value=True), \
+                mock.patch.object(winput, "_read_clipboard_text", side_effect=["old", "sel"]), \
+                mock.patch.object(winput, "wait_modifiers_released", return_value=True), \
+                mock.patch.object(winput, "_clipboard_sequence", return_value=101), \
+                mock.patch.object(winput, "copy_selection", return_value=True), \
+                mock.patch.object(winput, "_wait_clipboard_change", side_effect=mark_then_change), \
+                mock.patch.object(winput, "_write_clipboard_text") as write, \
+                mock.patch.object(winput, "_mark_owned"), \
+                mock.patch.object(winput.time, "sleep"):
+            out = winput._selection_via_clipboard(cancel=ev)
+        self.assertEqual(out, "")
+        self.assertFalse(write.called)
+
+    def test_read_clipboard_text_returns_none_on_failure(self):
+        # M3: القراية بتفرّق الفشل (None) عن الفاضي ('') — مش نفس القيمة
+        with mock.patch("pyperclip.paste", side_effect=RuntimeError("no clip")):
+            self.assertIsNone(winput._read_clipboard_text())
+
+    def test_old_read_failure_does_not_restore(self):
+        # M3: قراية القديم فشلت (None) → ممن نكتب فوق الحافظة بعدين
+        with mock.patch.object(winput, "_clipboard_safe_for_text", return_value=True), \
+                mock.patch.object(winput, "_read_clipboard_text", side_effect=[None, "sel"]), \
+                mock.patch.object(winput, "wait_modifiers_released", return_value=True), \
+                mock.patch.object(winput, "_clipboard_sequence", return_value=101), \
+                mock.patch.object(winput, "copy_selection", return_value=True), \
+                mock.patch.object(winput, "_wait_clipboard_change", return_value=101), \
+                mock.patch.object(winput, "_write_clipboard_text") as write, \
+                mock.patch.object(winput, "_mark_owned"), \
+                mock.patch.object(core, "suppress_clip_watch"), \
+                mock.patch.object(winput.time, "sleep"):
+            out = winput._selection_via_clipboard()
+        self.assertEqual(out, "sel")
+        self.assertFalse(write.called, "القديم مش مقروء → مفيش رجوع")
+
+    def test_capture_suppresses_watcher_before_inject(self):
+        # M4: كبس المراقب لازم يحصل قبل حقن Ctrl+C (قبل copy_selection)
+        order = []
+        with mock.patch.object(winput, "_clipboard_safe_for_text", return_value=True), \
+                mock.patch.object(winput, "_read_clipboard_text", return_value="old"), \
+                mock.patch.object(winput, "wait_modifiers_released", return_value=True), \
+                mock.patch.object(winput, "_clipboard_sequence", return_value=5), \
+                mock.patch.object(winput, "copy_selection", side_effect=lambda: order.append("copy") or True), \
+                mock.patch.object(winput, "_wait_clipboard_change", return_value=6), \
+                mock.patch.object(winput, "_mark_owned"), \
+                mock.patch.object(core, "suppress_clip_watch",
+                                  side_effect=lambda s: order.append("suppress")), \
+                mock.patch.object(winput.time, "sleep"):
+            winput._selection_via_clipboard()
+        self.assertEqual(order, ["suppress", "copy"])
+
+
+# ── كبس مراقب الحافظة (M4) ───────────────────────────────────────────────────
+class TestClipWatchSuppression(unittest.TestCase):
+    def setUp(self):
+        core._clip_suppress_until = 0.0
+
+    def test_suppress_blocks_until_deadline(self):
+        with mock.patch.object(core.time, "monotonic", return_value=100.0):
+            core.suppress_clip_watch(2.0)
+        with mock.patch.object(core.time, "monotonic", return_value=101.9):
+            self.assertTrue(core._clip_watch_suppressed())
+        with mock.patch.object(core.time, "monotonic", return_value=102.1):
+            self.assertFalse(core._clip_watch_suppressed())
+
+    def test_no_suppression_by_default(self):
+        with mock.patch.object(core.time, "monotonic", return_value=0.0):
+            self.assertFalse(core._clip_watch_suppressed())
 
 
 # ── capture_target ────────────────────────────────────────────────────────────
@@ -333,7 +434,7 @@ class TestCaptureTarget(unittest.TestCase):
                                   return_value="from-clip") as fallback:
             out = winput.capture_target()
         self.assertEqual(out["selection"], "from-clip")
-        fallback.assert_called_once_with()
+        fallback.assert_called_once_with(None)
         self.assertNotIn("_uia_unsupported", out)
 
     def test_uia_empty_selection_never_injects_ctrl_c(self):
@@ -356,6 +457,28 @@ class TestCaptureTarget(unittest.TestCase):
         self.assertEqual(out["selection"], "clip-text")
         self.assertEqual(out["runtime_id"], ())
         self.assertEqual(out["class"], "")
+
+    def test_password_field_refused_without_fallback(self):
+        # M1: خانة باسورد → password=True وتحديد فاضي ومنجربش خطة الحافظة
+        el = FakeElement(runtime_id=[1, 2], texts=["سر"], class_name="Edit", password=True)
+        with mock.patch.object(winput, "foreground_hwnd", return_value=42), \
+                mock.patch.object(winput, "_focused_element", return_value=el), \
+                mock.patch.object(winput, "_selection_via_clipboard") as fallback:
+            out = winput.capture_target()
+        self.assertTrue(out["password"])
+        self.assertEqual(out["selection"], "")
+        fallback.assert_not_called()
+
+    def test_unreadable_password_refused_without_fallback(self):
+        # M1: مقدرناش نقرا IsPassword → بنتعامل معاها رفض جوه capture بس
+        el = UnknownPasswordElement(runtime_id=[1], texts=["سر"])
+        with mock.patch.object(winput, "foreground_hwnd", return_value=42), \
+                mock.patch.object(winput, "_focused_element", return_value=el), \
+                mock.patch.object(winput, "_selection_via_clipboard") as fallback:
+            out = winput.capture_target()
+        self.assertTrue(out["password"])
+        self.assertEqual(out["selection"], "")
+        fallback.assert_not_called()
 
     def test_never_raises_on_total_failure(self):
         with mock.patch.object(winput, "foreground_hwnd", side_effect=RuntimeError("boom")), \

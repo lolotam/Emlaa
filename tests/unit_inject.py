@@ -307,13 +307,75 @@ class TestPasteText(unittest.TestCase):
         with self.patch_cfg(), \
                 mock.patch("winput.focused_info",
                            return_value={"is_password": False, "class": "TermControl",
-                                         "editable": True}), \
+                                          "editable": True}), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch("pyperclip.copy"), \
                 mock.patch("winput.paste_shift_insert", return_value=True) as si, \
                 mock.patch.object(core.time, "sleep"):
             self.assertEqual(core.paste_text("echo hi"), "placed")
         si.assert_called_once_with()
+
+    def test_guard_true_injects_after_wait(self):
+        # M6: الفحص نجح → حقن عادي
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy"), \
+                mock.patch("winput.type_text", return_value=True) as ttype, \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("hello", ("gui", "type", "hello"),
+                                             guard=lambda: True), "placed")
+        ttype.assert_called_once_with("hello")
+
+    def test_guard_false_copies_and_handoffs(self):
+        # M6: الهدف اتغيّر → منحقنش، ننسخ ونسلّم زي الـhandoff
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy") as copy, \
+                mock.patch("winput.type_text") as ttype, \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("hello", ("gui", "type", "hello"),
+                                             guard=lambda: False), "handoff")
+        copy.assert_called_once_with("hello")
+        self.assertFalse(ttype.called)
+
+    def test_guard_false_secure_never_copies(self):
+        # M6: حتى لو الفحص رجّع False، الخانة الآمنة ممن تتنسخ
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy") as copy, \
+                mock.patch("winput.type_text") as ttype, \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("s3cret", ("secure", "type", "s3cret"),
+                                             guard=lambda: False), "handoff")
+        self.assertFalse(copy.called)
+        self.assertFalse(ttype.called)
+
+    def test_guard_false_copy_failure_is_clip_failed(self):
+        # M6+M7: الهدف اتغيّر والنسخة فشلت → clip_failed (الـcaller ينشر خطأ)
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy", side_effect=RuntimeError("no clip")), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("hello", ("gui", "type", "hello"),
+                                             guard=lambda: False), "clip_failed")
+
+    def test_snippet_copy_suppresses_watcher_before_copy(self):
+        # M4: نسخ الاختصار بيسبقه كبس المراقب (ثانية واحدة)
+        with self.patch_cfg(), \
+                mock.patch.object(core, "suppress_clip_watch") as supp, \
+                mock.patch("pyperclip.copy") as copy, \
+                mock.patch("winput.type_text", return_value=True), \
+                mock.patch.object(core.time, "sleep"):
+            core.paste_text("x", ("gui", "type", "x"), from_snippet=True)
+        supp.assert_called_once_with(1.0)
+        copy.assert_called_once_with("x")
+
+    def test_normal_copy_does_not_suppress(self):
+        # M4: النسخ العادي (مش اختصار) مبيكبش المراقب
+        with self.patch_cfg(), \
+                mock.patch.object(core, "suppress_clip_watch") as supp, \
+                mock.patch("pyperclip.copy"), \
+                mock.patch("winput.type_text", return_value=True), \
+                mock.patch.object(core.time, "sleep"):
+            core.paste_text("x", ("gui", "type", "x"))
+        self.assertFalse(supp.called)
 
 
 # ── has_text_focus: ترفيلة على winput.focused_info بنفس العقد القديم ────────

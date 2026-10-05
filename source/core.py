@@ -451,6 +451,29 @@ def _clip_is_owned(seq):
         return seq in _owned_clip_seqs
 
 
+# ── كبس مراقب الحافظة مؤقتًا (M4) ─────────────────────────────────────────────
+# قبل ما ننشر حاجة إحنا بنفسنا للحافظة (أسر Ctrl+C أو نسخ نص اختصار) بنكب المراقب
+# لفترة قصيرة: التغيير بيحصل بسرعة ورقم التسلسل بيتوسم «بتاعتنا» بعده — بس الفجوة
+# بين النشر والوسم كانت بتخلّي المراقب (اللي بيقرا كل نص ثانية) يسجّل النص بتاعنا
+# كنسخة حقيقية. الكبس بيمنع ده من غير ما يقدّم `last`، فبعد انتهاء الكبس المراقب
+# بيعيد تقييم الرقم الحالي (بتاعنا → يتخطى، نسخة مستخدم → تتسجل).
+_clip_suppress_lock = threading.Lock()
+_clip_suppress_until = 0.0
+
+
+def suppress_clip_watch(seconds):
+    """بيمنع مراقب الحافظة من التسجيل لحد `seconds` ثانية من دلوقتي."""
+    global _clip_suppress_until
+    with _clip_suppress_lock:
+        _clip_suppress_until = time.monotonic() + seconds
+
+
+def _clip_watch_suppressed():
+    """True لو المراقب مكبوت دلوقتي."""
+    with _clip_suppress_lock:
+        return time.monotonic() < _clip_suppress_until
+
+
 class ClipboardWatcher:
     """
     بيراقب الحافظة (بيقرا رقم التغيير من الويندوز كل نص ثانية) وبيحفظ أي نص جديد.
@@ -487,6 +510,10 @@ class ClipboardWatcher:
                 seq = u32.GetClipboardSequenceNumber()
                 if seq == last or not CFG.get("clipboard_history", True):
                     last = seq
+                    continue
+                # M4: مكبوت = ممن نسجّل التغيير وممن نقدّم last — لما الكبس ينتهي
+                # بنعيد تقييم الرقم الحالي من أول وجديد.
+                if _clip_watch_suppressed():
                     continue
                 last = seq
                 if _clip_is_owned(seq):
@@ -880,7 +907,13 @@ def _mark_owned_if_snippet(from_snippet):
         mark_clip_owned(winput._clipboard_sequence())
 
 
-def paste_text(text, target=None, from_snippet=False):
+def _pre_copy_suppress(from_snippet):
+    """كبس المراقب قبل نشر نص اختصار (M4) — عشان مايتسجلش كنسخة حقيقية."""
+    if from_snippet:
+        suppress_clip_watch(1.0)
+
+
+def paste_text(text, target=None, from_snippet=False, guard=None):
     """
     بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
       "placed"      = الأحداث اتحقنت كويس
@@ -893,6 +926,8 @@ def paste_text(text, target=None, from_snippet=False):
     لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
     from_snippet = النص جاي من اختصار صوتي — أي نسخة للحافظة بتتعلم إنها بتاعتنا
     عشان مراقب الحافظة مايسجلهاش (نص الاختصار اتسجّل بالفعل كإملاء).
+    guard = دالة فحص قبل الحقن مباشرة (M6): بتتندّى بعد sleep الفوكس، ولو رجّعت
+    False منحقنش ونسلّم النص زي مسار الـhandoff (نسخ غير الخانات الآمنة).
     """
     import winput
     if target is None:
@@ -906,17 +941,27 @@ def paste_text(text, target=None, from_snippet=False):
         if cls != "secure":
             # L3: لو نشر الحافظة فشل مفيش حاجة وصلت للمستخدم — منرجعش "handoff"
             # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
+            _pre_copy_suppress(from_snippet)
             if not _copy_to_clipboard(inj):
                 return "clip_failed"
             _mark_owned_if_snippet(from_snippet)
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
+    if guard is not None and not guard():
+        # M6: الهدف اتغيّر بعد الانتظار — منحقنش فوق حاجة تانية؛ نسلّم زي الـhandoff
+        if cls != "secure":
+            _pre_copy_suppress(from_snippet)
+            if not _copy_to_clipboard(inj):
+                return "clip_failed"
+            _mark_owned_if_snippet(from_snippet)
+        return "handoff"
     if cls == "secure":
         # خانة آمنة: كتابة بس — الحافظة مش طريقها
         return "placed" if winput.type_text(inj) else "failed"
     if strategy == "type":
         # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
         # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
+        _pre_copy_suppress(from_snippet)
         backup = _copy_to_clipboard(inj)
         if backup:
             _mark_owned_if_snippet(from_snippet)
@@ -925,6 +970,7 @@ def paste_text(text, target=None, from_snippet=False):
         return "failed" if backup else "clip_failed"
     if strategy in ("ctrl_v", "shift_insert"):
         # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
+        _pre_copy_suppress(from_snippet)
         if not _copy_to_clipboard(inj):
             return "clip_failed"
         _mark_owned_if_snippet(from_snippet)
@@ -1126,24 +1172,30 @@ class App:
         """
         import winput
         import dataclasses
-        # خانة باسورد: نرفض قبل أي محاولة قراية للتحديد (UIA أو Ctrl+C) — مش بعدها
-        try:
-            if winput.focused_info().get("is_password") is True:
-                self._edit_refuse(op, "مينفعش تعديل خانة باسورد")
-                return
-        except Exception:
-            pass
+        # M2: حدث إلغاء بيوصل لجوّه الأسر — لو فاضت الميزانية أو العملية بقت
+        # قديمة، ثريد الأسر المتأخر ممن يلمس الحافظة ولا يحقن Ctrl+C بعد كده.
+        cancel = threading.Event()
         captured = {}
+
         def _capture():
             try:
-                captured["result"] = winput.capture_target()
+                captured["result"] = winput.capture_target(cancel=cancel)
             except Exception:
                 captured["result"] = None
+
         t = threading.Thread(target=_capture, daemon=True)
         t.start()
-        t.join(1.5)                                # الميزانية القصوى للأسر
+        t.join(1.5)                                # الميزانية القصوى للأسر (كله جوّه ثريد واحد)
         exceeded = t.is_alive()                    # لسه شغّال = فاضت الميزانية
+        with self._state_lock:
+            current = self.recording and self._op is op
+        if exceeded or not current:
+            cancel.set()                           # الثريد المتأخر يبطل حالًا
         result = captured.get("result") or {}
+        # M1: خانة باسورد (أو مقدرناش نقرا) — الرفض من capture نفسه ورسالته واحدة
+        if result.get("password"):
+            self._edit_refuse(op, "مينفعش تعديل خانة باسورد")
+            return
         sel = (result.get("selection") or "")
         # فاضت الميزانية أو الأسر فشل أو مفيش تحديد → رفض. (الثريد اللي لسه
         # شغّال daemon وبيبص في UIA — بنسيبه يخلص لوحده، النتيجة مش هتوصل.)
@@ -1394,23 +1446,23 @@ class App:
             # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة
             self.on_state("err", "معرفتش أعدّل النص — جرّب تاني")
             return
-        if winput.same_target(op):
-            # نفس الهدف: حقن عادي مكان التحديد (الكتابة/اللزق فوق تحديد نشط بيبدّله)
-            info = winput.focused_info()
-            info["exe"] = _foreground_app()
-            target = smart.insert_target(info, result, CFG.get("insert_method"))
-            res = paste_text(result, target)
-            if res == "clip_failed":
-                self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
-                return
-            if res in ("failed", "handoff"):
-                self.on_unplaced(result)
-        else:
-            # الهدف اتغيّر: منكتبش فوق حاجة تانية — ننسخ النتيجة (حافظة عادية،
-            # مش «بتاعتنا»: ده نص المستخدم المعدّل) ونعرضه في الـtoast
-            _copy_to_clipboard(result)
+        info = winput.focused_info()
+        info["exe"] = _foreground_app()
+        target = smart.insert_target(info, result, CFG.get("insert_method"))
+        # M6: الهدف اتحوّل لخانة باسورد بعد الأسر — ممن نحقن ولا ننسخ (الباسورد
+        # عمره مايوصل للحافظة)؛ بنوقف برسالة واضحة من غير "done".
+        if target[0] == "secure":
+            self.on_state("err", "مكتبتش التعديل — الهدف بقى خانة باسورد")
+            return
+        # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،
+        # paste_text بيتسلّم (نسخ) بدل ما يكتب فوق حاجة تانية.
+        res = paste_text(result, target, guard=lambda: winput.same_target(op))
+        # M7: الهدف اتغيّر والنسخة فشلت كمان → خطأ بدل on_unplaced + "done"
+        if res == "clip_failed":
+            self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+            return
+        if res in ("failed", "handoff"):
             self.on_unplaced(result)
-            res = "handoff"
         rid = history_add("edit", instruction, result, dur, engine=cl.engine())
         if rid:
             recording_save(rid, wav)

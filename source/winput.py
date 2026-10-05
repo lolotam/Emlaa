@@ -375,6 +375,14 @@ def _runtime_id(el):
         return ()
 
 
+def _element_password(el):
+    """IsPassword (30019) على العنصر — True باسورد، False عادي، None مقدرناش نقراه."""
+    try:
+        return bool(el.GetCurrentPropertyValue(30019))
+    except Exception:
+        return None
+
+
 def _selection_text(el):
     """
     النص المحدد جوّه العنصر عن طريق UIA TextPattern (GetSelection → GetText) — مابيلمسش
@@ -449,12 +457,12 @@ def _clipboard_safe_for_text():
 
 
 def _read_clipboard_text():
-    """نص الحافظة الحالي — '' لو مفيش نص أو فشل."""
+    """نص الحافظة الحالي — '' لو فاضية، None لو فشلت القراية (M3: نفرّق الفشل عن الفاضي)."""
     try:
         import pyperclip
         return pyperclip.paste()
     except Exception:
-        return ""
+        return None
 
 
 def _write_clipboard_text(text):
@@ -507,18 +515,31 @@ def _wait_clipboard_change(seq_before, timeout=0.5):
     return None
 
 
-def _selection_via_clipboard():
+def _selection_via_clipboard(cancel=None):
     """
     الخطة البديلة لأسر التحديد (من غير UIA): نحفظ نص الحافظة، نحقن Ctrl+C، نقرا النص
     الجديد، ونرجّع النص القديم — بس لو الحافظة لسه «بتاعتنا» (نفس رقم التسلسل اللي
     عملناه): لو المستخدم نسخ حاجة في النص، نسخته الأحدث متتمسحش (R1 #7).
     بنرجع '' من غير ما نلمس الحافظة لو فيها محتوى غير نصي، أو لو مفيش حاجة اتنسخت.
+    cancel = Event الإلغاء (M2): لو اتسيت، منحقنش Ctrl+C ومنرجّعش الحافظة.
     """
+    if cancel is not None and cancel.is_set():
+        return ""
     if not _clipboard_safe_for_text():
         return ""
-    old = _read_clipboard_text()
     if not wait_modifiers_released():
         return ""
+    # M3: نسجل الحافظة القديمة بعد ما الموديفايرز تتساب — لو المستخدم لسه ماسك
+    # وساب بعد كده، القيمة دي هي اللي نرجعها (مش قيمة أقدم من وقت الدوسة).
+    old = _read_clipboard_text()
+    if cancel is not None and cancel.is_set():
+        return ""
+    # M4: نكب مراقب الحافظة قبل ما نحقن Ctrl+C — النص اللي بينسخ لازم مايتسجلش
+    try:
+        import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+        core.suppress_clip_watch(2.0)
+    except Exception:
+        pass
     seq_before = _clipboard_sequence()
     if not copy_selection():
         return ""
@@ -527,9 +548,13 @@ def _selection_via_clipboard():
         return ""                          # مفيش تحديد اتنسخ — الحافظة زي ما هي
     new = _read_clipboard_text()
     if _clipboard_sequence() == seq_copy:  # لسه بتاعتنا → نرجّع نص المستخدم
-        if _write_clipboard_text(old):
-            _mark_owned(_clipboard_sequence())
-    return new
+        if cancel is not None and cancel.is_set():
+            return ""                       # M2: اتلغينا قبل الرجوع — منلمسش الحافظة
+        # M3: قراية القديم فشلت (None) = منعرفش نرجّع إيه — ممن نكتب فوق الحافظة.
+        if old is not None:
+            if _write_clipboard_text(old):
+                _mark_owned(_clipboard_sequence())
+    return new or ""
 
 
 def _selection_hash(text):
@@ -539,12 +564,13 @@ def _selection_hash(text):
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
-def capture_target():
+def capture_target(cancel=None):
     """
     أسر هدف التعديل في المكان: HWND المقدمة + معرّف العنصر المركّز + النص المحدد.
     بيشتغل من ثريد عامل (مش ثريد الواجهة): _uia بتعمل CoInitialize للثريد ده.
     عمره ما يرمي: أي فشل بيرجّع dict بقيم فارغة/صفر — والـcaller (Task 12)
     هو اللي يقرر يتعامل معاها إزاي.
+    cancel = Event الإلغاء (M2): لو اتسيت، منجربش خطة الحافظة (حقن Ctrl+C).
     """
     out = {"hwnd": 0, "runtime_id": (), "class": "", "selection": "",
            "selection_hash": ""}
@@ -557,6 +583,11 @@ def capture_target():
         if el is not None:
             out["runtime_id"] = _runtime_id(el)
             out["class"] = el.CurrentClassName or ""
+            # M1: باسورد؟ على نفس العنصر اللي بنقرا منه التحديد. لو باسورد (أو
+            # مقدرناش نقرا) منرفض من غير ما نقرا التحديد ولا نحقن Ctrl+C.
+            if _element_password(el) is not False:
+                out["password"] = True
+                return out
             sel = _selection_text(el)
             out["selection"] = sel if sel is not None else ""
             out["_uia_unsupported"] = sel is None
@@ -568,7 +599,7 @@ def capture_target():
             pass
     try:
         if not out["selection"] and out.pop("_uia_unsupported", True):
-            out["selection"] = _selection_via_clipboard()
+            out["selection"] = _selection_via_clipboard(cancel)
         out.pop("_uia_unsupported", None)
     except Exception as e:
         try:
@@ -591,6 +622,10 @@ def same_target(op):
     النتيجة فوق حاجة المستخدم غيّرها في النص. أي فشل = False (آمن).
     """
     if not op:
+        return False
+    # M5: من غير RuntimeId مش قادرين نتحقق من العنصر — الـcaller يسلّم (handoff)
+    # بدل ما يكتب فوق حاجة مش متأكد منها.
+    if not op.runtime_id:
         return False
     try:
         if foreground_hwnd() != int(op.hwnd):
@@ -709,10 +744,12 @@ def set_no_activate(hwnd):
 # WM_MOUSEACTIVATE بيرجع MA_NOACTIVATE، وأي رسالة تانية بتعدّي لإجراء Tk الأصلي زي ما هي.
 GWLP_WNDPROC     = -4
 WM_MOUSEACTIVATE = 0x0021
+WM_NCDESTROY     = 0x0082
 MA_NOACTIVATE    = 3
 LRESULT = ctypes.c_ssize_t
 _WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 _subclassed = {}   # hwnd → (الإجراء الجديد، الأصلي) — المرجع لازم يفضل عايش وإلا الـcallback يتمسح
+_retired_procs = []   # M8: مراجع الإجراءات المتقاعدة — عشان مايتجمعوش لحد ما آخر نداء يخلص
 
 
 def block_mouse_activate(hwnd):
@@ -735,6 +772,18 @@ def block_mouse_activate(hwnd):
         def proc(h, msg, wp, lp):
             if msg == WM_MOUSEACTIVATE:
                 return MA_NOACTIVATE
+            if msg == WM_NCDESTROY:
+                # M8: النافذة بتتدمّر — نرجّع إجراءها الأصلي ونشيلها من السجل
+                # وبعدين نمرّر الرسالة للأصل. المرجع بتاعنا بيتحفظ في قايمة
+                # المتقاعدين عشان مايتجمعش قبل النداء الأخير ده.
+                _retired_procs.append(proc)
+                prev = old.get("proc")
+                if prev:
+                    u.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, prev)
+                _subclassed.pop(hwnd, None)
+                if prev:
+                    return u.CallWindowProcW(prev, h, msg, wp, lp)
+                return 0
             return u.CallWindowProcW(old["proc"], h, msg, wp, lp)
 
         ctypes.set_last_error(0)

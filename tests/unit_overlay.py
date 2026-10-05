@@ -8,6 +8,7 @@ WaveOverlay، وبيتأكد إن الـexstyle فيه WS_EX_NOACTIVATE بعد �
 """
 import os
 import sys
+import gc
 import unittest
 
 # source مش حزمة (مفيش __init__.py)، فبنضيفه للمسار عشان الاستيراد يشتغل من جذر الـrepo
@@ -47,6 +48,10 @@ class TestOverlayNoActivate(unittest.TestCase):
             self.root.destroy()
         except Exception:
             pass
+        # نحط مراجع Tk عشان مترميش وتفضّل معلقة لحد ثريد تاني يجمعها (Tcl_AsyncDelete)
+        self.overlay = None
+        self.root = None
+        gc.collect()
 
     def _exstyle(self):
         hwnd = winput.toplevel_hwnd(self.overlay)
@@ -79,6 +84,10 @@ class TestOverlayMouseActivate(unittest.TestCase):
                 w.destroy()
             except Exception:
                 pass
+        # نحط مراجع Tk عشان مترميش وتفضّل معلقة لحد ثريد تاني يجمعها (Tcl_AsyncDelete)
+        self.overlay = None
+        self.root = None
+        gc.collect()
 
     def _ask(self):
         import ctypes
@@ -102,3 +111,15 @@ class TestOverlayMouseActivate(unittest.TestCase):
 
     def test_invalid_hwnd(self):
         self.assertFalse(winput.block_mouse_activate(0))
+
+    def test_ncdestroy_removes_from_subclassed(self):
+        # M8: لما النافذة تتدمّر، WM_NCDESTROY لازم يرجّع الإجراء الأصلي ويشيل
+        # الـhwnd من _subclassed — غير كده الـcallback هيفضل معلق على نافذة ميتة.
+        # بنستخدم Toplevel عادي (مش الكبسولة) عشان نتفادى الـtick بتاع الموجة.
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        hwnd = winput.toplevel_hwnd(win)
+        self.assertTrue(winput.block_mouse_activate(hwnd))
+        self.assertIn(hwnd, winput._subclassed)
+        win.destroy()
+        self.assertNotIn(hwnd, winput._subclassed)
