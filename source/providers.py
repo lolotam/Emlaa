@@ -297,6 +297,20 @@ TRANSLATE_SYSTEM = (
     "٦) أرجع النص المترجم فقط مباشرة، من غير أي مقدمات أو شروحات أو ملاحظات أو علامات اقتباس."
 )
 
+# F6 (التعديل في المكان): المستخدم بيحدد نص، ينطق تعليمات، والموديل بيعدّل التحديد.
+# النص والتعليمات بيتفصلوا بعلامات واضحة عشان الموديل ميتلخبطش، والقاعدة الأخيرة
+# بتمنعه يرجّع العلامات نفسها — لو رجّعها معناها فشل في الفصل والنتيجة مرفوضة.
+EDIT_SYSTEM = (
+    "إنت محرر نصوص. هيوصلك نص المستخدم المحدد بعد <<<النص>>>، وبعده تعليمات منطوقة بعد "
+    "<<<التعليمات>>> (التعليمات جاية من تفريغ صوتي، فممكن فيها كلمة اتسمعت غلط).\n"
+    "القواعد:\n"
+    "1) طبّق التعليمات على النص بالظبط، ومتعملش أي تغيير تاني.\n"
+    "2) خلّي لغة النص زي ما هي، إلا لو التعليمات طلبت ترجمة.\n"
+    "3) لو كلمة في التعليمات واضح إنها اتسمعت غلط، افهم المقصود من السياق.\n"
+    "4) لو التعليمات مش واضحة أو مش طلب تعديل للنص، رجّع النص زي ما هو بالظبط.\n"
+    "5) رجّع النص المعدّل بس — من غير مقدمة ولا شرح ولا علامات تنصيص ولا <<< >>>."
+)
+
 
 
 def meta(pid):
@@ -596,6 +610,41 @@ class Client:
                 pass
             return text
 
+    def _chat_raw(self, system, text, temperature=0.2):
+        """
+        زي _chat بس لعمليات لازم المخرج يطلع فعلاً (التعديل في المكان): بيرجّع None
+        على أي فشل أو إخراج فاضي (حتى بعد شيل <think>…</think>) — من غير ما يرجع
+        المدخل أبدًا. في التعديل «مفيش رد» معناها «مفيش تعديل»، مش «نكتب الأصل».
+        """
+        self.last_chat = None
+        if not text:
+            return None
+        if not self.m.get("chat"):
+            # مزوّد بيفرّغ بس (Deepgram) → نفس المسار على مزوّد تاني ليه مفتاح
+            if not self.helper:
+                return None
+            out = self.helper._chat_raw(system, text, temperature)
+            self.last_chat = self.helper.last_chat
+            return out
+        try:
+            if self.id == "gemini":
+                out = self._gemini_chat(system, text, temperature, raw=True)
+            else:
+                out = self._oa_chat(system, text, temperature, raw=True)
+        except Exception as e:
+            try:
+                import core
+                core.log_error(e, "chat/edit (تم تجاهله — مفيش تعديل)")
+            except Exception:
+                pass
+            return None
+        out = _THINK_RE.sub("", out or "").strip()
+        if not out:
+            return None
+        # نفس تنضيف الردود العادية (``` ولافتات «النص المعدّل:» والتنصيص) — بس بعد ما
+        # اتأكدنا إن فيه رد: _clean_output بيرجّع المدخل لو الرد فاضي، وده بالظبط اللي ممنوع هنا
+        return _clean_output(text, out) or None
+
     def _stt_prompt(self, language="ar"):
         """البرومبت + كلمات القاموس + مفاتيح الاختصارات (Whisper بياخد لحد ~٢٢٤ توكن، فبنقصّ).
         language=None = ثنائي اللغة."""
@@ -653,8 +702,20 @@ class Client:
         """يترجم الكلام تلقائياً: لو عربي يحوله لإنجليزي، ولو إنجليزي يحوله لعربي."""
         return self._chat(self._with_vocab(TRANSLATE_SYSTEM + "\n" + STT_FIX_RULE), text, temperature=0.2)
 
+    def edit(self, selection, instruction):
+        """
+        F6: تعديل نص محدد بتعليمات منطوقة. بيبعت الاثنين معًا للموديل مفصولين
+        بعلامات، وبيرجّع النص المعدّل بس — أو None لو النداء فشل أو الموديل رجّع
+        شكل المدخل نفسه (لسه فيه «<<<»). النص المحدد نفسه مبيتخزنش في أي حاجة.
+        """
+        prompt = "<<<النص>>>\n" + (selection or "") + "\n<<<التعليمات>>>\n" + (instruction or "")
+        out = self._chat_raw(self._with_vocab(EDIT_SYSTEM), prompt, temperature=0.2)
+        if out is None or "<<<" in out:
+            return None
+        return out
 
-    def _oa_chat(self, system, text, temperature):
+
+    def _oa_chat(self, system, text, temperature, raw=False):
         candidates = _model_list(self.m["chat"], self.m.get("chat_alt"))
         for i, model in enumerate(candidates):
             last = i == len(candidates) - 1
@@ -679,9 +740,11 @@ class Client:
                     continue
                 # _chat بيمسك الخطأ ويسجّله ويرجّع النص الخام — كان بيتبلع هنا من غير أي أثر
                 raise
-        return text
+        # raw: وضع التعديل معتمد إن الإخراج الفاضي = فشل — منرجعش المدخل أبدًا
+        # (غير كده «التعديل» كان هيكتب النص الأصلي ويدّعي إنه اتعمل)
+        return "" if raw else text
 
-    def _gemini_chat(self, system, text, temperature):
+    def _gemini_chat(self, system, text, temperature, raw=False):
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "systemInstruction": {"parts": [{"text": system}]},
@@ -694,7 +757,8 @@ class Client:
             try:
                 r = _post_json(f"{GEMINI_API}/models/{model}:generateContent", payload, hdr)
                 self.last_chat = (self.m["name"], model)
-                return _gemini_text(r) or text
+                # raw: الإخراج الفاضي يرجع "" مش النص الأصلي (نفس حماية وضع التعديل)
+                return _gemini_text(r) or ("" if raw else text)
             except urllib.error.HTTPError as e:
                 last = RuntimeError(_http_msg(e))
                 if e.code == 404 and i < len(candidates) - 1:

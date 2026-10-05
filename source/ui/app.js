@@ -20,7 +20,7 @@ const S = {
   snipEdit: -1,
 };
 
-const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة" };
+const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
   translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
@@ -144,10 +144,10 @@ function renderStats(st) {
 function renderKeys() {
   const c = S.boot.cfg;
   const toggle = c.mode !== "hold";
-  $("#homeKeys").innerHTML = [
-    ["normal", c.hotkey_normal], ["prompt", c.hotkey_prompt], ["translate", c.hotkey_translate],
-  ].map(([m, k]) => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(hkLabel(k))}</span></div>`).join("")
-    + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من التلاتة تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
+  const rows = [["normal", c.hotkey_normal], ["prompt", c.hotkey_prompt], ["translate", c.hotkey_translate]];
+  if (c.hotkey_edit) rows.push(["edit", c.hotkey_edit]);
+  $("#homeKeys").innerHTML = rows.map(([m, k]) => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(hkLabel(k))}</span></div>`).join("")
+    + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من دول تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
 }
 function renderLast() {
   const last = S.history[0];
@@ -769,6 +769,9 @@ function fillSettings() {
   fillSelect($("#hkNormal"), S.boot.hotkeys, c.hotkey_normal);
   fillSelect($("#hkPrompt"), S.boot.hotkeys, c.hotkey_prompt);
   fillSelect($("#hkTranslate"), S.boot.hotkeys, c.hotkey_translate);
+  fillSelect($("#hkEdit"), S.boot.hotkeys, c.hotkey_edit || "");
+  $("#hkEdit").insertAdjacentHTML("afterbegin", `<option value="">مفيش</option>`);
+  $("#hkEdit").value = c.hotkey_edit || "";
   fillSelect($("#hkOpen"), S.boot.openHotkeys, c.open_hotkey || "");
   $("#recMode").value = c.mode === "hold" ? "hold" : "toggle";
   $("#sInsert").value = c.insert_method === "auto" || c.insert_method === "paste" ? c.insert_method : "type";
@@ -805,9 +808,10 @@ $("#styleList").addEventListener("click", e => {
   }
 });
 $("#saveBtn").addEventListener("click", async () => {
-  const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value];
+  const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value, $("#hkEdit").value];
   const msg = $("#saveMsg");
-  if (new Set(hk).size < 3) {
+  const used = hk.filter(Boolean);
+  if (new Set(used).size < used.length) {
     msg.className = "save-msg err";
     msg.textContent = "كل وضع لازم يبقى ليه زرار مختلف";
     return;
@@ -818,7 +822,7 @@ $("#saveBtn").addEventListener("click", async () => {
   msg.textContent = $("#setKey").value.trim() ? "بتأكد من المفتاح…" : "بحفظ…";
   const r = await api().save_settings({
     provider: S.provider, key: $("#setKey").value.trim(), model: S.model,
-    hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2],
+    hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2], hotkey_edit: hk[3],
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
     auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,

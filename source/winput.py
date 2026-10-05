@@ -583,6 +583,43 @@ def capture_target():
     return out
 
 
+def same_target(op):
+    """
+    هل الهدف لسه هو نفس اللي أسرناه وقت التعديل؟ (F6)
+    لازم: النافذة المقدمة نفسها، والعنصر المركّز (لو runtime_id مش فاضي) نفس
+    المعرّف، والتحديد (لو UIA قادر يقراه) لسه نفس البصمة — عشان مانكتبش
+    النتيجة فوق حاجة المستخدم غيّرها في النص. أي فشل = False (آمن).
+    """
+    if not op:
+        return False
+    try:
+        if foreground_hwnd() != int(op.hwnd):
+            return False
+    except Exception:
+        return False
+    el = None
+    if op.runtime_id:
+        el = _focused_element()
+        if el is None:
+            return False
+        try:
+            if _runtime_id(el) != tuple(op.runtime_id):
+                return False
+        except Exception:
+            return False
+    if op.selection_hash:
+        if el is None:
+            el = _focused_element()
+        if el is not None:
+            try:
+                sel = _selection_text(el)
+            except Exception:
+                sel = None
+            if sel is not None and _selection_hash(sel) != op.selection_hash:
+                return False
+    return True
+
+
 # ── الكبسولة العائمة: منع تفعيل النافذة (WS_EX_NOACTIVATE) ────────────────────
 # الكبسولة Toplevel بتبان فوق كل حاجة، بس كليك عليها كان بياخد الفوكس —
 # والكلام المُملى بعدين بيتكتب جوّاها مش في البرنامج اللي قدام المستخدم.

@@ -114,6 +114,7 @@ DEFAULTS = {
     "hotkey_normal":     "ctrl_r",
     "hotkey_prompt":     "alt_r",
     "hotkey_translate":  "shift_r",
+    "hotkey_edit":       "",        # F6: زرار التعديل في المكان — "" = مقفول
     "overlay_x":         None,
     "overlay_y":         None,
     "mode":              "toggle",  # ضغطة تبدأ وضغطة توقف (hold = امسك واتكلم)
@@ -1051,6 +1052,11 @@ class App:
             self.active_mode = mode
             op = Operation(mode=mode, target_app=target_app)
             self._op = op
+        if mode == "edit":
+            # F6: أسر التحديد (UIA/الحافظة) بيقدر يسدّ ثواني، فمينفعش يحصل على ثريد
+            # الـlistener (pynput لازم يفضل سريع). بنسلّم الباقي لعامل ونرجع فورًا.
+            threading.Thread(target=self._begin_edit, args=(op,), daemon=True).start()
+            return
         # L1 (خصوصية): نقرا «باسورد؟» على ثريد دايمون من لحظة الحجز — عشان
         # process يرجع لحالة الخانة وقت التسجيل نفسه، مش وقت بداية التفريغ
         # (الفوكس ممكن يكون اتنقل في النص، وكلمة السر عمرها ما تضيع حمايتها).
@@ -1073,6 +1079,14 @@ class App:
         with self._state_lock:
             if not self.recording or self._op is not op:
                 return
+        self._begin_tail(op, mode)
+
+    def _begin_tail(self, op, mode):
+        """
+        نهاية begin المشتركة بين كل الأوضاع: الصفارة برّه القفل وقبل الالتقاط،
+        فحص تاني، الالتقاط جوّه القفل، إعلان "rec"، وفحص stale — في مكان واحد
+        عشان سباقات cancel/begin تفضل ثابتة ومفيش نسختين من نفس الإصلاح.
+        """
         # الصفارة برّه القفل وقبل الالتقاط: لو سبقت الالتقاط كانت بتتسجّل جوّه
         # الصوت، ولو جوّه القفل كانت بتقعد فيه ~90ms بتمنع cancel يوصّل.
         beep(880, 90)
@@ -1090,6 +1104,66 @@ class App:
             stale = self._op is not op
         if stale:
             self.on_state("ready")
+
+    def _edit_refuse(self, op, msg):
+        """
+        رفض بداية وضع التعديل: بنمسح الحجز والعملية بس لو لسه ملكنا (نفس الـop
+        اللي حجزناه) وننشر الخطأ. لو المستخدم وقّف/لغى في النص، بنسكت خالص.
+        """
+        with self._state_lock:
+            if self._op is not op:
+                return
+            self.recording = False
+            self._op = None
+        self.on_state("err", msg)
+
+    def _begin_edit(self, op):
+        """
+        F6: العامل اللي بينفّذ بداية التعديل في المكان. أسر التحديد بيحصل على
+        ثريد دايمون داخلي بميزانية قصوى (١.٥ ثانية) — UIA بيقدر يسدّ ثواني على
+        التحديدات الضخمة أو برامج مش متعاونة، ومنستناش عليه للابد. أي رفض بيحصل
+        و الـop لسه حيّ؛ لو المستخدم وقّف في النص، العامل بيسكت وبيخلص.
+        """
+        import winput
+        import dataclasses
+        # خانة باسورد: نرفض قبل أي محاولة قراية للتحديد (UIA أو Ctrl+C) — مش بعدها
+        try:
+            if winput.focused_info().get("is_password") is True:
+                self._edit_refuse(op, "مينفعش تعديل خانة باسورد")
+                return
+        except Exception:
+            pass
+        captured = {}
+        def _capture():
+            try:
+                captured["result"] = winput.capture_target()
+            except Exception:
+                captured["result"] = None
+        t = threading.Thread(target=_capture, daemon=True)
+        t.start()
+        t.join(1.5)                                # الميزانية القصوى للأسر
+        exceeded = t.is_alive()                    # لسه شغّال = فاضت الميزانية
+        result = captured.get("result") or {}
+        sel = (result.get("selection") or "")
+        # فاضت الميزانية أو الأسر فشل أو مفيش تحديد → رفض. (الثريد اللي لسه
+        # شغّال daemon وبيبص في UIA — بنسيبه يخلص لوحده، النتيجة مش هتوصل.)
+        if exceeded or not sel:
+            self._edit_refuse(op, "حدّد النص اللي عايز تعدّله الأول")
+            return
+        if len(sel) > 6000:
+            self._edit_refuse(op, "النص المحدد طويل أوي — حدّد جزء أصغر")
+            return
+        new_op = dataclasses.replace(
+            op, hwnd=int(result.get("hwnd") or 0),
+            runtime_id=tuple(result.get("runtime_id") or ()),
+            selection=sel,
+            selection_hash=result.get("selection_hash") or "")
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+            self._op = new_op
+        # نفس نهاية begin العادية — من هنا ومع بعدين مفيش فرق بين الأوضاع
+        self._begin_tail(new_op, "edit")
 
     def end(self):
         with self._state_lock:
@@ -1142,6 +1216,11 @@ class App:
         # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
         cur_mode = op.mode
         try:
+            if cur_mode == "edit":
+                # F6: وضع التعديل مسار مستقل — مفيش فحص باسورد مبكّر ولا
+                # bypass/snippets/polish/fix_mixed/prompt/translate، التعليمات بس.
+                self._process_edit(wav, op)
+                return
             # F2 (خصوصية): معلومات الفوكس بتتقرا مرة واحدة في أول العملية — قبل
             # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
             # والوقت اللي التسجيل لسه واقف عليها. لو باسورد، نصها عمره ما يوصل
@@ -1288,6 +1367,56 @@ class App:
             except Exception:
                 pass
 
+    def _process_edit(self, wav, op):
+        """
+        F6: تنفيذ التعديل في المكان. التعليمات المنطوقة بتتفّرغ وتروح للموديل
+        مع النص المحدد، والنتيجة بتتحقن مكان التحديد (أو بتتنسخ لو الهدف اتغيّر).
+        النص المحدد نفسه عمره ما يتسجّل في السجل — التعليمات والنتيجة بس.
+        """
+        import winput
+        self.on_state("work", "edit")
+        cl = self.client()
+        cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+        cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                          for s in (CFG.get("snippets") or [])
+                          if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+        try:
+            with wave.open(wav, "rb") as w:
+                dur = w.getnframes() / float(w.getframerate())
+        except Exception:
+            dur = None
+        instruction = cl.transcribe(wav, CFG.get("language", "ar"))
+        if not instruction:
+            self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
+            return
+        result = cl.edit(op.selection, instruction)
+        if result is None:
+            # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة
+            self.on_state("err", "معرفتش أعدّل النص — جرّب تاني")
+            return
+        if winput.same_target(op):
+            # نفس الهدف: حقن عادي مكان التحديد (الكتابة/اللزق فوق تحديد نشط بيبدّله)
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            target = smart.insert_target(info, result, CFG.get("insert_method"))
+            res = paste_text(result, target)
+            if res == "clip_failed":
+                self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+                return
+            if res in ("failed", "handoff"):
+                self.on_unplaced(result)
+        else:
+            # الهدف اتغيّر: منكتبش فوق حاجة تانية — ننسخ النتيجة (حافظة عادية،
+            # مش «بتاعتنا»: ده نص المستخدم المعدّل) ونعرضه في الـtoast
+            _copy_to_clipboard(result)
+            self.on_unplaced(result)
+            res = "handoff"
+        rid = history_add("edit", instruction, result, dur, engine=cl.engine())
+        if rid:
+            recording_save(rid, wav)
+        if res in ("placed", "handoff", "failed"):
+            self.on_state("done", "edit")
+
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
         from pynput import keyboard
@@ -1309,27 +1438,30 @@ class App:
         hk_normal = CFG.get("hotkey_normal") or CFG.get("hotkey") or "ctrl_r"
         hk_prompt = CFG.get("hotkey_prompt") or "alt_r"
         hk_trans  = CFG.get("hotkey_translate") or "shift_r"
+        hk_edit   = CFG.get("hotkey_edit") or ""        # F6: "" = مقفول
         mode_type = CFG.get("mode", "hold")
 
         key_map = {}
         k_norm = _parse_key(hk_normal)
         k_prmt = _parse_key(hk_prompt)
         k_trns = _parse_key(hk_trans)
+        k_edit = _parse_key(hk_edit)
 
         if k_norm: key_map[k_norm] = "normal"
         if k_prmt: key_map[k_prmt] = "prompt"
         if k_trns: key_map[k_trns] = "translate"
+        if k_edit: key_map[k_edit] = "edit"
 
         self._active_key = None
 
-        # أي زرار من التلاتة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
+        # أي زرار من الأربعة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
         # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
         # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
         ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
         LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
                     "scroll_lock": winput.VK_SCROLL_LOCK}
         alt_keys, lock_vks = set(), {}
-        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans)):
+        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans), (k_edit, hk_edit)):
             if not k:
                 continue
             s = str(raw).lower().strip()

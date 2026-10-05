@@ -528,7 +528,7 @@ class Api:
             "hotkeys": [{"id": k, "label": v} for k, v in c.hotkeys],
             "openHotkeys": [{"id": k, "label": v} for k, v in OPEN_HOTKEYS],
             "cfg": {k: cfg.get(k) for k in (
-                "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
+                "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit", "open_hotkey",
                 "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
@@ -676,12 +676,22 @@ class Api:
                 return {"ok": False, "err": err}
             providers.write_key(core.ENV_PATH, pid, new_key)
 
-        old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"), cfg.get("mode"))
+        old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
+                  cfg.get("hotkey_edit"), cfg.get("mode"))
         old_open = cfg.get("open_hotkey")
-        for k in ("provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
-                  "mode", "insert_method"):
+        for k in ("provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit",
+                  "open_hotkey", "mode", "insert_method"):
             if k in data:
                 cfg[k] = data[k]
+        # F6: ممنوع يبقى زرارين أوضاع لنفس المفتاح (غير الفاضي) — دوسة واحدة
+        # هتشتغل وضعين فوق بعض. بنفحص بعد ما القيم الجديدة اتطبّقت على cfg.
+        _hk_seen = set()
+        for k in ("hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit"):
+            v = str(cfg.get(k) or "").strip()
+            if v:
+                if v in _hk_seen:
+                    return {"ok": False, "err": "كل وضع لازم يبقى ليه زرار مختلف — ظبّط الاختصارات"}
+                _hk_seen.add(v)
         for k in ("polish", "prompt_mode", "auto_paste", "beep", "minimize_to_tray",
                   "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10",
                   "context_styles"):
@@ -717,7 +727,8 @@ class Api:
 
         if c.engine:
             c.engine.reset_client()
-            if old_hk != (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"), cfg.get("mode")):
+            if old_hk != (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
+                          cfg.get("hotkey_edit"), cfg.get("mode")):
                 c.engine.restart_hotkey()
         else:
             c.start_engine()

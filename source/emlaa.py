@@ -123,6 +123,7 @@ class WaveOverlay(tk.Toplevel):
         "normal":    ("#8b5cf6", "#a78bfa"),   # بنفسجي
         "prompt":    ("#f59e0b", "#fbbf24"),   # كهرماني / برتقالي
         "translate": ("#06b6d4", "#22d3ee"),   # تركواز / أزرق سماوي
+        "edit":      ("#10b981", "#34d399"),   # أخضر — التعديل في المكان (F6)
     }
 
     def __init__(self, master, level_getter=None, on_click=None, on_menu=None, on_cancel=None):

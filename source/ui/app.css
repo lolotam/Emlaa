@@ -152,6 +152,7 @@ p { margin: 0; }
 .dot.normal { background: var(--violet); }
 .dot.prompt { background: var(--amber); }
 .dot.translate { background: var(--teal); }
+.dot.edit { background: #34d399; }
 
 .cta { height: 42px; width: 100%; border-radius: var(--r-md); background: var(--cta-bg); color: var(--cta-fg); font-weight: 600;
        display: inline-flex; align-items: center; justify-content: center; gap: 10px; transition: background .12s, transform .06s; }
