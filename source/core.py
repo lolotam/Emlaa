@@ -1400,13 +1400,18 @@ class App:
 
             bypass = False
             snippet = None
-            if early_secure or offline_used:
+            if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
                 # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
                 # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
                 # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
                 # يندسّ في خانة باسورد.
                 out = text
+            elif offline_used:
+                # offline (الوضع العادي بس — البرومبت/الترجمة اتسلّموا فوق): مفيش لفة
+                # موديل، بس توسيع الاختصار محلي بالكامل فبيشتغل زي ما هو أونلاين
+                snippet = smart.match_snippet(text, CFG.get("snippets"))
+                out = snippet.get("text", "") if snippet is not None else text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)

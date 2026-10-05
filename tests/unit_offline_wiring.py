@@ -105,6 +105,27 @@ class TestAlwaysOffline(unittest.TestCase):
         self.assertEqual(app.texts, ["كلام محلي"])
         self.assertEqual(app.events[-1], ("done", "اتفرّغ من غير إنترنت (من غير تحسين)"))
 
+    def test_snippet_expands_offline(self):
+        # توسيع الاختصار محلي بالكامل — offline بيشيل لفة الموديل بس، مش الاختصارات
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", offline_text="العنوان بتاعي")
+        core.CFG["snippets"] = [{"trigger": "العنوان بتاعي", "text": "١٢ شارع النيل"}]
+        app.process("WAV", core.Operation(mode="normal"))
+        app.client.assert_not_called()
+        self.assertEqual(m["paste"].call_args.args[0], "١٢ شارع النيل")
+        self.assertTrue(m["paste"].call_args.kwargs.get("from_snippet"))
+        self.assertEqual(m["history"].call_args.args[2], "[اختصار] العنوان بتاعي")
+
+    def test_snippet_not_expanded_into_password_field_offline(self):
+        app = make_app()
+        m = _wire(self, offline_mode="always", offline_text="العنوان بتاعي")
+        core.CFG["snippets"] = [{"trigger": "العنوان بتاعي", "text": "١٢ شارع النيل"}]
+        with mock.patch("winput.focused_info", return_value=dict(GUI_FOCUS, is_password=True)):
+            app.process("WAV", core.Operation(mode="normal"))
+        for call in m["paste"].call_args_list:
+            self.assertNotIn("١٢ شارع النيل", call.args[0])
+
     def test_prompt_copies_not_inserts(self):
         app = make_app()
         app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))

@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import core
+import offline
 import providers
 import winput
 
@@ -604,7 +605,9 @@ class EmlaaClassic(tk.Tk):
         self.bind("<Unmap>", self._on_unmap)
 
         keys = providers.read_keys(core.ENV_PATH)
-        if keys.get(self._sel_provider):
+        # F9: وضع offline دايمًا + موديل مثبّت بيشتغل من غير مفتاح — زي الواجهة الأساسية
+        if keys.get(self._sel_provider) or (
+                self.cfg.get("offline_mode") == "always" and offline.installed()):
             self._screen_main()
             self._start_engine()
         else:
