@@ -552,15 +552,17 @@ TECH_ARABIC_KEYWORDS = frozenset({
 })
 
 # مصطلحات تقنية لاتيني — بتتطابق على حدود الكلمة (عشان "app" ماتمسكش في "happy").
+# بس المصطلحات اللي ملهاش معنى تاني: «discount code» و«script إعلان» و«app» و«cloud»
+# و«server» (جرسون) و«library» و«java» (قهوة)… كلمات عادية كمان، فبتروح للتصنيف
+# (providers._prompt_lang) زي «كود» و«سكريبت». الطلب الإنجليزي كله بيتمسك من غلبة اللاتيني.
 TECH_LATIN_TERMS = (
-    "api", "python", "react", "node", "nodejs", "javascript", "typescript",
-    "html", "css", "docker", "github", "git", "sql", "mysql", "postgres",
-    "database", "backend", "frontend", "fullstack", "website", "server", "code",
-    "coding", "programming", "developer", "software", "framework", "library",
-    "deployment", "devops", "cloud", "aws", "azure", "android", "ios",
-    "flutter", "kotlin", "swift", "java", "php", "ruby", "django", "flask",
-    "vue", "angular", "svelte", "kubernetes", "graphql", "json", "rest",
-    "linux", "terminal", "script", "algorithm", "blockchain", "ai", "app",
+    "api", "python", "nodejs", "javascript", "typescript",
+    "html", "css", "docker", "github", "sql", "mysql", "postgres",
+    "database", "backend", "frontend", "fullstack", "website",
+    "coding", "programming", "developer", "software",
+    "deployment", "devops", "aws", "azure", "android", "ios",
+    "flutter", "kotlin", "php", "django",
+    "kubernetes", "graphql", "json", "linux", "algorithm", "blockchain",
 )
 
 # عبارات لاتيني من أكتر من كلمة — بتمسك كـsubstring بعد تصغير الحروف.

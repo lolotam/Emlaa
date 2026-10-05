@@ -77,6 +77,15 @@ class TestPromptLanguage(unittest.TestCase):
         # والطلب الإنجليزي فعلًا لسه "en" حتى لو فيه إيميل
         self.assertEqual(smart.prompt_language("write a thank-you note to support@example.com"), "en")
 
+    def test_ambiguous_latin_words_go_to_the_classifier(self):
+        # «discount code» / «script» إعلان كلمات عادية جوّه طلب عربي — مش قرار "en"
+        for text in ("اكتب رسالة للعميل فيها discount code للطلب الجاي",
+                     "اكتب script لإعلان عطر جديد", "اكتب مقال عن الـ cloud computing للمبتدئين"):
+            self.assertIsNone(smart.prompt_language(text), text)
+        # المصطلح اللي ملوش معنى تاني لسه قرار "en" محلي
+        self.assertEqual(smart.prompt_language("عايز API للدفع"), "en")
+        self.assertEqual(smart.prompt_language("اعمل database للعملاء"), "en")
+
     def test_table(self):
         for text, expected in CASES:
             self.assertEqual(smart.prompt_language(text), expected, text)
