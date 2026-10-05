@@ -15,6 +15,7 @@
 من فوق هيتبني دورة استيراد.
 """
 import os
+import re
 import json
 import time
 import hashlib
@@ -514,6 +515,57 @@ def _read_result(out_txt, start):
     return text.strip() or None
 
 
+# ── علامات السكوت في مخرج whisper.cpp (F1) ─────────────────────────────────────
+# whisper.cpp بيرجّع توكنات زي "[BLANK_AUDIO]" أو "(music)" أو "*silence*" للسكوت
+# والضجيج بدل ما يكتب كلام. لو سابناها النص بيتحفظ في السجل ويتنسخ في الحافظة كأنه
+# تفريغ حقيقي. بنشيل التوكن الواقف لوحده بس (مش كلمة جوه جملة) لو محتواه واحد من
+# القايمة دي — بعد تجاهل حالة الحروف والمسافات والـunderscores.
+# علامات إنجليزي: عمرها ما تبقى كلام عربي حقيقي، فبتتشال في أي مكان في السطر
+_NONSPEECH_EN = frozenset({
+    "blankaudio", "silence", "music", "noise", "inaudible",
+    "applause", "laughter", "nospeech", "sound", "backgroundnoise",
+})
+# whisper بـ-l ar ممكن يكتب العلامة بالعربي «(موسيقى)» / «[صمت]» — بس الكلمات دي
+# ممكن تبقى كلام حقيقي («سمّي الزر (صوت)»)، فبتتشال بس لو السطر كله علامات
+_NONSPEECH_AR = frozenset({
+    "موسيقى", "موسيقي", "صمت", "سكوت", "ضحك", "تصفيق", "ضوضاء", "صوت", "ضجيج",
+})
+
+_MARKER_RE = re.compile(r"\[[^\[\]\n]*\]|\([^()\n]*\)|\*[^*\n]*\*")
+
+
+def _marker_key(inner):
+    """اسم العلامة من غير حالة الحروف والمسافات والـunderscores — للمطابقة بس."""
+    return "".join(ch for ch in inner.lower() if ch.isalnum())
+
+
+def _strip_line(line):
+    """سطر واحد من مخرج whisper (كل مقطع في سطر) من غير علامات السكوت."""
+    line = _MARKER_RE.sub(
+        lambda m: " " if _marker_key(m.group(0)[1:-1]) in _NONSPEECH_EN else m.group(0), line)
+    toks = _MARKER_RE.findall(line)
+    if toks and not _MARKER_RE.sub("", line).strip() and all(
+            _marker_key(t[1:-1]) in _NONSPEECH_AR for t in toks):
+        return ""                      # السطر كله علامة عربي = مقطع سكوت
+    line = re.sub(r"[ \t]+", " ", line).strip()
+    # «[صمت].» / «[BLANK_AUDIO].»: لو مفضلش غير ترقيم بعد شيل العلامات = مفيش كلام
+    if not any(ch.isalnum() for ch in _MARKER_RE.sub("", line)):
+        toks = _MARKER_RE.findall(line)
+        if all(_marker_key(t[1:-1]) in _NONSPEECH_AR | _NONSPEECH_EN for t in toks):
+            return ""
+    return line
+
+
+def _strip_markers(text):
+    """
+    بيشيل علامات السكوت من نص whisper.cpp سطر بسطر ويحافظ على فواصل الأسطر:
+    الإنجليزي ([BLANK_AUDIO]، (music)…) في أي مكان، والعربي بس لو السطر كله علامة.
+    الكلمات الحقيقية جوه الأقواس بتفضل زي ما هي.
+    """
+    lines = (_strip_line(ln) for ln in (text or "").splitlines())
+    return "\n".join(ln for ln in lines if ln)
+
+
 def transcribe(wav, language):
     """
     بيفرّغ wav بالموديل المثبّت ويرجّع النص. الملف المؤقت في temp وبيمسح دايمًا
@@ -572,4 +624,6 @@ def transcribe(wav, language):
 
     if text is None:
         raise RuntimeError("التفريغ offline رجّع نص فاضي")
-    return text
+    # F1: بنشيل علامات السكوت بعد التفريغ — لو الناتج فضى بعدها (whisper سمع
+    # سكوت/ضجيج بس) بنرجع "" مش نرمي، وApp.process هيقول للمستخدم «مطلعش نص».
+    return _strip_markers(text)

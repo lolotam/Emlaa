@@ -1100,6 +1100,7 @@ class TestHistoryBypassFlag(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "history.json")
             with mock.patch.object(core, "HISTORY_PATH", p), \
+                    mock.patch.object(core, "RECORDINGS_DIR", os.path.join(d, "recordings")), \
                     mock.patch.object(core, "log_error"), \
                     mock.patch.object(core, "CFG", _cfg()):
                 core.history_add("normal", "مرحبا بالعالم", "مرحبا بالعالم")

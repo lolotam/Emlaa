@@ -526,6 +526,118 @@ def fix_mixed(text):
     return s
 
 
+# ── F2: قرار مبدئي للغة البرومبت (القرار النهائي في providers._prompt_lang) ────
+# قرار نقي رخيص: الطلب التقني الأكيد = "en"، والمش واضح = None (بيتساب للموديل).
+# الكلمات العربي التقنية القوية بتمسك على شكلها المطبّع (normalize) عشان الهمزة
+# والتاء المربوطة والألف مايفرقوش في الكتابات المصرية (ابليكيشن/الويب سايت…).
+
+# كلمات تقنية عربي قوية (والمصري منها) — أي واحدة في الطلب = الطلب تقني أكيد.
+# القايمة دي مش كل الكلمات التقنية: الكلمات الملتبسة اتشالت عشان معناها بيختلف
+# حسب السياق — «برنامج» ممكن «برنامج غذائي» (مش تقني) و«تطبيق» ممكن «تطبيق
+# القانون» و«موقع» ممكن «موقع البيت». دي مبيتقررش في الكود؛ بتتساب للموديل
+# (providers._prompt_lang بيسأل TECH/OTHER). «كود» و«سكريبت» برضه ملتبسين: «كود خصم»
+# و«سكريبت إعلان» طلبات تسويق مش برمجة.
+TECH_ARABIC_KEYWORDS = frozenset({
+    "ابليكيشن", "الابليكيشن", "أبليكيشن", "الأبليكيشن",
+    "برمجة", "مبرمج",
+    "سيرفر", "سرفر",
+    "داتابيز", "داتا بيز",
+    "قاعدة بيانات", "قاعده بيانات",
+    "باك اند", "الباك اند",
+    "فرونت اند", "الفرونت اند",
+    "ويب سايت", "الويب سايت",
+    "سوفتوير", "سوفت وير",
+    "ديفلوبر", "مطور برمجيات",
+    "لوجين", "داشبورد",
+})
+
+# مصطلحات تقنية لاتيني — بتتطابق على حدود الكلمة (عشان "app" ماتمسكش في "happy").
+# بس المصطلحات اللي ملهاش معنى تاني: «discount code» و«script إعلان» و«app» و«cloud»
+# و«server» (جرسون) و«library» و«java» (قهوة)… كلمات عادية كمان، فبتروح للتصنيف
+# (providers._prompt_lang) زي «كود» و«سكريبت». الطلب الإنجليزي كله بيتمسك من غلبة اللاتيني.
+TECH_LATIN_TERMS = (
+    "api", "python", "nodejs", "javascript", "typescript",
+    "html", "css", "docker", "github", "sql", "mysql", "postgres",
+    "database", "backend", "frontend", "fullstack", "website",
+    "coding", "programming", "developer", "software",
+    "deployment", "devops", "aws", "azure", "android", "ios",
+    "flutter", "kotlin", "php", "django",
+    "kubernetes", "graphql", "json", "linux", "algorithm", "blockchain",
+)
+
+# عبارات لاتيني من أكتر من كلمة — بتمسك كـsubstring بعد تصغير الحروف.
+TECH_LATIN_PHRASES = (
+    "back end", "back-end", "front end", "front-end", "machine learning",
+    "deep learning", "artificial intelligence", "smart contract",
+)
+
+# الكلمة لازم تقف لوحدها (بعد التطبيع): مسموح سابقة (و/ف/ب/ل/ك + ال/لل) ولاحقة قصيرة
+# (جمع/ضمير) بس. المطابقة كـsubstring كانت بتمسك «ويب» جوّه «ويبقى» و«موقع» جوّه
+# «موقعة» — فطلبات عربي عادية كانت بتطلع برومبت إنجليزي (نفس الغلطة اللي بنصلّحها).
+# «تطوير» اتشالت: «تطوير الذات» مش طلب تقني.
+_TECH_ARABIC_RE = re.compile(
+    r"(?:^| )(?:[وفبلك])?(?:ال|لل)?(?:"
+    + "|".join(sorted((re.escape(normalize(k)) for k in TECH_ARABIC_KEYWORDS), key=len, reverse=True))
+    + r")(?:ات|ين|ان|ه|ها|ي|ك|كم|نا|هم)?(?= |$)")
+
+_LATIN_TECH_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in TECH_LATIN_TERMS) + r")\b", re.I)
+
+
+# معرّفات مش كلام: إيميل، لينك، دومين بـwww، @حساب
+_IDENTIFIER_RE = re.compile(r"\S+@\S+|https?://\S+|www\.\S+|@\w+")
+
+
+def _is_ar_letter(c):
+    """حرف عربي فعلًا (فئة L) — مش رقم هندي ولا ، ؛ ؟ من نفس النطاق."""
+    return bool(_AR_LETTER.fullmatch(c)) and unicodedata.category(c).startswith("L")
+
+
+def latin_dominant(text):
+    """حروف لاتينية أكتر من عربي — بيستخدم في فحص لغة مخرج البرومبت (F2)."""
+    s = str(text or "")
+    ar = sum(1 for c in s if _is_ar_letter(c))
+    la = sum(1 for c in s if c.isascii() and c.isalpha())
+    return la > ar
+
+
+def prompt_language(text):
+    """
+    القرار المحلي للغة برومبت الطلب: "en" | "ar" | None (F2).
+      • "en" لو الطلب نفسه إنجليزي — مفيش فيه حرف عربي وأغلبه لاتيني (بعد شيل
+        الإيميلات واللينكات).
+      • "ar" للنص الفاضي بس.
+      • None لأي طلب عربي أو مخلوط: القرار هنا بيتاخد من الموديل (providers._prompt_lang
+        بيسأل TECH/OTHER حسب اللي المستخدم عايز يطلّعه). الكلمات التقنية مبتقررش
+        لوحدها: «اكتب إعلان لدورة Python» و«اكتب رسالة فيها كود خصم» طلبات كتابة
+        مش برمجة — فبتستخدم بس كتخمين لو التصنيف نفسه فشل (tech_guess).
+    """
+    s = str(text or "")
+    if not s.strip():
+        return "ar"
+    # الطريق المختصر للإنجليزي بس لو مفيش ولا حرف عربي: «اكتب إعلان لدورة JavaScript
+    # و TypeScript» حروفها اللاتيني أكتر بس هي طلب عربي (كتابة) — لازم توصل للتصنيف.
+    # وبنشيل الإيميل/اللينك/@الحساب الأول عشان مايعدّوش كلام.
+    bare = _IDENTIFIER_RE.sub(" ", s)
+    if not any(_is_ar_letter(c) for c in bare) and latin_dominant(bare):
+        return "en"
+    return None
+
+
+def tech_guess(text):
+    """
+    تخمين احتياطي "en"/"ar" لما تصنيف الموديل يفشل: كلمة تقنية قوية (عربي أو لاتيني)
+    = "en"، غير كده "ar". مش قرار نهائي — الموديل بيشوف القصد، والكلمات مبتشوفوش.
+    """
+    s = str(text or "")
+    if _TECH_ARABIC_RE.search(normalize(s)):
+        return "en"
+    lower = _IDENTIFIER_RE.sub(" ", s).lower()
+    if _LATIN_TECH_RE.search(lower) or any(p in lower for p in TECH_LATIN_PHRASES):
+        return "en"
+    return "ar"
+
+
 # ── F8: الاختصارات الصوتية ──────────────────────────────────────────────────
 # أدنى تشابه بين الكلام المنطوق ومفتاح الاختصار عشان نعتبره «هو هو». التطبيع
 # (normalize) بيوحّد اختلافات الكتابة الكبيرة (همزة، تاء مربوطة، ى/ي…)، والباقي
