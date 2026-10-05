@@ -7,6 +7,7 @@
 import os
 import sys
 import time
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -522,9 +523,14 @@ class TestSaveSettingsHotkey(unittest.TestCase):
         ctrl = mock.Mock()
         api = app_web.Api(ctrl)
         cfg = dict(core.DEFAULTS)
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
         with mock.patch.object(core, "CFG", cfg), \
                 mock.patch.object(providers, "read_keys", return_value={"groq": "k"}), \
-                mock.patch.object(core, "save_config"):
+                mock.patch.object(core, "save_config"), \
+                mock.patch.object(core, "HISTORY_PATH", os.path.join(d.name, "history.json")), \
+                mock.patch.object(core, "RECORDINGS_DIR", os.path.join(d.name, "recordings")), \
+                mock.patch.object(core, "history_prune"):
             r = api.save_settings({"hotkey_normal": "ctrl_r", "hotkey_prompt": "ctrl_r"})
         self.assertFalse(r["ok"])
         self.assertIn("err", r)
@@ -536,9 +542,14 @@ class TestSaveSettingsHotkey(unittest.TestCase):
         ctrl.engine = None
         api = app_web.Api(ctrl)
         cfg = dict(core.DEFAULTS)
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
         with mock.patch.object(core, "CFG", cfg), \
                 mock.patch.object(providers, "read_keys", return_value={"groq": "k"}), \
-                mock.patch.object(core, "save_config"):
+                mock.patch.object(core, "save_config"), \
+                mock.patch.object(core, "HISTORY_PATH", os.path.join(d.name, "history.json")), \
+                mock.patch.object(core, "RECORDINGS_DIR", os.path.join(d.name, "recordings")), \
+                mock.patch.object(core, "history_prune"):
             r = api.save_settings({"hotkey_edit": ""})
         self.assertTrue(r["ok"])
 
