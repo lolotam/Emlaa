@@ -772,7 +772,9 @@ function collectStyles() {
   return out;
 }
 /* ── التفريغ من غير إنترنت (F9) ── */
-function renderOffline() {
+// keepForm: تحديث الحالة بس (بعد تنزيل/إزالة) — اختيار الوضع/الموديل اللي المستخدم
+// لسه ماحفظهوش بيفضل زي ما هو؛ غير كده «دايمًا» كان بيرجع «احتياطي» من غير ما يحس
+function renderOffline(keepForm) {
   const o = S.offline;
   if (!o) return;
   const packaged = !!(S.boot.offline && S.boot.offline.packaged);
@@ -783,27 +785,43 @@ function renderOffline() {
   const sz = installed ? ((o.models || []).find(m => m.id === installed) || {}).size : null;
   $("#offlineStatus").textContent = installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت";
   $("#offlineRemove").disabled = !installed;
+  const prevModel = $("#offlineModel").value, prevMode = $("#offlineMode").value;
   $("#offlineModel").innerHTML = (o.models || []).map(m =>
     `<option value="${esc(m.id)}">${esc(m.id)} ≈ ${m.size} MB — ${OFFLINE_MODEL_LABEL[m.id] || ""}</option>`).join("");
+  if (keepForm && prevMode) {
+    if ((o.models || []).some(m => m.id === prevModel)) $("#offlineModel").value = prevModel;
+    $("#offlineMode").value = prevMode;
+    return;
+  }
   $("#offlineModel").value = (o.model && (o.models || []).some(m => m.id === o.model)) ? o.model : (installed || "small-q5_1");
   $("#offlineMode").value = o.mode === "always" ? "always" : "fallback";
 }
-async function refreshOffline() {
+async function refreshOffline(keepForm) {
   S.offline = await api().offline_status();
-  renderOffline();
+  renderOffline(keepForm);
+}
+function setOfflineDownloading(on) {
+  $("#offlineDownload").disabled = on;
+  $("#offlineBar").hidden = !on;
+  $("#offlineBar i").style.width = "0%";
+  $("#offlineDownloadNote").textContent = on ? "بينزّل… 0%" : "بيتنزّل مرة واحدة ويتخزّن على جهازك";
 }
 $("#offlineDownload").addEventListener("click", async () => {
   const model = $("#offlineModel").value;
-  const r = await api().offline_download(model);
-  if (!r.ok) { toast(r.err || "مقدرتش أنزّل الموديل"); return; }
-  $("#offlineDownload").disabled = true;
-  $("#offlineBar").hidden = false;
-  $("#offlineBar i").style.width = "0%";
-  $("#offlineDownloadNote").textContent = "بينزّل… 0%";
+  // حالة «بينزّل» قبل النداء: onOfflineDone ممكن يوصل قبل ما الـpromise يرجع (فشل
+  // فوري)، ولو علّمناها بعده كان الزرار بيفضل مقفول للأبد ومفيش حدث تاني جاي
+  setOfflineDownloading(true);
+  let r;
+  try {
+    r = await api().offline_download(model);
+  } catch (e) {
+    r = { ok: false };
+  }
+  if (!r.ok) { setOfflineDownloading(false); toast(r.err || "مقدرتش أنزّل الموديل"); }
 });
 $("#offlineRemove").addEventListener("click", async () => {
   await api().offline_remove();
-  refreshOffline();
+  refreshOffline(true);
   toast("اتشال الموديل");
 });
 
@@ -1069,14 +1087,12 @@ window.emlaa = {
     $("#offlineDownloadNote").textContent = `بينزّل… ${Math.round(f * 100)}%`;
   },
   onOfflineDone(r) {
-    $("#offlineDownload").disabled = false;
-    $("#offlineBar").hidden = true;
+    setOfflineDownloading(false);
     if (r.ok) {
       toast("اتنزّل ✓");
-      refreshOffline();
+      refreshOffline(true);
       refreshBoot();
     } else {
-      $("#offlineDownloadNote").textContent = "بيتنزّل مرة واحدة ويتخزّن على جهازك";
       toast(r.err || "مقدرتش أنزّل الموديل");
     }
   },
