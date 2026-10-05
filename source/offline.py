@@ -95,12 +95,20 @@ def installed():
             data = json.load(f)
     except Exception:
         return None
+    # مانيڨست JSON سليم بس شكله غلط ([] / موديل مش نص / حجم مش رقم) = تثبيت بايظ،
+    # مش استثناء — غير كده bootstrap نفسه بيقع وزرار الإزالة مايظهرش
+    if not isinstance(data, dict):
+        return None
     # N4: الموديل لازم يبقى واحد من اللي بنعرفهم — غير كده مانيڨست بايظ/مزوّر
     model = data.get("model")
-    if model not in MODELS:
+    if not isinstance(model, str) or model not in MODELS:
         return None
     files = data.get("files")
     if not isinstance(files, dict) or not files:
+        return None
+    # التشغيل محتاج الـexe والموديل نفسه على الأقل — مانيڨست فيه الموديل لوحده
+    # كان بيعدّي ويفتح وضع «دايمًا» من غير مفتاح والتفريغ بيفشل
+    if "bin/whisper-cli.exe" not in files or "models/" + model + ".bin" not in files:
         return None
     # كل ملف لازم يكون موجود وبالظبط بنفس الحجم المسجّل — غير كده = تثبيت بايظ
     root = os.path.dirname(manifest_path)
@@ -113,7 +121,7 @@ def installed():
             # N4: المسار لازم يفضل جوّه جذر offline — مانع أي خروج بـ".."
             if not os.path.realpath(p).startswith(root_real + os.sep):
                 return None
-        except OSError:
+        except (OSError, TypeError, ValueError):
             return None
     return model
 

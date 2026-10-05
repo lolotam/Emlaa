@@ -344,6 +344,29 @@ class TestDamagedPackCleanup(_BaseCase):
         for rel in ("bin/whisper-cli.exe", "bin/ggml.dll", "models/base.bin", "manifest.json"):
             self.assertFalse(os.path.exists(os.path.join(root, rel)), rel)
 
+    def _manifest(self, data):
+        root = self._install("base")
+        with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return root
+
+    def test_malformed_manifest_shapes_are_not_installed(self):
+        # JSON سليم بس شكله غلط لازم يرجّع None مش يرمي — bootstrap بيناديه
+        for bad in ([], "x", {"model": ["base"], "files": {}},
+                    {"model": "base", "files": {"bin/whisper-cli.exe": "كبير",
+                                                "models/base.bin": 5}},
+                    {"model": "base", "files": {"bin/whisper-cli.exe": None,
+                                                "models/base.bin": 5}}):
+            self._tmp.cleanup(); os.makedirs(self._tmp.name)
+            self._manifest(bad)
+            self.assertIsNone(offline.installed(), bad)
+            self.assertTrue(offline.residual())
+
+    def test_manifest_without_executable_is_not_installed(self):
+        # الموديل لوحده في المانيڨست مش تثبيت — من غير whisper-cli مفيش تفريغ
+        self._manifest({"model": "base", "files": {"models/base.bin": 5}})
+        self.assertIsNone(offline.installed())
+
     def test_remove_keeps_unknown_user_files(self):
         root = self._install("base")
         _write(os.path.join(root, "models", "notes.txt"), b"mine")
