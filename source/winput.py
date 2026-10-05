@@ -19,6 +19,8 @@
 focused_info: الكلاسات دي بيانات قرار، ومصدر واحد للجانبين.
 """
 import ctypes
+import hashlib
+import time
 from ctypes import wintypes
 
 import smart
@@ -223,6 +225,16 @@ def paste_shift_insert():
 # معرّفات خصائص UIA: IsPassword 30019 · IsValuePatternAvailable 30043 ·
 # IsTextPatternAvailable 30040 · ValueIsReadOnly 30046 ·
 # ControlType Edit 50004 / Document 50030
+def _uia():
+    """جذر UIA (IUIAutomation) — الـbootstrap الوحيد: CoInitialize لكل ثريد
+    (COM بيتعمل لكل ثريد)، وCreateObject مرة واحدة. بيرمي لو فشل — اللي يناده
+    هو اللي يقرر يبتلع ولا يسجّل."""
+    import comtypes, comtypes.client
+    comtypes.CoInitialize()
+    from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
+    return comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
+
+
 def focused_info():
     """
     (F3) خصائص العنصر المركّز بنداء UIA واحد — بيحط محل جسم
@@ -235,11 +247,7 @@ def focused_info():
     """
     out = {"is_password": None, "class": "", "editable": None}
     try:
-        import comtypes, comtypes.client
-        comtypes.CoInitialize()             # كل تسجيل بيتعالج في ثريد جديد — COM لازم يتعمل لكل ثريد
-        from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
-        uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-        el = uia.GetFocusedElement()
+        el = _uia().GetFocusedElement()
         if not el:
             out["editable"] = False
             return out
@@ -265,3 +273,584 @@ def focused_info():
             pass
         return out
 
+
+# ── أسر الهدف للتعديل في المكان (F6) ────────────────────────────────────────
+# التعديل في المكان: المستخدم بيحدد نص، يدوس زرار التسجيل، يكلّم، والنص المحدد
+# بيتبدّل بالنتيجة. عشان نبدّله بعدين محتاجين نعرف مكانه بالظبط: HWND المقدمة،
+# معرّف العنصر المركّز (RuntimeId)، والنص المحدد. النص بنجيبه بـUIA (TextPattern)
+# من غير ما نلمس الحافظة؛ ولو UIA فشل بنرجع للخطة البديلة: نحفظ نص الحافظة،
+# نحقن Ctrl+C، نقرا النص الجديد، ونرجع الحافظة زي ما كانت.
+# كل اللي بيلمس الحافظة أو الحقن أو UIA بيعدّي على دوال مستقلة (patchable)
+# عشان الاختبارات تشتغل من غير حافظة حقيقية ولا أحداث كيبورد حقيقية.
+
+VK_C = 0x43
+VK_MENU = 0x12
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
+
+# صيغ الحافظة النصية — بنعتبرها «نص» لما نقرر إن آمن نكتب فوقها ونسيبها.
+CF_TEXT = 1
+CF_OEMTEXT = 7
+CF_UNICODETEXT = 13
+CF_LOCALE = 16
+
+# الموديفايرز اللي لازم تسيب قبل ما نحقن Ctrl+C: لو المستخدم لسه ماسك زرار
+# التسجيل (مثلاً Alt) وماسكيناه إحنا كمان، التركيبة هتتبعت غلط.
+_MODIFIERS = (VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN)
+
+# id نمط النص في UIA — comtypes مابيحطوش كثابت، فبنستخدم القيمة العددية.
+_TEXT_PATTERN_ID = 10014
+
+_clip32 = None
+
+
+def _clipboard32():
+    """user32 بـargtypes/restype لعمليات الحافظة والمفاتيح — patchable في الاختبارات."""
+    global _clip32
+    if _clip32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.OpenClipboard.argtypes = [wintypes.HWND]
+        u.OpenClipboard.restype = wintypes.BOOL
+        u.CloseClipboard.argtypes = []
+        u.CloseClipboard.restype = wintypes.BOOL
+        u.EnumClipboardFormats.argtypes = [wintypes.UINT]
+        u.EnumClipboardFormats.restype = wintypes.UINT
+        u.GetClipboardSequenceNumber.argtypes = []
+        u.GetClipboardSequenceNumber.restype = wintypes.DWORD
+        u.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        u.GetAsyncKeyState.restype = ctypes.c_short
+        u.GetForegroundWindow.argtypes = []
+        u.GetForegroundWindow.restype = wintypes.HWND
+        _clip32 = u
+    return _clip32
+
+
+def foreground_hwnd():
+    """HWND النافذة اللي قدام المستخدم — 0 لو مقدرناش نقراه."""
+    try:
+        return int(_clipboard32().GetForegroundWindow())
+    except Exception:
+        return 0
+
+
+def modifiers_held():
+    """True لو أي موديفاير (Ctrl/Shift/Alt/Win) ماسك دلوقتي."""
+    u = _clipboard32()
+    for vk in _MODIFIERS:
+        try:
+            if u.GetAsyncKeyState(vk) & 0x8000:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def wait_modifiers_released(timeout=0.5):
+    """
+    بيستنى (poll كل 10ms) لحد ما الموديفايرز تتساب — عشان حقنة Ctrl+C متتلخبطش
+    مع زرار التسجيل اللي المستخدم لسه سايبه. بيرجّع True لو اتسابت في الوقت،
+    وFalse لو خلص الوقت ولسه ماسك.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not modifiers_held():
+            return True
+        time.sleep(0.01)
+    return not modifiers_held()
+
+
+def _focused_element():
+    """العنصر المركّز (IUIAutomationElement) أو None — نفس bootstrap بتاع focused_info."""
+    try:
+        return _uia().GetFocusedElement()
+    except Exception:
+        return None
+
+
+def _runtime_id(el):
+    """معرّف وقت التشغيل (RuntimeId) → tuple من ints. () لو فشل."""
+    try:
+        return tuple(int(x) for x in el.GetRuntimeId())
+    except Exception:
+        return ()
+
+
+def _element_password(el):
+    """IsPassword (30019) على العنصر — True باسورد، False عادي، None مقدرناش نقراه."""
+    try:
+        return bool(el.GetCurrentPropertyValue(30019))
+    except Exception:
+        return None
+
+
+def _selection_text(el):
+    """
+    النص المحدد جوّه العنصر عن طريق UIA TextPattern (GetSelection → GetText) — مابيلمسش
+    الحافظة. '' = النمط مدعوم ومفيش تحديد؛ None = النمط مش مدعوم (الخطة البديلة بالحافظة).
+    الفرق مهم: في VS Code مثلًا Ctrl+C من غير تحديد بينسخ السطر كله، فلو UIA قال «مفيش
+    تحديد» مانجربش الحافظة.
+    """
+    try:
+        from comtypes.gen.UIAutomationClient import IUIAutomationTextPattern
+        raw = el.GetCurrentPattern(_TEXT_PATTERN_ID)
+        if raw is None:
+            return None
+        pat = raw.QueryInterface(IUIAutomationTextPattern)
+        ranges = pat.GetSelection()
+        parts = []
+        for i in range(ranges.Length):
+            t = ranges.GetElement(i).GetText(-1)
+            if t:
+                parts.append(t)
+        return "".join(parts)
+    except Exception:
+        return None
+
+
+def clipboard_text_formats():
+    """
+    صيغ الحافظة النصية الموجودة دلوقتي (CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT).
+    [] لو الحافظة فاضية أو مفيش نص — CloseClipboard دايمًا في finally.
+    """
+    u = _clipboard32()
+    found = []
+    try:
+        if not u.OpenClipboard(None):
+            return []
+        try:
+            fmt = 0
+            while True:
+                fmt = u.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                if fmt in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT):
+                    found.append(fmt)
+        finally:
+            u.CloseClipboard()
+    except Exception:
+        return []
+    return found
+
+
+def _clipboard_safe_for_text():
+    """
+    True لو آمن نكتب نص في الحافظة — يعني مش فيها محتوى غير نصي (صورة/ملف)
+    هيضيع لما نرجع النص القديم. الحافظة الفاضية آمنة.
+    """
+    u = _clipboard32()
+    try:
+        if not u.OpenClipboard(None):
+            return False
+        try:
+            fmt = 0
+            while True:
+                fmt = u.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    break
+                if fmt not in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT, CF_LOCALE):
+                    return False
+        finally:
+            u.CloseClipboard()
+        return True
+    except Exception:
+        return False
+
+
+def _read_clipboard_text():
+    """نص الحافظة الحالي — '' لو فاضية، None لو فشلت القراية (M3: نفرّق الفشل عن الفاضي)."""
+    try:
+        import pyperclip
+        return pyperclip.paste()
+    except Exception:
+        return None
+
+
+def _write_clipboard_text(text):
+    """نشر نص للحافظة. بيرجّع True لو نجح."""
+    try:
+        import pyperclip
+        pyperclip.copy(text or "")
+        return True
+    except Exception:
+        return False
+
+
+def _clipboard_sequence():
+    """رقم تسلسل الحافظة الحالي — عشان نعرف امتى تتغيّر ونوسم أرقامنا."""
+    try:
+        return int(_clipboard32().GetClipboardSequenceNumber())
+    except Exception:
+        return 0
+
+
+def _mark_owned(seq):
+    """يوسّم رقم تسلسل كـ«بتاعنا» — core.ClipboardWatcher يتخطاه (ميسجّلهوش)."""
+    if not seq:
+        return
+    try:
+        import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+        core.mark_clip_owned(seq)
+    except Exception:
+        pass
+
+
+def copy_selection():
+    """Ctrl+C بأحداث SendInput (0x11↓ 0x43↓ 0x43↑ 0x11↑) موسوم EMLAA_TAG."""
+    return _paste(VK_CONTROL, VK_C, 0)
+
+
+def _wait_clipboard_change(seq_before, timeout=0.5):
+    """
+    بيستنى تغيّر رقم تسلسل الحافظة بعد Ctrl+C، وبيوسم الرقم الجديد «بتاعنا» أول ما يظهر
+    (قبل القراية) — عشان الـClipboardWatcher مايلحقش يسجّل النص المحدد في سجل الحافظة.
+    بيرجّع الرقم الجديد، أو None لو مفيش تغيير في الوقت (مفيش تحديد اتنسخ).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        seq = _clipboard_sequence()
+        if seq != seq_before:
+            _mark_owned(seq)
+            return seq
+        time.sleep(0.02)
+    return None
+
+
+def _still_focused(hwnd, runtime_id):
+    """النافذة المقدمة (والعنصر المركّز لو معروف) لسه هما اللي اتأسروا؟"""
+    if foreground_hwnd() != int(hwnd or 0):
+        return False
+    if runtime_id:
+        el = _focused_element()
+        if el is None or _runtime_id(el) != tuple(runtime_id):
+            return False
+    return True
+
+
+def _selection_via_clipboard(cancel=None, expect=None):
+    """
+    الخطة البديلة لأسر التحديد (من غير UIA): نحفظ نص الحافظة، نحقن Ctrl+C، نقرا النص
+    الجديد، ونرجّع النص القديم — بس لو الحافظة لسه «بتاعتنا» (نفس رقم التسلسل اللي
+    عملناه): لو المستخدم نسخ حاجة في النص، نسخته الأحدث متتمسحش (R1 #7).
+    بنرجع '' من غير ما نلمس الحافظة لو فيها محتوى غير نصي، أو لو مفيش حاجة اتنسخت.
+    cancel = Event الإلغاء (M2): لو اتسيت، منحقنش Ctrl+C ومنرجّعش الحافظة.
+    expect = (hwnd, runtime_id) اللي اتأسروا: لو الفوكس اتنقل وقت انتظار الموديفايرز،
+    Ctrl+C كان هينسخ تحديد مستند تاني ويتنسب للهدف الأول — فبنرفض.
+    """
+    if cancel is not None and cancel.is_set():
+        return ""
+    if not _clipboard_safe_for_text():
+        return ""
+    if not wait_modifiers_released():
+        return ""
+    if expect is not None and not _still_focused(*expect):
+        return ""
+    # M3: نسجل الحافظة القديمة بعد ما الموديفايرز تتساب — لو المستخدم لسه ماسك
+    # وساب بعد كده، القيمة دي هي اللي نرجعها (مش قيمة أقدم من وقت الدوسة).
+    old = _read_clipboard_text()
+    # N4a: قراية القديم فشلت (None) = مفيش سناب شوت نرجع بيه — منحقنش Ctrl+C
+    # خالص (منعرفش نرجع الحافظة لاحقًا، فممن نكتب فوقها).
+    if old is None:
+        return ""
+    if cancel is not None and cancel.is_set():
+        return ""
+    # M4: نكب مراقب الحافظة قبل ما نحقن Ctrl+C — النص اللي بينسخ لازم مايتسجلش
+    try:
+        import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+        core.suppress_clip_watch(2.0)
+    except Exception:
+        pass
+    seq_before = _clipboard_sequence()
+    if not copy_selection():
+        return ""
+    seq_copy = _wait_clipboard_change(seq_before)
+    if seq_copy is None:
+        return ""                          # مفيش تحديد اتنسخ — الحافظة زي ما هي
+    # N4b: من هنا ومع بعدين Ctrl+C اتبعت — الرجوع (لو الحافظة لسه بتاعتنا) لازم
+    # يحصل في كل المسارات، حتى لو اتلغينا بعد الحقن، عشان منسيبش التحديد على
+    # الحافظة. try/finally بيضمن ده.
+    try:
+        new = _read_clipboard_text()
+        # N3: بعد قراية النص المحدد، رقم التسلسل لازم يفضل هو هو اللي قررنا
+        # عليه — لو اتغيّر، النص اللي قريناه ممكن يكون بتاع حد تاني → نفشل.
+        cur = _clipboard_sequence()
+        if cur != seq_copy:
+            # ممكن يكون «delayed rendering»: قرايتنا نفسها خلّت البرنامج يكتب النص فعلًا
+            # فالرقم زاد. بنوسمه «بتاعنا» عشان المراقب مايسجلش النص المحدد في السجل،
+            # ومنرجّعش الحافظة (لو حد تاني كتب، الكتابة فوقه أخطر من إننا نسيب التحديد)
+            _mark_owned(cur)
+            return ""
+        if cancel is not None and cancel.is_set():
+            return ""                       # M2: اتلغينا بعد الحقن — الرجوع لسه في finally
+        return new or ""
+    finally:
+        # M3: القديم مقروء (None اترفض فوق) ولسه بتاعتنا → نرجّع نص المستخدم.
+        if _clipboard_sequence() == seq_copy and old is not None:
+            if _write_clipboard_text(old):
+                _mark_owned(_clipboard_sequence())
+
+
+def _selection_hash(text):
+    """بصمة sha1 للنص المحدد — عشان نتأكد بعدين إن التحديد لسه زي ما أسرناه."""
+    if not text:
+        return ""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def capture_target(cancel=None):
+    """
+    أسر هدف التعديل في المكان: HWND المقدمة + معرّف العنصر المركّز + النص المحدد.
+    بيشتغل من ثريد عامل (مش ثريد الواجهة): _uia بتعمل CoInitialize للثريد ده.
+    عمره ما يرمي: أي فشل بيرجّع dict بقيم فارغة/صفر — والـcaller (Task 12)
+    هو اللي يقرر يتعامل معاها إزاي.
+    cancel = Event الإلغاء (M2): لو اتسيت، منجربش خطة الحافظة (حقن Ctrl+C).
+    """
+    out = {"hwnd": 0, "runtime_id": (), "class": "", "selection": "",
+           "selection_hash": ""}
+    try:
+        out["hwnd"] = foreground_hwnd()
+    except Exception:
+        pass
+    try:
+        el = _focused_element()
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "capture/uia")
+        except Exception:
+            pass
+        el = None
+    allow_fallback = False
+    if el is not None:
+        # N1: باسورد الأول — قبل أي خاصية تانية (CurrentClassName/GetRuntimeId).
+        # قراية IsPassword بتترفع لمفتاح مستقل بيرجّع True/False/None من غير ما
+        # يرمي، فمفيش خاصية قبلها تقدر تمنع الرفض وتسيّب الخطة البديلة تشتغل.
+        pw = _element_password(el)
+        if pw is not False:                  # True أو مجهول (None) → رفض
+            out["password"] = True
+            return out
+        try:
+            out["runtime_id"] = _runtime_id(el)
+            out["class"] = el.CurrentClassName or ""
+        except Exception as e:
+            try:
+                import core
+                core.log_error(e, "capture/uia")
+            except Exception:
+                pass
+        sel = _selection_text(el)
+        out["selection"] = sel if sel is not None else ""
+        allow_fallback = sel is None
+    else:
+        # N1: العنصر مش متاح → بنسمح بالخطة البديلة بس بعد ما الموديفايرز تتساب
+        # وإعادة قراية العنصر مرة واحدة: لو رجع متاح، نفس قاعدة الباسورد عليه.
+        if cancel is not None and cancel.is_set():
+            pass
+        elif not wait_modifiers_released():
+            pass
+        else:
+            try:
+                el2 = _focused_element()
+            except Exception:
+                el2 = None
+            if el2 is not None:
+                if _element_password(el2) is not False:
+                    out["password"] = True
+                    return out
+            allow_fallback = True
+    try:
+        if not out["selection"] and allow_fallback:
+            out["selection"] = _selection_via_clipboard(cancel, (out["hwnd"], out["runtime_id"]))
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "capture/clipboard")
+        except Exception:
+            pass
+    try:
+        out["selection_hash"] = _selection_hash(out["selection"])
+    except Exception:
+        pass
+    return out
+
+
+def same_target(op):
+    """
+    هل الهدف لسه هو نفس اللي أسرناه وقت التعديل؟ (F6)
+    لازم: النافذة المقدمة نفسها، والعنصر المركّز (لو runtime_id مش فاضي) نفس
+    المعرّف، والتحديد (لو UIA قادر يقراه) لسه نفس البصمة — عشان مانكتبش
+    النتيجة فوق حاجة المستخدم غيّرها في النص. أي فشل = False (آمن).
+    """
+    if not op:
+        return False
+    # M5: من غير RuntimeId مش قادرين نتحقق من العنصر — الـcaller يسلّم (handoff)
+    # بدل ما يكتب فوق حاجة مش متأكد منها.
+    if not op.runtime_id:
+        return False
+    # قراية التحديد الأول (ممكن تسدّ في UIA بتاع برنامج تاني)، وبعدين التحقق من النافذة
+    # والعنصر — لو اتحقق الأول، المستخدم ممكن يتنقل وقت القراية والنتيجة تبقى قديمة
+    sel = None
+    if op.selection_hash:
+        el = _focused_element()
+        if el is not None:
+            try:
+                sel = _selection_text(el)
+            except Exception:
+                sel = None
+    try:
+        if foreground_hwnd() != int(op.hwnd):
+            return False
+        el = _focused_element()
+        if el is None or _runtime_id(el) != tuple(op.runtime_id):
+            return False
+    except Exception:
+        return False
+    if sel is not None and _selection_hash(sel) != op.selection_hash:
+        return False
+    return True
+
+
+# ── الكبسولة العائمة: منع تفعيل النافذة (WS_EX_NOACTIVATE) ────────────────────
+# الكبسولة Toplevel بتبان فوق كل حاجة، بس كليك عليها كان بياخد الفوكس —
+# والكلام المُملى بعدين بيتكتب جوّاها مش في البرنامج اللي قدام المستخدم.
+# الحل: نضيف WS_EX_NOACTIVATE لطراز النافذة، فالماوس يوصل لزرار الإلغاء/
+# الإنهاء والسحب عادي، بس النافذة عمرها ما بتاخد الفوكس ولا بتبقى الأمامية.
+
+GWL_EXSTYLE      = -20
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+
+# فلاجات SetWindowPos: بننده بيهم كلهم عشان تغيير الطراز يسري من غير ما
+# النافذة تتحرّك أو تتنشّط أو يتغيّر ترتيبها
+SWP_NOSIZE       = 0x0001
+SWP_NOMOVE       = 0x0002
+SWP_NOZORDER     = 0x0004
+SWP_NOACTIVATE   = 0x0010
+SWP_FRAMECHANGED = 0x0020
+_STYLE_FLAGS = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+
+# LONG_PTR بحجم المؤشر (32/64) — وهو اللي GetWindowLongPtrW/SetWindowLongPtrW بياخدوه
+LONG_PTR = ctypes.c_ssize_t
+
+_sty32 = None
+
+
+def _style32():
+    """ميتولّد مرة: argtypes/restype لدوال طراز النافذة — عشان النداءات تصح."""
+    global _sty32
+    if _sty32 is None:
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetParent.argtypes = [wintypes.HWND]
+        u.GetParent.restype = wintypes.HWND
+        u.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.GetWindowLongPtrW.restype = LONG_PTR
+        u.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        u.SetWindowLongPtrW.restype = LONG_PTR
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        u.SetWindowPos.restype = wintypes.BOOL
+        _sty32 = u
+    return _sty32
+
+
+def toplevel_hwnd(widget):
+    """الـHWND الفعلي لنافذة Toplevel في Tk — winfo_id بيشير لحاوية داخلية،
+    فالوالد (GetParent) هو الـHWND اللي نعدّل عليه الطراز. بيرجّع 0 لو فشل."""
+    try:
+        widget.update_idletasks()
+        return int(_style32().GetParent(widget.winfo_id()))
+    except Exception:
+        return 0
+
+
+def set_no_activate(hwnd):
+    """
+    بيضيف WS_EX_NOACTIVATE لطراز النافذة. بيرجّع True لو اتطبق (أو متطبّق
+    بالفعل)، وFalse من غير ما يرمي — كبسولة فشل تظبيطها لازم تفضل شغّالة.
+    """
+    try:
+        u = _style32()
+        if not hwnd:
+            return False
+        ctypes.set_last_error(0)
+        style = int(u.GetWindowLongPtrW(hwnd, GWL_EXSTYLE))
+        if style == 0 and ctypes.get_last_error():
+            return False                  # hwnd مش صالح
+        if style & WS_EX_NOACTIVATE:
+            return True                   # متطبّق بالفعل
+        ctypes.set_last_error(0)
+        if int(u.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE)) == 0 \
+                and ctypes.get_last_error():
+            return False
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _STYLE_FLAGS)
+        return True
+    except Exception as e:
+        try:
+            import core    # تأخير: core بيستورد winput جوّه دواله — مفيش دورة
+            core.log_error(e, "overlay/noactivate")
+        except Exception:
+            pass
+        return False
+
+
+
+# Tk نفسه بيرد على WM_MOUSEACTIVATE بـ«فعّل» لنوافذه العلوية، وده بيتجاوز WS_EX_NOACTIVATE —
+# اتجرّب فعليًا: الطراز متطبّق والكليك برضه خطف الفوكس. فبنلف إجراء النافذة (subclass):
+# WM_MOUSEACTIVATE بيرجع MA_NOACTIVATE، وأي رسالة تانية بتعدّي لإجراء Tk الأصلي زي ما هي.
+GWLP_WNDPROC     = -4
+WM_MOUSEACTIVATE = 0x0021
+WM_NCDESTROY     = 0x0082
+MA_NOACTIVATE    = 3
+LRESULT = ctypes.c_ssize_t
+_WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+_subclassed = {}   # hwnd → (الإجراء الجديد، الأصلي) — المرجع لازم يفضل عايش وإلا الـcallback يتمسح
+_retired_procs = []   # M8: مراجع الإجراءات المتقاعدة — عشان مايتجمعوش لحد ما آخر نداء يخلص
+
+
+def block_mouse_activate(hwnd):
+    """
+    الكليك على النافذة ميفعّلهاش أبدًا (WM_MOUSEACTIVATE → MA_NOACTIVATE)، والماوس
+    يفضل يوصل للزراير والسحب عادي. مرة واحدة لكل نافذة؛ بيرجّع False من غير ما يرمي.
+    """
+    if not hwnd:
+        return False
+    if hwnd in _subclassed:
+        return True
+    try:
+        u = _style32()
+        u.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT,
+                                      wintypes.WPARAM, wintypes.LPARAM]
+        u.CallWindowProcW.restype = LRESULT
+        old = {}
+
+        @_WNDPROC
+        def proc(h, msg, wp, lp):
+            if msg == WM_MOUSEACTIVATE:
+                return MA_NOACTIVATE
+            if msg == WM_NCDESTROY:
+                # M8: النافذة بتتدمّر — نرجّع إجراءها الأصلي ونشيلها من السجل
+                # وبعدين نمرّر الرسالة للأصل. المرجع بتاعنا بيتحفظ في قايمة
+                # المتقاعدين عشان مايتجمعش قبل النداء الأخير ده.
+                _retired_procs.append(proc)
+                prev = old.get("proc")
+                if prev:
+                    u.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, prev)
+                _subclassed.pop(hwnd, None)
+                if prev:
+                    return u.CallWindowProcW(prev, h, msg, wp, lp)
+                return 0
+            return u.CallWindowProcW(old["proc"], h, msg, wp, lp)
+
+        ctypes.set_last_error(0)
+        prev = int(u.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, ctypes.cast(proc, ctypes.c_void_p).value))
+        if prev == 0 and ctypes.get_last_error():
+            return False
+        old["proc"] = prev
+        _subclassed[hwnd] = (proc, prev)
+        return True
+    except Exception as e:
+        try:
+            import core
+            core.log_error(e, "overlay/mouseactivate")
+        except Exception:
+            pass
+        return False

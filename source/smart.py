@@ -13,6 +13,7 @@
 حاجة من core، عشان لو طلع فيه استيراد بالغلط يبقى مسار واحد مش دورة.
 """
 import re
+import difflib
 import unicodedata
 
 
@@ -522,11 +523,35 @@ def fix_mixed(text):
     return s
 
 
-# ── باقي الدوال: التوقيع متفق عليه هنا، والتنفيذ في المهام الجاية ─────────
+# ── F8: الاختصارات الصوتية ──────────────────────────────────────────────────
+# أدنى تشابه بين الكلام المنطوق ومفتاح الاختصار عشان نعتبره «هو هو». التطبيع
+# (normalize) بيوحّد اختلافات الكتابة الكبيرة (همزة، تاء مربوطة، ى/ي…)، والباقي
+# (كلمة اتسمعت غلط بشوية) بيتمسك بـSequenceMatcher. الحد عالي عن قصد: نص الاختصار
+# ممكن يكون IBAN أو عنوان أو إيميل، والكتابة الغلط لبيانات مخزّنة أوحش بكتير من
+# اختصار متماشش.
+SNIPPET_RATIO = 0.9
+
 
 def match_snippet(text, snippets):
     """هل الكلام كله هو جملة اختصار صوتي؟ يرجّع الاختصار أو None (F8)"""
-    raise NotImplementedError
+    target = normalize(text)
+    if not target:
+        return None
+    best, best_ratio = None, 0.0
+    for sn in snippets or []:
+        # الاختصار dict فيه trigger (المفتاح المنطوق) وtext (النص اللي يتوسّع ليه)
+        if not isinstance(sn, dict):
+            continue
+        trigger = str(sn.get("trigger") or "").strip()
+        key = normalize(trigger)
+        if not key:
+            continue
+        if key == target:
+            return sn                # تطابق تام بعد التطبيع — مفيش لزوم ندور تاني
+        ratio = difflib.SequenceMatcher(None, target, key).ratio()
+        if ratio > best_ratio:
+            best_ratio, best = ratio, sn
+    return best if best is not None and best_ratio >= SNIPPET_RATIO else None
 
 
 def is_network_error(err):

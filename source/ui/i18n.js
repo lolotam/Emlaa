@@ -36,7 +36,7 @@ const EN = {
   "آخر نتيجة": "Last result", "نسخ": "Copy", "اتنسخ": "Copied",
   "لسه مفيش تسجيلات — جرّب دلوقتي.": "No recordings yet — try one now.",
   "آخر التسجيلات": "Recent recordings", "عرض السجل كله": "View all history", "التسجيلات هتظهر هنا.": "Recordings will appear here.",
-  "دوسة على أي زرار من التلاتة تبدأ، ودوسة تانية توقف.": "Tap any of the three keys to start, tap again to stop.",
+  "دوسة على أي زرار من دول تبدأ، ودوسة تانية توقف.": "Tap any of these keys to start, tap again to stop.",
   "امسك الزرار واتكلم، وسيبه لما تخلص.": "Hold the key and speak, release when you're done.",
   "النهارده": "Today", "امبارح": "Yesterday",
   "الأحد": "Sun", "الاتنين": "Mon", "التلات": "Tue", "الأربع": "Wed", "الخميس": "Thu", "الجمعة": "Fri", "السبت": "Sat",
@@ -61,13 +61,23 @@ const EN = {
   "إضافة": "Add", "بتتبعت مع كل تسجيل عشان الموديل يكتبها بنفس الطريقة": "Sent with every recording so the model spells them the same way",
   "القاموس فاضي. ضيف الأسماء والمصطلحات اللي الموديل بيغلط فيها.": "The dictionary is empty. Add names and terms the model gets wrong.",
   "الكلمة موجودة بالفعل": "That word is already there",
+  // ── الاختصارات الصوتية ──
+  "الاختصارات الصوتية": "Voice shortcuts",
+  "قول جملة قصيرة… إملاء يكتب مكانها نص جاهز (عنوان، إيميل، IBAN…).": "Say a short phrase… Emlaa types a ready text in its place (address, email, IBAN…).",
+  "الاختصار (مثلاً: إيميلي الشخصي)": "Shortcut phrase (e.g. my personal email)",
+  "النص اللي يتكتب مكانه…": "The text it types in its place…",
+  "تعديل": "Edit", "حفظ": "Save",
+  "مفيش اختصارات لسه. ضيف جملة قصيرة والنص اللي بيتكتب مكانها.": "No shortcuts yet. Add a short phrase and the text it types in its place.",
   // ── الإعدادات ──
   "التغييرات بتشتغل علطول بعد الحفظ — من غير ما تقفل البرنامج.": "Changes apply as soon as you save — no restart needed.",
   "مزوّد التفريغ": "Transcription provider", "المزوّد": "Provider", "اللي بيفرّغ الصوت وينضّف النص": "Transcribes your voice and cleans up the text",
   "المفتاح (API key)": "API key", "سيبها فاضية لو مش عايز تغيّر المفتاح المحفوظ": "Leave empty to keep the saved key",
   "هات مفتاح ↗": "Get a key ↗", "الاختصارات": "Shortcuts", "تسجيل عادي": "Normal dictation",
-  "بيكتب كلامك زي ما هو بعد التنظيف": "Types what you said, cleaned up", "تحويل لبرومبت": "Turn into a prompt",
+  "بيكتب كلامك زي ما هو بعد التنظيف": "Types what you said, cleaned up",   "تحويل لبرومبت": "Turn into a prompt",
   "بيرتّب كلامك كطلب واضح للـAI": "Rewrites your words as a clear AI prompt", "عربي ← إنجليزي والعكس": "Arabic ⇄ English",
+  "تعديل النص المحدد": "Edit selected text",
+  "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد. الأفضل زرار F-keys: زرار فيه Ctrl/Alt/Shift بيخلّي خطة الحافظة الاحتياطية مش شغّالة في وضع الامساك":
+    "Select some text, press the key and speak your instruction — Emlaa edits the selection. Prefer an F-key: with a Ctrl/Alt/Shift key the clipboard fallback can't run in hold mode",
   "طريقة التسجيل": "Recording mode",
   "في وضع الدوسة الزرار لازم يتداس لوحده — Shift+حرف مش بيبدأ تسجيل": "In tap mode the key must be pressed alone — Shift+letter won't start a recording",
   "دوسة تبدأ · دوسة توقف": "Tap to start · tap to stop", "امسك واتكلم · سيبه يوقف": "Hold to talk · release to stop",
@@ -112,6 +122,7 @@ const EN = {
   "مشكلة في قراية الصوت — جرّب تاني": "Couldn't read the audio — try again",
   "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف": "Recording was too short — speak a little, then stop",
   "اتلغى التسجيل": "Recording cancelled",
+  "مقدرتش أحفظ الاختصارات — جرّب تاني": "Couldn't save the snippets — try again",
   "مطلعش نص — قرّب من الميك وجرّب تاني": "No text came out — move closer to the mic and try again",
   "مقدرتش أكتب النص ولا أنسخه — جرّب تاني": "Couldn't type or copy the text — try again",
   "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك": "Couldn't type into the password field — type it yourself",
@@ -204,7 +215,7 @@ Object.assign(EN, {
 
 let LANG = "ar";
 const AR_RE = /[؀-ۿ]/;
-const SKIP = ".row-text, .row-raw, .last-text, .r-text, .clip-text, .word, .app-tag, .user-text";
+const SKIP = ".row-text, .row-raw, .last-text, .r-text, .clip-text, .word, .app-tag, .user-text, .snip-trigger, .snip-text";
 const NODES = new WeakMap();      // text node → { orig, shown }
 
 function tr(ar, force) {

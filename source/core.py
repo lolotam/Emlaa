@@ -20,6 +20,7 @@ import json
 import wave
 import tempfile
 import threading
+import collections
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -113,6 +114,7 @@ DEFAULTS = {
     "hotkey_normal":     "ctrl_r",
     "hotkey_prompt":     "alt_r",
     "hotkey_translate":  "shift_r",
+    "hotkey_edit":       "",        # F6: زرار التعديل في المكان — "" = مقفول
     "overlay_x":         None,
     "overlay_y":         None,
     "mode":              "toggle",  # ضغطة تبدأ وضغطة توقف (hold = امسك واتكلم)
@@ -132,6 +134,7 @@ DEFAULTS = {
     "auto_update":       True,      # نزّل وثبّت الإصدار الجديد لوحده (بعد ما التسجيل يخلص)
     "floating_button":   False,     # الموجة بتظهر وقت التسجيل بس؛ True = زرار صغير ظاهر طول الوقت
     "dictionary":        [],        # كلمات وأسماء خاصة — بتتبعت للموديل عشان يكتبها صح
+    "snippets":          [],        # اختصارات صوتية: {trigger, text} — الكلام المطابق بيتوسّع لنص جاهز (F8)
     "clipboard_history": True,      # يحفظ كل حاجة بتتنسخ في قسم الحافظة
     "open_hotkey":       "<ctrl>+<alt>+n",
     "theme":             "dark",    # dark / light / system
@@ -384,7 +387,6 @@ def history_stats():
 CLIP_PATH = os.path.join(BASE, "clipboard.json")
 _clip_lock = threading.Lock()
 
-
 def clip_get():
     return _read_list(CLIP_PATH)[0]
 
@@ -425,11 +427,84 @@ def clip_clear():
         _clip_save([])
 
 
+# ── أرقام تسلسل الحافظة «بتاعتنا» ────────────────────────────────────────────
+# لما أسر التحديد (winput.capture_target) بيكتب ويرجّع نصوص في الحافظة، رقم
+# التسلسل بيتغيّر كذا مرة — والـClipboardWatcher كان هيسجّل النصوص دي كأنها نسخ
+# حقيقية من المستخدم. بنحتفظ بآخر 64 رقم تسلسل وسمناهم، والـwatcher بيتخطاهم.
+_owned_clip_lock = threading.Lock()
+_owned_clip_seqs = collections.deque(maxlen=64)
+
+
+def mark_clip_owned(seq):
+    """يوسّم رقم تسلسل حافظة كـ«بتاعنا» — الـClipboardWatcher يتخطاه."""
+    try:
+        seq = int(seq)
+    except (TypeError, ValueError):
+        return
+    with _owned_clip_lock:
+        _owned_clip_seqs.append(seq)
+
+
+def _clip_is_owned(seq):
+    """True لو رقم التسلسل ده من عمليات الحافظة بتاعتنا."""
+    with _owned_clip_lock:
+        return seq in _owned_clip_seqs
+
+
+# ── كبس مراقب الحافظة مؤقتًا (M4) ─────────────────────────────────────────────
+# قبل ما ننشر حاجة إحنا بنفسنا للحافظة (أسر Ctrl+C أو نسخ نص اختصار) بنكب المراقب
+# لفترة قصيرة: التغيير بيحصل بسرعة ورقم التسلسل بيتوسم «بتاعتنا» بعده — بس الفجوة
+# بين النشر والوسم كانت بتخلّي المراقب (اللي بيقرا كل نص ثانية) يسجّل النص بتاعنا
+# كنسخة حقيقية. الكبس بيمنع ده من غير ما يقدّم `last`، فبعد انتهاء الكبس المراقب
+# بيعيد تقييم الرقم الحالي (بتاعنا → يتخطى، نسخة مستخدم → تتسجل).
+_clip_suppress_lock = threading.Lock()
+_clip_suppress_until = 0.0
+
+
+def suppress_clip_watch(seconds):
+    """بيمنع مراقب الحافظة من التسجيل لحد `seconds` ثانية من دلوقتي."""
+    global _clip_suppress_until
+    with _clip_suppress_lock:
+        _clip_suppress_until = time.monotonic() + seconds
+
+
+def _clip_watch_suppressed():
+    """True لو المراقب مكبوت دلوقتي."""
+    with _clip_suppress_lock:
+        return time.monotonic() < _clip_suppress_until
+
+
+def _clip_read_text(u32, k32, cf_unicodetext):
+    """
+    نص الحافظة الحالي عبر Win32 — None لو مقدرناش نقراه. مستقل عن _watch_once
+    عشان الاختبار يزوّد قراية مزيّفة من غير GlobalLock ولا wstring_at حقيقي.
+    """
+    import ctypes
+    text = None
+    for _ in range(5):                       # برنامج تاني ممكن يكون فاتحها
+        if u32.OpenClipboard(None):
+            try:
+                h = u32.GetClipboardData(cf_unicodetext)
+                if h:
+                    p = k32.GlobalLock(h)
+                    if p:
+                        try:
+                            text = ctypes.wstring_at(p)
+                        finally:
+                            k32.GlobalUnlock(h)
+            finally:
+                u32.CloseClipboard()
+            break
+        time.sleep(0.05)
+    return text
+
+
 class ClipboardWatcher:
     """
     بيراقب الحافظة (بيقرا رقم التغيير من الويندوز كل نص ثانية) وبيحفظ أي نص جديد.
     بيحترم علامة «ExcludeClipboardContentFromMonitorProcessing» اللي برامج
-    الباسوردات بتحطها — فالباسوردات المنسوخة منها مش بتتحفظ.
+    الباسوردات بتحطها — فالباسوردات المنسوخة منها مش بتتحفظ. وبيتخطى أي رقم
+    تسلسل اتوسم «بتاعنا» (mark_clip_owned) — التغييرات اللي إحنا عملناها بنفسنا.
     """
 
     def __init__(self, on_new=None):
@@ -457,36 +532,38 @@ class ClipboardWatcher:
         last = u32.GetClipboardSequenceNumber()
         while not self._stop.wait(0.5):
             try:
-                seq = u32.GetClipboardSequenceNumber()
-                if seq == last or not CFG.get("clipboard_history", True):
-                    last = seq
-                    continue
-                last = seq
-                if u32.IsClipboardFormatAvailable(excl) or not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                    continue
-                text = None
-                for _ in range(5):                       # برنامج تاني ممكن يكون فاتحها
-                    if u32.OpenClipboard(None):
-                        try:
-                            h = u32.GetClipboardData(CF_UNICODETEXT)
-                            if h:
-                                p = k32.GlobalLock(h)
-                                if p:
-                                    try:
-                                        text = ctypes.wstring_at(p)
-                                    finally:
-                                        k32.GlobalUnlock(h)
-                        finally:
-                            u32.CloseClipboard()
-                        break
-                    time.sleep(0.05)
-                if text and text.strip():
-                    e = clip_add(text, _foreground_app())
-                    if e and self.on_new:
-                        self.on_new(e)
+                last = self._watch_once(u32, k32, excl, CF_UNICODETEXT, last)
             except Exception as e:
                 log_error(e, "clipboard/watch")
                 time.sleep(2)
+
+    def _watch_once(self, u32, k32, excl, cf_unicodetext, last):
+        """
+        تكرار واحد من المراقبة: بيرجّع قيمة last الجديدة. مستقل عن _run عشان
+        الاختبار يقدر يشغّل دورة واحدة بـuser32 مزيّف من غير ثريد ولا نوم حقيقي.
+        """
+        seq = u32.GetClipboardSequenceNumber()
+        if seq == last or not CFG.get("clipboard_history", True):
+            return seq
+        # M4: مكبوت = ممن نسجّل التغيير وممن نقدّم last — لما الكبس ينتهي
+        # بنعيد تقييم الرقم الحالي من أول وجديد.
+        if _clip_watch_suppressed():
+            return last
+        if _clip_is_owned(seq):
+            return seq
+        if u32.IsClipboardFormatAvailable(excl) or not u32.IsClipboardFormatAvailable(cf_unicodetext):
+            return seq
+        text = _clip_read_text(u32, k32, cf_unicodetext)
+        # N3: بعد القراية نعيد قراية رقم التسلسل — لو اتغيّر في النص (نسخة تانية
+        # وصلت جوّه قرايتنا) فالقراية بتاعت نص قديم/حد تاني → نتجاهلها ومبنقدّمش
+        # last، عشان التكرار الجاي يعيد تقييم الرقم الحالي من أول.
+        if u32.GetClipboardSequenceNumber() != seq:
+            return last
+        if text and text.strip():
+            e = clip_add(text, _foreground_app())
+            if e and self.on_new:
+                self.on_new(e)
+        return seq
 
 
 def _foreground_app():
@@ -844,7 +921,20 @@ def _copy_to_clipboard(text):
         return False
 
 
-def paste_text(text, target=None):
+def _mark_owned_if_snippet(from_snippet):
+    """لو النص اللي اننسخ جاي من اختصار صوتي، نعلّم رقم تغييره إنه بتاعنا."""
+    if from_snippet:
+        import winput
+        mark_clip_owned(winput._clipboard_sequence())
+
+
+def _pre_copy_suppress(from_snippet):
+    """كبس المراقب قبل نشر نص اختصار (M4) — عشان مايتسجلش كنسخة حقيقية."""
+    if from_snippet:
+        suppress_clip_watch(1.0)
+
+
+def paste_text(text, target=None, from_snippet=False, guard=None):
     """
     بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
       "placed"      = الأحداث اتحقنت كويس
@@ -855,6 +945,10 @@ def paste_text(text, target=None):
                       ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
     target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
     لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
+    from_snippet = النص جاي من اختصار صوتي — أي نسخة للحافظة بتتعلم إنها بتاعتنا
+    عشان مراقب الحافظة مايسجلهاش (نص الاختصار اتسجّل بالفعل كإملاء).
+    guard = دالة فحص قبل الحقن مباشرة (M6): بتتندّى بعد sleep الفوكس، ولو رجّعت
+    False منحقنش ونسلّم النص زي مسار الـhandoff (نسخ غير الخانات الآمنة).
     """
     import winput
     if target is None:
@@ -868,24 +962,40 @@ def paste_text(text, target=None):
         if cls != "secure":
             # L3: لو نشر الحافظة فشل مفيش حاجة وصلت للمستخدم — منرجعش "handoff"
             # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
+            _pre_copy_suppress(from_snippet)
             if not _copy_to_clipboard(inj):
                 return "clip_failed"
+            _mark_owned_if_snippet(from_snippet)
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
+    # الفحص الأخير لازم يبقى قبل الحقن على طول (بعد تجهيز الحافظة اللي ممكن تاخد وقت):
+    # فحص قبلها بكتير كان بيسيب فرصة إن الفوكس يتنقل والنتيجة تتكتب في مكان تاني
+    still_target = (lambda: True) if guard is None else guard
     if cls == "secure":
         # خانة آمنة: كتابة بس — الحافظة مش طريقها
+        if not still_target():
+            return "handoff"
         return "placed" if winput.type_text(inj) else "failed"
     if strategy == "type":
         # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
         # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
+        _pre_copy_suppress(from_snippet)
         backup = _copy_to_clipboard(inj)
+        if backup:
+            _mark_owned_if_snippet(from_snippet)
+        if not still_target():
+            return "handoff" if backup else "clip_failed"
         if winput.type_text(inj):
             return "placed"
         return "failed" if backup else "clip_failed"
     if strategy in ("ctrl_v", "shift_insert"):
         # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
+        _pre_copy_suppress(from_snippet)
         if not _copy_to_clipboard(inj):
             return "clip_failed"
+        _mark_owned_if_snippet(from_snippet)
+        if not still_target():
+            return "handoff"                    # النص على الحافظة بالفعل — المستخدم يلزقه
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
         return "placed" if fn() else "failed"
     return "handoff"
@@ -909,6 +1019,21 @@ def _probe_password(probe, key):
     t = threading.Thread(target=run, daemon=True)
     probe.setdefault("threads", []).append(t)
     t.start()
+
+
+def _probe_password_seen(op, timeout=1.0):
+    """
+    L1 (خصوصية): بيستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
+    (أقصى timeout ثانية في الإجمالي) وبيرجّع True لو أي واحد فيهم شاف خانة
+    باسورد. مشتركة بين process و_process_edit عشان نفس السلوك في كل الأوضاع.
+    """
+    probe = getattr(op, "probe", {})
+    deadline = time.time() + timeout
+    for t in probe.get("threads") or ():
+        left = deadline - time.time()
+        if left > 0:
+            t.join(left)
+    return probe.get("begin") is True or probe.get("end") is True
 
 
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
@@ -1009,7 +1134,16 @@ class App:
             self.recording = True
             self.active_mode = mode
             op = Operation(mode=mode, target_app=target_app)
+            if mode == "edit":
+                # حدث الإلغاء بيتعمل قبل ما العملية تتنشر: cancel() اللي ييجي قبل ما العامل
+                # يبدأ لازم يلاقيه، وإلا الأسر كان بيبدأ ويحقن Ctrl+C في اللي بعده
+                op.probe["cancel"] = threading.Event()
             self._op = op
+        if mode == "edit":
+            # F6: أسر التحديد (UIA/الحافظة) بيقدر يسدّ ثواني، فمينفعش يحصل على ثريد
+            # الـlistener (pynput لازم يفضل سريع). بنسلّم الباقي لعامل ونرجع فورًا.
+            threading.Thread(target=self._begin_edit, args=(op,), daemon=True).start()
+            return
         # L1 (خصوصية): نقرا «باسورد؟» على ثريد دايمون من لحظة الحجز — عشان
         # process يرجع لحالة الخانة وقت التسجيل نفسه، مش وقت بداية التفريغ
         # (الفوكس ممكن يكون اتنقل في النص، وكلمة السر عمرها ما تضيع حمايتها).
@@ -1032,6 +1166,14 @@ class App:
         with self._state_lock:
             if not self.recording or self._op is not op:
                 return
+        self._begin_tail(op, mode)
+
+    def _begin_tail(self, op, mode):
+        """
+        نهاية begin المشتركة بين كل الأوضاع: الصفارة برّه القفل وقبل الالتقاط،
+        فحص تاني، الالتقاط جوّه القفل، إعلان "rec"، وفحص stale — في مكان واحد
+        عشان سباقات cancel/begin تفضل ثابتة ومفيش نسختين من نفس الإصلاح.
+        """
         # الصفارة برّه القفل وقبل الالتقاط: لو سبقت الالتقاط كانت بتتسجّل جوّه
         # الصوت، ولو جوّه القفل كانت بتقعد فيه ~90ms بتمنع cancel يوصّل.
         beep(880, 90)
@@ -1050,6 +1192,78 @@ class App:
         if stale:
             self.on_state("ready")
 
+    def _edit_refuse(self, op, msg):
+        """
+        رفض بداية وضع التعديل: بنمسح الحجز والعملية بس لو لسه ملكنا (نفس الـop
+        اللي حجزناه) وننشر الخطأ. لو المستخدم وقّف/لغى في النص، بنسكت خالص.
+        """
+        with self._state_lock:
+            if self._op is not op:
+                return
+            self.recording = False
+            self._op = None
+        self.on_state("err", msg)
+
+    def _begin_edit(self, op):
+        """
+        F6: العامل اللي بينفّذ بداية التعديل في المكان. أسر التحديد بيحصل على
+        ثريد دايمون داخلي بميزانية قصوى (١.٥ ثانية) — UIA بيقدر يسدّ ثواني على
+        التحديدات الضخمة أو برامج مش متعاونة، ومنستناش عليه للابد. أي رفض بيحصل
+        و الـop لسه حيّ؛ لو المستخدم وقّف في النص، العامل بيسكت وبيخلص.
+        """
+        import winput
+        import dataclasses
+        # N5: حدث الإلغاء بيتحفظ على العملية نفسها (op.probe["cancel"]) مش متغير
+        # محلي — عشان end()/cancel() يقدروا يقفلوه فورًا ويبطلوا أسر معلق في UIA،
+        # مش بس بعد الـjoin بتاع الـ1.5 ثانية. برضه M2: بيوصل لجوّه الأسر — لو
+        # فاضت الميزانية أو العملية بقت قديمة، ثريد الأسر بيبطل قبل ما يلمس الحافظة.
+        cancel = op.probe.setdefault("cancel", threading.Event())
+        with self._state_lock:
+            current = self.recording and self._op is op
+        if cancel.is_set() or not current:
+            return                                 # اتلغى قبل ما الأسر يبدأ — منلمسش حاجة
+        captured = {}
+
+        def _capture():
+            try:
+                captured["result"] = winput.capture_target(cancel=cancel)
+            except Exception:
+                captured["result"] = None
+
+        t = threading.Thread(target=_capture, daemon=True)
+        t.start()
+        t.join(1.5)                                # الميزانية القصوى للأسر (كله جوّه ثريد واحد)
+        exceeded = t.is_alive()                    # لسه شغّال = فاضت الميزانية
+        with self._state_lock:
+            current = self.recording and self._op is op
+        if exceeded or not current:
+            cancel.set()                           # الثريد المتأخر يبطل حالًا
+        result = captured.get("result") or {}
+        # M1: خانة باسورد (أو مقدرناش نقرا) — الرفض من capture نفسه ورسالته واحدة
+        if result.get("password"):
+            self._edit_refuse(op, "مينفعش تعديل خانة باسورد")
+            return
+        sel = (result.get("selection") or "")
+        # فاضت الميزانية أو الأسر فشل أو مفيش تحديد → رفض. (الثريد اللي لسه
+        # شغّال daemon وبيبص في UIA — بنسيبه يخلص لوحده، النتيجة مش هتوصل.)
+        if exceeded or not sel:
+            self._edit_refuse(op, "حدّد النص اللي عايز تعدّله الأول")
+            return
+        if len(sel) > 6000:
+            self._edit_refuse(op, "النص المحدد طويل أوي — حدّد جزء أصغر")
+            return
+        new_op = dataclasses.replace(
+            op, hwnd=int(result.get("hwnd") or 0),
+            runtime_id=tuple(result.get("runtime_id") or ()),
+            selection=sel,
+            selection_hash=result.get("selection_hash") or "")
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+            self._op = new_op
+        # نفس نهاية begin العادية — من هنا ومع بعدين مفيش فرق بين الأوضاع
+        self._begin_tail(new_op, "edit")
+
     def end(self):
         with self._state_lock:
             # نقفل التسجيل ونحجز التفريغ (busy) في نفس اللحظة: قبل كده كانت
@@ -1065,6 +1279,11 @@ class App:
         # الريكوردر — عشان لو المستخدم كان واقف في خانة باسورد وقت ما وقّف.
         if op is not None:
             _probe_password(op.probe, "end")
+            # N5: لو في أسر edit لسه شغّال (معلق في UIA)، بنلغيه حالًا — مش
+            # نستنى الـ1.5 ثانية بتاع join في _begin_edit.
+            ev = op.probe.get("cancel")
+            if ev is not None:
+                ev.set()
         beep(500, 90)
         try:
             wav = self.rec.stop()
@@ -1085,8 +1304,15 @@ class App:
             if not self.recording:
                 return
             self.recording = False
+            op = self._op
             self._op = None                   # العملية اتلغت — مفيش ما يستلمها في end()
             self._active_key = None           # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
+            # N5: بنقفل حدث أسر edit لو لسه شغّال — جوّه القفل مباشرة بعد ما
+            # شيلنا العملية، عشان الأسر المعلق في UIA يبطل فورًا مش بعد الـjoin.
+            if op is not None:
+                ev = op.probe.get("cancel")
+                if ev is not None:
+                    ev.set()
             # الديسكارد جوّه القفل نفسه: بيقلّب flags ويمسح frames بس، فآمن هنا.
             # لو فضل برّه، begin() على ثريد تاني كان ممكن يبدأ تسجيل جديد في الفجوة،
             # والديسكارد المتأخر كان هيمسح التسجيل الجديد.
@@ -1101,6 +1327,11 @@ class App:
         # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
         cur_mode = op.mode
         try:
+            if cur_mode == "edit":
+                # F6: وضع التعديل مسار مستقل — مفيش فحص باسورد مبكّر ولا
+                # bypass/snippets/polish/fix_mixed/prompt/translate، التعليمات بس.
+                self._process_edit(wav, op)
+                return
             # F2 (خصوصية): معلومات الفوكس بتتقرا مرة واحدة في أول العملية — قبل
             # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
             # والوقت اللي التسجيل لسه واقف عليها. لو باسورد، نصها عمره ما يوصل
@@ -1108,18 +1339,12 @@ class App:
             # L1: نستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
             # (أقصى ثانية واحدة في الإجمالي) — القراية هنا وحدها مش كفاية لأن
             # الفوكس ممكن يكون اتنقل بين وقت التسجيل وبداية التفريغ.
-            probe = getattr(op, "probe", {})
-            deadline = time.time() + 1.0
-            for t in probe.get("threads") or ():
-                left = deadline - time.time()
-                if left > 0:
-                    t.join(left)
             import winput
             info = winput.focused_info()
             info["exe"] = _foreground_app()
             # أي واحد (begin أو end أو القراية الحالية) شاف باسورد = العملية
             # محمية طول عمرها — مش بنخفّضها أبدًا.
-            early_secure = (probe.get("begin") is True or probe.get("end") is True
+            early_secure = (_probe_password_seen(op)
                             or info.get("is_password") is True)
             self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
@@ -1129,6 +1354,11 @@ class App:
                 dur = None
             cl = self.client()
             cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+            # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
+            # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
+            cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                              for s in (CFG.get("snippets") or [])
+                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
             # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
             # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
             lang = None if cur_mode == "translate" else CFG.get("language", "ar")
@@ -1138,10 +1368,13 @@ class App:
                 return
 
             bypass = False
+            snippet = None
             if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
                 # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
                 # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
+                # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
+                # يندسّ في خانة باسورد.
                 out = text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
@@ -1149,17 +1382,25 @@ class App:
             elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
-            elif CFG.get("polish", True):
-                if smart.should_bypass(text, cur_mode, CFG):
-                    # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
-                    # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
-                    out = smart.light_clean(text)
-                    bypass = True
-                else:
-                    # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
-                    out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
             else:
-                out = text
+                # F8 (الوضع العادي): لو الكلام كله اختصار صوتي محفوظ، النص بيتوسّع
+                # لنص الاختصار حرفيًا — من غير أي لفة موديل ولا تنضيف، لأن النص
+                # المخزّن (IBAN/عنوان/إيميل) ممن يتغيّر ولو بحرف. بيعتمد على
+                # التطبيع مش على التطابق الحرفي.
+                snippet = smart.match_snippet(text, CFG.get("snippets"))
+                if snippet is not None:
+                    out = snippet.get("text", "")
+                elif CFG.get("polish", True):
+                    if smart.should_bypass(text, cur_mode, CFG):
+                        # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
+                        # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
+                        out = smart.light_clean(text)
+                        bypass = True
+                    else:
+                        # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
+                        out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
+                else:
+                    out = text
 
             # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
             # قبل تصنيف الهدف. الاستعلام الأخير ده هو اللي بيحدد مكان الكتابة.
@@ -1184,18 +1425,25 @@ class App:
             # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
             # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
             if (cur_mode == "normal" and CFG.get("polish", True)
+                    and snippet is None
                     and not smart.is_dev_app(op.target_app, CFG)
                     and target[0] not in ("terminal", "secure")):
                 out = smart.fix_mixed(out)
                 target = (target[0], target[1], out)
             rid = None
             if not secure:
-                rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
+                # F8: في السجل النتيجة بتظهر «[اختصار] <المفتاح>» — مش نص الاختصار
+                # الكامل — عشان المستخدم يعرف إن اللي اتكتب ده كان اختصار مش إملاء.
+                history_result = ("[اختصار] " + str(snippet.get("trigger") or "")) if snippet is not None else out
+                rid = history_add(cur_mode, text, history_result, dur, engine=cl.engine(),
                                   bypass=bypass, app=op.target_app)
                 self.on_text(out)
             res = None
             if not secure or CFG.get("auto_paste", True):
-                res = paste_text(out, target)
+                if snippet is not None:
+                    res = paste_text(out, target, from_snippet=True)
+                else:
+                    res = paste_text(out, target)
                 if not secure and res == "clip_failed":
                     self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
                 elif not secure and res in ("failed", "handoff"):
@@ -1224,6 +1472,62 @@ class App:
             except Exception:
                 pass
 
+    def _process_edit(self, wav, op):
+        """
+        F6: تنفيذ التعديل في المكان. التعليمات المنطوقة بتتفّرغ وتروح للموديل
+        مع النص المحدد، والنتيجة بتتحقن مكان التحديد (أو بتتنسخ لو الهدف اتغيّر).
+        النص المحدد نفسه عمره ما يتسجّل في السجل — التعليمات والنتيجة بس.
+        """
+        import winput
+        self.on_state("work", "edit")
+        # N2: نفس فحص بروب التسجيل بتاع process — لو begin/end شافوا خانة باسورد
+        # (أثناء التسجيل نفسه)، التعليمات ممن توصل للموديل إطلاقًا، لأن التحديد
+        # ممكن يكون باسورد متسرب من خانة المستخدم اتنقل عنها.
+        if _probe_password_seen(op):
+            self.on_state("err", "مينفعش تعديل خانة باسورد")
+            return
+        cl = self.client()
+        cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+        cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                          for s in (CFG.get("snippets") or [])
+                          if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+        try:
+            with wave.open(wav, "rb") as w:
+                dur = w.getnframes() / float(w.getframerate())
+        except Exception:
+            dur = None
+        instruction = cl.transcribe(wav, CFG.get("language", "ar"))
+        if not instruction:
+            self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
+            return
+        result = cl.edit(op.selection, instruction)
+        if result is None:
+            # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة
+            self.on_state("err", "معرفتش أعدّل النص — جرّب تاني")
+            return
+        info = winput.focused_info()
+        info["exe"] = _foreground_app()
+        target = smart.insert_target(info, result, CFG.get("insert_method"))
+        # M6: الهدف اتحوّل لخانة باسورد بعد الأسر — ممن نحقن ولا ننسخ (الباسورد
+        # عمره مايوصل للحافظة)؛ بنوقف برسالة واضحة من غير "done".
+        if target[0] == "secure":
+            self.on_state("err", "مكتبتش التعديل — الهدف بقى خانة باسورد")
+            return
+        # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،
+        # paste_text بيتسلّم (نسخ) بدل ما يكتب فوق حاجة تانية.
+        res = paste_text(result, target, guard=lambda: winput.same_target(op))
+        # M7: الهدف اتغيّر والنسخة فشلت كمان → خطأ بدل on_unplaced + "done"
+        if res == "clip_failed":
+            self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+            return
+        if res in ("failed", "handoff"):
+            self.on_unplaced(result)
+        rid = history_add("edit", instruction, result, dur, engine=cl.engine())
+        if rid:
+            recording_save(rid, wav)
+        if res in ("placed", "handoff", "failed"):
+            self.on_state("done", "edit")
+
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
         from pynput import keyboard
@@ -1245,27 +1549,30 @@ class App:
         hk_normal = CFG.get("hotkey_normal") or CFG.get("hotkey") or "ctrl_r"
         hk_prompt = CFG.get("hotkey_prompt") or "alt_r"
         hk_trans  = CFG.get("hotkey_translate") or "shift_r"
+        hk_edit   = CFG.get("hotkey_edit") or ""        # F6: "" = مقفول
         mode_type = CFG.get("mode", "hold")
 
         key_map = {}
         k_norm = _parse_key(hk_normal)
         k_prmt = _parse_key(hk_prompt)
         k_trns = _parse_key(hk_trans)
+        k_edit = _parse_key(hk_edit)
 
         if k_norm: key_map[k_norm] = "normal"
         if k_prmt: key_map[k_prmt] = "prompt"
         if k_trns: key_map[k_trns] = "translate"
+        if k_edit: key_map[k_edit] = "edit"
 
         self._active_key = None
 
-        # أي زرار من التلاتة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
+        # أي زرار من الأربعة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
         # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
         # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
         ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
         LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
                     "scroll_lock": winput.VK_SCROLL_LOCK}
         alt_keys, lock_vks = set(), {}
-        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans)):
+        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans), (k_edit, hk_edit)):
             if not k:
                 continue
             s = str(raw).lower().strip()

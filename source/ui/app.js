@@ -17,9 +17,10 @@ const S = {
   clipSel: new Set(),
   clipLimit: 200,
   provider: null,
+  snipEditKey: null,
 };
 
-const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة" };
+const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
   translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
@@ -29,6 +30,7 @@ const ICON = {
   check: '<svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
@@ -106,7 +108,7 @@ function go(page) {
   $("#main").scrollTop = 0;
   if (page === "history") renderHistory();
   if (page === "clipboard") loadClips();
-  if (page === "dictionary") renderDict();
+  if (page === "dictionary") { renderDict(); renderSnippets(); }
   if (page === "settings") fillSettings();
   updateBulk();
 }
@@ -142,10 +144,10 @@ function renderStats(st) {
 function renderKeys() {
   const c = S.boot.cfg;
   const toggle = c.mode !== "hold";
-  $("#homeKeys").innerHTML = [
-    ["normal", c.hotkey_normal], ["prompt", c.hotkey_prompt], ["translate", c.hotkey_translate],
-  ].map(([m, k]) => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(hkLabel(k))}</span></div>`).join("")
-    + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من التلاتة تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
+  const rows = [["normal", c.hotkey_normal], ["prompt", c.hotkey_prompt], ["translate", c.hotkey_translate]];
+  if (c.hotkey_edit) rows.push(["edit", c.hotkey_edit]);
+  $("#homeKeys").innerHTML = rows.map(([m, k]) => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(hkLabel(k))}</span></div>`).join("")
+    + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من دول تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
 }
 function renderLast() {
   const last = S.history[0];
@@ -562,6 +564,95 @@ $("#dictList").addEventListener("click", e => {
   saveDict(words);
 });
 
+/* ═══════════ الاختصارات الصوتية F8 ═══════════ */
+function snippetRowHTML(sn, i) {
+  const flat = String(sn.text || "").replace(/\s+/g, " ").trim();
+  const preview = flat.length > 40 ? flat.slice(0, 40) + "…" : flat;
+  return `<div class="snip-row" data-i="${i}">
+    <span class="snip-trigger">${esc(sn.trigger)}</span>
+    <span class="snip-text">${esc(preview)}</span>
+    <button class="icon-btn snip-edit" type="button" title="تعديل">${ICON.edit}</button>
+    <button class="icon-btn del snip-del" type="button" title="مسح">${ICON.x}</button>
+  </div>`;
+}
+function renderSnippets() {
+  const list = S.boot.cfg.snippets || [];
+  $("#snipList").innerHTML = list.length
+    ? list.map(snippetRowHTML).join("")
+    : `<div class="dict-empty">مفيش اختصارات لسه. ضيف جملة قصيرة والنص اللي بيتكتب مكانها.</div>`;
+}
+function snipFormReset() {
+  S.snipEditKey = null;
+  $("#snipInput").value = "";
+  $("#snipText").value = "";
+  $("#snipAddBtn").textContent = "إضافة";
+}
+/* N6: سلسلة حفظ الاختصارات — التعديلات بتتنفّذ واحدة واحدة، وكل تعديل بيقرا
+   القايمة اللي رجّعها آخر حفظ ناجح (S.boot.cfg.snippets) مش القايمة القديمة
+   وقت الدوسة. كده حذفين متتاليين سريعين عمرهم ما يرجّعوا اختصار اتمسح. */
+let snipChain = Promise.resolve();
+function queueSnippetMutation(mutator) {
+  // .catch: لو حفظ فشل، السلسلة متقفش — غير كده كل تعديل بعده كان بيتجاهل بصمت
+  const done = snipChain.then(async () => {
+    const next = mutator([...(S.boot.cfg.snippets || [])]);
+    if (!next) return false;
+    const r = await api().snippets_set(next);
+    if (!Array.isArray(r)) {                       // رفض من الحفظ (زي مفتاح متكرر)
+      toast((r && r.err) || "مقدرتش أحفظ الاختصارات — جرّب تاني");
+      return false;
+    }
+    S.boot.cfg.snippets = r;
+    renderSnippets();
+    return true;
+  }).catch(() => { toast("مقدرتش أحفظ الاختصارات — جرّب تاني"); renderSnippets(); return false; });
+  snipChain = done;
+  return done;
+}
+// التعديلات بتمسك الاختصار بمفتاحه (trigger) مش برقم الصف: الطابور بيتنفّذ على القايمة
+// بعد آخر حفظ، فرقم صف اتقرا قبل حذف سابق ممكن يشاور على اختصار تاني خالص
+const snipIndex = (items, key) => items.findIndex(s => s.trigger === key);
+$("#snipForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const trigger = $("#snipInput").value.trim();
+  const text = $("#snipText").value;
+  if (!trigger || !text.trim()) return;
+  const editKey = S.snipEditKey;
+  queueSnippetMutation(items => {
+    const i = editKey == null ? -1 : snipIndex(items, editKey);
+    if (i >= 0) items[i] = { trigger, text };
+    else items.push({ trigger, text });
+    return items;
+  }).then(ok => {
+    // الفورم بيتفضّى بس لما الحفظ ينجح — لو اترفض، المستخدم ميخسرش اللي كتبه
+    if (ok) snipFormReset();
+    $("#snipInput").focus();
+  });
+});
+$("#snipList").addEventListener("click", e => {
+  const row = e.target.closest(".snip-row");
+  if (!row) return;
+  const sn = (S.boot.cfg.snippets || [])[Number(row.dataset.i)];
+  if (!sn) return;
+  if (e.target.closest(".snip-del")) {
+    const key = sn.trigger;
+    queueSnippetMutation(items => {
+      const i = snipIndex(items, key);
+      if (i < 0) return null;                 // اتمسح قبل كده
+      items.splice(i, 1);
+      return items;
+    });
+    if (S.snipEditKey === key) snipFormReset();
+    return;
+  }
+  if (e.target.closest(".snip-edit")) {
+    S.snipEditKey = sn.trigger;
+    $("#snipInput").value = sn.trigger;
+    $("#snipText").value = sn.text;
+    $("#snipAddBtn").textContent = "حفظ";
+    $("#snipInput").focus();
+  }
+});
+
 /* ═══════════ الإعدادات ═══════════ */
 function provCards(container, onPick) {
   container.innerHTML = S.boot.providers.map(p => `
@@ -705,6 +796,9 @@ function fillSettings() {
   fillSelect($("#hkNormal"), S.boot.hotkeys, c.hotkey_normal);
   fillSelect($("#hkPrompt"), S.boot.hotkeys, c.hotkey_prompt);
   fillSelect($("#hkTranslate"), S.boot.hotkeys, c.hotkey_translate);
+  fillSelect($("#hkEdit"), S.boot.hotkeys, c.hotkey_edit || "");
+  $("#hkEdit").insertAdjacentHTML("afterbegin", `<option value="">مفيش</option>`);
+  $("#hkEdit").value = c.hotkey_edit || "";
   fillSelect($("#hkOpen"), S.boot.openHotkeys, c.open_hotkey || "");
   $("#recMode").value = c.mode === "hold" ? "hold" : "toggle";
   $("#sInsert").value = c.insert_method === "auto" || c.insert_method === "paste" ? c.insert_method : "type";
@@ -741,9 +835,10 @@ $("#styleList").addEventListener("click", e => {
   }
 });
 $("#saveBtn").addEventListener("click", async () => {
-  const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value];
+  const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value, $("#hkEdit").value];
   const msg = $("#saveMsg");
-  if (new Set(hk).size < 3) {
+  const used = hk.filter(Boolean);
+  if (new Set(used).size < used.length) {
     msg.className = "save-msg err";
     msg.textContent = "كل وضع لازم يبقى ليه زرار مختلف";
     return;
@@ -754,7 +849,7 @@ $("#saveBtn").addEventListener("click", async () => {
   msg.textContent = $("#setKey").value.trim() ? "بتأكد من المفتاح…" : "بحفظ…";
   const r = await api().save_settings({
     provider: S.provider, key: $("#setKey").value.trim(), model: S.model,
-    hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2],
+    hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2], hotkey_edit: hk[3],
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
     auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,

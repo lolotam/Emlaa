@@ -21,8 +21,9 @@ from tkinter import ttk
 
 import core
 import providers
+import winput
 
-APP_VERSION = "1.10"
+APP_VERSION = "1.11"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
@@ -122,6 +123,7 @@ class WaveOverlay(tk.Toplevel):
         "normal":    ("#8b5cf6", "#a78bfa"),   # بنفسجي
         "prompt":    ("#f59e0b", "#fbbf24"),   # كهرماني / برتقالي
         "translate": ("#06b6d4", "#22d3ee"),   # تركواز / أزرق سماوي
+        "edit":      ("#10b981", "#34d399"),   # أخضر — التعديل في المكان (F6)
     }
 
     def __init__(self, master, level_getter=None, on_click=None, on_menu=None, on_cancel=None):
@@ -294,6 +296,7 @@ class WaveOverlay(tk.Toplevel):
             self.attributes("-topmost", True)
         except Exception:
             pass
+        self._apply_no_activate()
         if self._job is None:
             self._tick()
 
@@ -345,9 +348,24 @@ class WaveOverlay(tk.Toplevel):
                 self.attributes("-topmost", True)
             except Exception:
                 pass
+            self._apply_no_activate()
         else:
             self._state = "ready"
             self.withdraw()
+
+    def _apply_no_activate(self):
+        """
+        الكبسولة ما تاخدش الفوكس أبدًا — غير كده الكلام المُملى بيتكتب جوّاها
+        مش في البرنامج اللي قدام المستخدم. الطراز بيتطبق كل ما الكبسولة تبان
+        (show و hide الاتنين بيdeiconify) لأن Tk بيعيد بناء طراز النافذة عند
+        إعادة الظهور. فشل التظبيط مش قاتل: الكبسولة تفضل شغّالة زي ما هي.
+        """
+        try:
+            hwnd = winput.toplevel_hwnd(self)
+            winput.set_no_activate(hwnd)
+            winput.block_mouse_activate(hwnd)   # Tk بيتجاوز الطراز لوحده عند الكليك
+        except Exception:
+            pass
 
     def _tick(self):
         try:

@@ -15,6 +15,7 @@ import webbrowser
 
 import core
 import providers
+import smart
 
 UI_DIR = "ui"
 
@@ -527,11 +528,11 @@ class Api:
             "hotkeys": [{"id": k, "label": v} for k, v in c.hotkeys],
             "openHotkeys": [{"id": k, "label": v} for k, v in OPEN_HOTKEYS],
             "cfg": {k: cfg.get(k) for k in (
-                "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
+                "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit", "open_hotkey",
                 "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
-                "context_styles", "app_profiles")},
+                "context_styles", "app_profiles", "snippets")},
             "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if keys.get(h)), None),
             "stats": core.history_stats(),
         }
@@ -631,6 +632,37 @@ class Api:
         core.save_config(core.CFG)
         return clean
 
+    # ── الاختصارات الصوتية (F8) ──
+    def snippets_set(self, items):
+        """
+        بيحفظ اختصارات الصوت: قايمة {trigger, text}. المفتاح بيتنضّف من الفراغات،
+        والتكرار بيتحدد على الشكل المطبّع (smart.normalize) مش الحرفي — عشان
+        «إيميلي» و«ايميلي» مايتسجلوش مرتين ويلخبطوا المطابقة. الفاضي (مفتاح
+        أو نص) بيتساقط عشان مايبقاش فيه اختصار ميت.
+        """
+        clean, seen = [], set()
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            trigger = str(it.get("trigger") or "").strip()
+            text = str(it.get("text") or "").strip()
+            if not trigger or not text:
+                continue
+            key = smart.normalize(trigger)
+            if not key:
+                continue
+            if key in seen:
+                # اتنين بنفس المفتاح (بعد التطبيع) — غالبًا تعديل غيّر مفتاح اختصار لمفتاح
+                # اختصار تاني موجود. منحفظش ومنسقطش واحد منهم بصمت؛ المستخدم يقرر
+                return {"ok": False, "err": f"فيه اختصار تاني بنفس الجملة «{trigger}» — غيّر واحد منهم"}
+            seen.add(key)
+            clean.append({"trigger": trigger[:60], "text": text[:2000]})
+        core.CFG["snippets"] = clean[:100]
+        core.save_config(core.CFG)
+        # N7: بنرجّع نفس القايمة المقصوصة اللي اتحفظت (clean[:100]) مش الكاملة —
+        # عشان الواجهة تفضل متطابقة مع اللي فعلاً على القرص.
+        return clean[:100]
+
     # ── التسجيل ──
     def record(self, mode="normal"):
         return self._c.toggle_record(mode)
@@ -650,12 +682,22 @@ class Api:
                 return {"ok": False, "err": err}
             providers.write_key(core.ENV_PATH, pid, new_key)
 
-        old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"), cfg.get("mode"))
+        old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
+                  cfg.get("hotkey_edit"), cfg.get("mode"))
         old_open = cfg.get("open_hotkey")
-        for k in ("provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
-                  "mode", "insert_method"):
+        for k in ("provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit",
+                  "open_hotkey", "mode", "insert_method"):
             if k in data:
                 cfg[k] = data[k]
+        # F6: ممنوع يبقى زرارين أوضاع لنفس المفتاح (غير الفاضي) — دوسة واحدة
+        # هتشتغل وضعين فوق بعض. بنفحص بعد ما القيم الجديدة اتطبّقت على cfg.
+        _hk_seen = set()
+        for k in ("hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit"):
+            v = str(cfg.get(k) or "").strip()
+            if v:
+                if v in _hk_seen:
+                    return {"ok": False, "err": "كل وضع لازم يبقى ليه زرار مختلف — ظبّط الاختصارات"}
+                _hk_seen.add(v)
         for k in ("polish", "prompt_mode", "auto_paste", "beep", "minimize_to_tray",
                   "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10",
                   "context_styles"):
@@ -691,7 +733,8 @@ class Api:
 
         if c.engine:
             c.engine.reset_client()
-            if old_hk != (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"), cfg.get("mode")):
+            if old_hk != (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
+                          cfg.get("hotkey_edit"), cfg.get("mode")):
                 c.engine.restart_hotkey()
         else:
             c.start_engine()
