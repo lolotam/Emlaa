@@ -14,6 +14,7 @@
 import os
 import re
 import ssl
+import time
 import json
 import base64
 import urllib.request
@@ -393,6 +394,137 @@ _UNAVAILABLE_MARKERS = ("model_not_found", "does not have access", "decommission
                         "does not exist")
 
 
+# ── صحّة المفاتيح في الذاكرة (Task 23) ────────────────────────────────────────
+# كل مفتاح ليه حالة: active | rate_limited (بمهلة تبريد) | invalid — في الذاكرة
+# بس، ومفتاح القاموس بصمة المفتاح مش المفتاح نفسه: منخزّنش المفتاح مرتين ولا
+# نطبعه ولا نحطه في أي رسالة خطأ.
+_KEY_STATE = {}   # (provider_id, بصمة المفتاح) -> {"status": ..., "until": مهلة أو None}
+
+# لما كل المفاتيح تخلص (حد استخدام أو باطلة) بنرجع الرسالة دي — الـchat بيمسكها
+# ويرجّع النص الخام، والتفريغ بيطلّعها للمستخدم من غير ما تعتبر خطأ شبكة.
+KEYS_EXHAUSTED_MSG = "كل المفاتيح وصلت للحد مؤقتًا — جرّب بعد شوية أو ضيف مفتاح تاني"
+
+_RATE_PHRASES = ("rate_limit", "rate limit", "quota", "resource_exhausted",
+                 "too many requests")
+_INVALID_PHRASES = ("invalid api key", "invalid_api_key", "incorrect api key",
+                    "api key not valid", "invalid x-api-key", "unauthorized",
+                    "invalid credentials")
+_LEADING_STATUS_RE = re.compile(r"^\s*(?:http|error code:?)\s*(\d{3})\b", re.I)
+_RETRY_AFTER_RE = re.compile(r"retry[ -]after[:\s]*(\d+(?:\.\d+)?)", re.I)
+# المدة نفسها بس اللي بعد «try again in» (2m59.56s / 340ms / 5 minutes) — مش باقي الرسالة،
+# عشان أرقام زي «6000 TPM» أو حدود الحساب ماتتجمعش على المهلة
+_TRY_AGAIN_RE = re.compile(r"try again in\s+((?:\d+(?:\.\d+)?\s*(?:ms|h|m|s)[a-z]*[\s,]*)+)", re.I)
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|h|m|s)", re.I)
+
+_COOLDOWN_MIN = 1.0
+_COOLDOWN_MAX = 86400.0   # ٢٤ ساعة
+
+
+def _mask_key(key):
+    """شكل مقنّع للمفتاح لو اضطررنا نعرضه: أول ٤ أحرف + … + آخر ٤."""
+    k = str(key or "")
+    if len(k) <= 8:
+        return ("…" + k[-4:]) if k else ""
+    return k[:4] + "…" + k[-4:]
+
+
+def _clamp_cooldown(v):
+    """يحصر مهلة التبريد بين ثانية و٢٤ ساعة — «340ms» مايبقاش ٥ ساعات ولا يبقى صفر."""
+    return max(_COOLDOWN_MIN, min(_COOLDOWN_MAX, v))
+
+
+def _key_error_kind(e):
+    """
+    يصنّف خطأ المفتاح: "rate" | "invalid" | None.
+    حالة الـHTTP الأول لو متاحة (status_code للـopenai SDK أو status لـRuntimeErrors
+    بتاعتنا)، وإلا regex على الرسالة لحالة في الأول (HTTP/Error code). 429 → rate،
+    401 → invalid، و403 بس مع عبارة مفتاح باطل → invalid. من غير حالة: عبارات بس،
+    والحد بيتفحص قبل الباطل. خطأ شبكة (is_network) مش خطأ مفتاح أبدًا.
+    """
+    if getattr(e, "is_network", False):
+        return None
+    status = getattr(e, "status_code", None) or getattr(e, "status", None)
+    if status is None:
+        m = _LEADING_STATUS_RE.search(str(e))
+        if m:
+            status = int(m.group(1))
+    if status == 429:
+        return "rate"
+    if status == 401:
+        return "invalid"
+    if status in (400, 403):
+        # Gemini بيرجّع المفتاح الغلط 400 «API key not valid» — من غير العبارة يبقى خطأ عادي
+        s = str(e).lower()
+        return "invalid" if any(p in s for p in _INVALID_PHRASES) else None
+    if status is not None:
+        return None
+    s = str(e).lower()
+    if any(p in s for p in _RATE_PHRASES):
+        return "rate"
+    if any(p in s for p in _INVALID_PHRASES):
+        return "invalid"
+    return None
+
+
+def _parse_duration(s):
+    """مجموع مدّة بالثواني من «2m59.56s»/«340ms» — None لو مفيش أرقام صالحة."""
+    total, found = 0.0, False
+    for val, unit in _DURATION_RE.findall(s):
+        found = True
+        v = float(val)
+        u = unit.lower()
+        if u == "h":
+            total += v * 3600.0
+        elif u == "m":
+            total += v * 60.0
+        elif u == "ms":
+            total += v / 1000.0
+        else:
+            total += v
+    return total if found else None
+
+
+def _cooldown_for(msg):
+    """
+    مدة تبريد المفتاح بالثواني: Retry-After الأول، بعدين «try again in XhYmZs/ms»
+    (بقيم عشرية)، بعدين حصة يومية من غير تلميح = ساعة، وإلا ٦٠ ثانية. النتيجة
+    محصورة بين ثانية و٢٤ ساعة.
+    """
+    s = str(msg or "").lower()
+    m = _RETRY_AFTER_RE.search(s)
+    if m:
+        try:
+            return _clamp_cooldown(float(m.group(1)))
+        except ValueError:
+            pass
+    m = _TRY_AGAIN_RE.search(s)
+    if m:
+        total = _parse_duration(m.group(1))
+        if total:
+            return _clamp_cooldown(total)
+    if "quota" in s or "daily" in s:
+        return 3600.0
+    return 60.0
+
+
+def key_status(pid, key):
+    """حالة المفتاح الحالية: active | rate_limited | invalid + retry_in (ثواني أو None)."""
+    st = _KEY_STATE.get((pid, _key_fingerprint(key)))
+    if st is None:
+        return {"status": "active", "retry_in": None}
+    if st["status"] == "rate_limited":
+        left = st["until"] - time.monotonic()
+        if left <= 0:
+            return {"status": "active", "retry_in": None}
+        return {"status": "rate_limited", "retry_in": round(left, 1)}
+    return {"status": "invalid", "retry_in": None}
+
+
+def clear_key_state(pid, key):
+    """يشيل حالة مفتاح من الذاكرة — عشان إعادة التحقق/الإضافة تديه صفحة نضيفة."""
+    _KEY_STATE.pop((pid, _key_fingerprint(key)), None)
+
+
 def _model_list(primary, alt):
     """بيرجّع قايمة بكل الموديلات المرشّحة بالترتيب بدون تكرار."""
     out = [primary] if primary else []
@@ -481,10 +613,12 @@ class Client:
     الكود اللي فوق مش لازم يعرف مين المزوّد.
     """
 
-    def __init__(self, provider_id, key, model=None, helper=None):
+    def __init__(self, provider_id, key=None, model=None, helper=None, keys=None):
         self.id = provider_id
         self.m = meta(provider_id)
-        self.key = (key or "").strip()
+        # مجمّعة المفاتيح: لو keys (قايمة) اتبعتت نستخدمها، غير كده مفتاح واحد.
+        self._pool = _pool_normalize(keys) if keys is not None else _pool_normalize([key])
+        self.key = self._pool[0] if self._pool else ""
         self.model = (model or "").strip() or None   # موديل التفريغ اللي المستخدم اختاره
         self.helper = helper      # عميل مزوّد تاني للتنظيف (لو المزوّد ده بيفرّغ بس)
         self._oa = None
@@ -493,8 +627,89 @@ class Client:
         # الموديلات اللي اشتغلت فعلًا في آخر تسجيل (بعد أي بديل) — بتتحفظ في السجل
         self.last_stt_model = None
         self.last_chat = None     # (اسم المزوّد، الموديل) — None لو التنظيف فشل أو ماتعملش
-        if not self.key:
+        # F4: هل المفتاح اللي بنحاول فيه دلوقتي هو آخر مفتاح؟ _run هو اللي بيحدّد،
+        # والافتراضي True عشان النداء المباشر/الاختبار يفضل بنفس تصرف زمان.
+        self._final_key_attempt = True
+        if not self._pool:
             raise RuntimeError(f"مفيش مفتاح لـ {self.m['name']}")
+
+    # ── التبديل بين المفاتيح (Task 23) ──
+    def _set_key(self, key):
+        """بيبدّل المفتاح الشغّال ويبطل عميل OpenAI المخزّن — عشان النداء الجاي
+        يتبني فعلاً بالمفتاح الجديد مش يفضل ماسك القديم."""
+        self.key = key
+        self._oa = None
+
+    def _available_keys(self):
+        """
+        المفاتيح القابلة للاستخدام بالترتيب: الشغّال الأول، ولو الكل بيبرد ناخد
+        اللي تبريده يخلص الأول، والباطل آخر حاجة كمحاولة أخيرة — عشان نداء عمره
+        ما يتّرفض من غير محاولة حقيقية واحدة على الأقل والمجمّعة مش فاضية
+        (401 عابر/مؤقت ميقتلش الجلسة للأبد).
+        """
+        now = time.monotonic()
+        active, cooling, invalid = [], [], []
+        for k in self._pool:
+            st = _KEY_STATE.get((self.id, _key_fingerprint(k)))
+            if st is None:
+                active.append(k)
+            elif st["status"] == "invalid":
+                invalid.append(k)
+            elif st["status"] == "rate_limited":
+                if st["until"] <= now:
+                    active.append(k)
+                else:
+                    cooling.append((st["until"], k))
+            else:
+                active.append(k)
+        out = active or [k for _, k in sorted(cooling)]
+        return out + invalid
+
+    def _mark_error(self, key, e):
+        """
+        بيرجّع True لو الخطأ «حد استخدام/مفتاح باطل» (وعلّم المفتاح) — معناها نكمّل
+        للمفتاح اللي بعده. أي خطأ تاني بيرجّع False والخطأ بيطلع زي ما هو.
+        """
+        kind = _key_error_kind(e)
+        if kind is None:
+            return False
+        scope = (self.id, _key_fingerprint(key))
+        if kind == "invalid":
+            _KEY_STATE[scope] = {"status": "invalid", "until": None}
+        else:
+            _KEY_STATE[scope] = {"status": "rate_limited",
+                                 "until": time.monotonic() + _cooldown_for(str(e))}
+        return True
+
+    def _run(self, fn):
+        """
+        بينفّذ الدالة مرة لكل مفتاح متاح. المفتاح اللي يرجع حد/مفتاح غلط بيتعلّم
+        والنداء بيتعاد بالمفتاح اللي بعده (نفس سلسلة الموديلات). أي خطأ تاني بيطلع
+        زي ما هو. لو كل المفاتيح خلصت حد استخدام بيرمي «كل المفاتيح وصلت للحد»؛
+        لو كلها كانت باطلة بيرجّع آخر خطأ أصلي عشان الرسالة تبقى «المفتاح مش مقبول».
+        """
+        keys = self._available_keys()
+        last_invalid = None
+        any_rate = False
+        for i, k in enumerate(keys):
+            if self.key != k:
+                self._set_key(k)
+            # F4: آخر مفتاح بس هو اللي يستاهل محاولة تانية — غيره يبدّل فورًا
+            self._final_key_attempt = (i == len(keys) - 1)
+            try:
+                return fn()
+            except Exception as e:
+                if not self._mark_error(k, e):
+                    raise
+                if _key_error_kind(e) == "rate":
+                    any_rate = True
+                else:
+                    last_invalid = e
+        if any_rate:
+            raise RuntimeError(KEYS_EXHAUSTED_MSG)
+        if last_invalid is not None:
+            raise last_invalid
+        raise RuntimeError(KEYS_EXHAUSTED_MSG)
 
     def _stt_models(self):
         """الموديل المختار الأول، وبعده البدائل لو مش متاح."""
@@ -527,12 +742,13 @@ class Client:
         """language=None = الموديل يتعرّف على اللغة لوحده (وضع الترجمة: عربي أو إنجليزي)."""
         self.last_stt_model = None
         self.last_chat = None
-        if self.id == "gemini":
-            text = self._gemini_transcribe(wav_path, language)
-        elif self.id == "deepgram":
-            text = self._deepgram_transcribe(wav_path, language)
-        else:
-            text = self._oa_transcribe(wav_path, language)
+        def run():
+            if self.id == "gemini":
+                return self._gemini_transcribe(wav_path, language)
+            elif self.id == "deepgram":
+                return self._deepgram_transcribe(wav_path, language)
+            return self._oa_transcribe(wav_path, language)
+        text = self._run(run)
         # التعرّف التلقائي ساعات بيغلط في المقاطع القصيرة ويطلّع العامية فارسي أو أوردو…
         # إحنا بنترجم بين عربي وإنجليزي بس، فأي لغة تانية = نعيد التفريغ كعربي.
         if language is None and _FOREIGN_SCRIPT.search(text or ""):
@@ -613,11 +829,15 @@ class Client:
         candidates = self._stt_models()
         last_err = None
         for i, model in enumerate(candidates):
+            # آخر مفتاح: إعادات الـSDK الافتراضية زي الأول (خطأ 5xx عابر بيتعاد)؛ مفتاح بعده
+            # مفتاح تاني: ولا إعادة — الحد (429) يبدّل للمفتاح التاني فورًا من غير انتظار
+            client = (self._openai() if self._final_key_attempt
+                      else self._openai().with_options(max_retries=0))
             # من غير language خالص (مش None) عشان Whisper يشغّل التعرّف التلقائي على اللغة
             kw = {"language": language} if language else {}
             try:
                 with open(wav_path, "rb") as f:
-                    tr = self._openai().audio.transcriptions.create(
+                    tr = client.audio.transcriptions.create(
                         model=model, file=f, prompt=self._stt_prompt(language),
                         timeout=self._stt_timeout(), **kw)
                 self.last_stt_model = model
@@ -701,9 +921,11 @@ class Client:
             self.last_chat = self.helper.last_chat
             return out
         try:
-            if self.id == "gemini":
-                return _clean_output(text, self._gemini_chat(system, text, temperature))
-            return _clean_output(text, self._oa_chat(system, text, temperature))
+            def run():
+                if self.id == "gemini":
+                    return _clean_output(text, self._gemini_chat(system, text, temperature))
+                return _clean_output(text, self._oa_chat(system, text, temperature))
+            return self._run(run)
         except Exception as e:
             # التنظيف رفاهية — النص الخام أهم، فبنكمّل بيه.
             # بس بنسجّل الفشل: المستخدم بياخد نص مش متنضّف من غير أي إشارة،
@@ -732,10 +954,11 @@ class Client:
             self.last_chat = self.helper.last_chat
             return out
         try:
-            if self.id == "gemini":
-                out = self._gemini_chat(system, text, temperature, raw=True)
-            else:
-                out = self._oa_chat(system, text, temperature, raw=True)
+            def run():
+                if self.id == "gemini":
+                    return self._gemini_chat(system, text, temperature, raw=True)
+                return self._oa_chat(system, text, temperature, raw=True)
+            out = self._run(run)
         except Exception as e:
             try:
                 import core
@@ -883,12 +1106,15 @@ class Client:
         scope = (self.id, _key_fingerprint(self.key))
         live = [m for m in candidates if scope + (m,) not in _UNAVAILABLE_MODELS]
         candidates = live or candidates
+        rate_err = None
         for i, model in enumerate(candidates):
             last = i == len(candidates) - 1
             # الحد في Groq (٨٠٠٠ توكن/دقيقة) لكل موديل لوحده. مكتبة openai بتعيد المحاولة لوحدها
             # بعد انتظار لما الحد يخلص — وده كان بيأخّر النتيجة جامد. فبدل ما نستنى، بننقل
-            # فورًا للموديل اللي بعده (ليه حد منفصل). آخر موديل بس بياخد محاولة تانية.
-            client = self._openai().with_options(max_retries=1 if last else 0, timeout=60)
+            # فورًا للموديل اللي بعده (ليه حد منفصل). آخر موديل بياخد محاولة تانية بس لو ده
+            # آخر مفتاح (F4) — لو فيه مفتاح تاني بعده منستناش الـRetry-After.
+            retries = 1 if (last and self._final_key_attempt) else 0
+            client = self._openai().with_options(max_retries=retries, timeout=60)
             try:
                 r = client.chat.completions.create(
                     model=model, temperature=temperature,
@@ -900,12 +1126,20 @@ class Client:
                 s = str(e).lower()
                 if any(k in s for k in _UNAVAILABLE_MARKERS):
                     _UNAVAILABLE_MODELS.add(scope + (model,))
+                kind = _key_error_kind(e)
+                if kind == "rate" and rate_err is None:
+                    rate_err = e
                 if not last and (
                     "model_not_found" in s or "does not have access" in s
                     or "decommission" in s or "404" in s or "blocked at the project level" in s
-                    or "429" in s or "rate_limit" in s or "rate limit" in s
+                    or kind == "rate"
                 ):
                     continue
+                # F5: لو آخر موديل طلع مش متاح/مش مفتاح بس قبله كان فيه حد استخدام على
+                # نفس المفتاح، نرفع حد الاستخدام مش خطأ الموديل — عشان المفتاح يتعلّم
+                # ويتّبدل بدل ما يتحسب إنها مشكلة موديل والنداء يقف.
+                if kind is None and rate_err is not None:
+                    raise rate_err
                 # _chat بيمسك الخطأ ويسجّله ويرجّع النص الخام — كان بيتبلع هنا من غير أي أثر
                 raise
         # raw: وضع التعديل معتمد إن الإخراج الفاضي = فشل — منرجعش المدخل أبدًا
@@ -1023,6 +1257,7 @@ def verify(provider_id, key):
                         raise
                 if not stt_ok and stt_last_err:
                     raise stt_last_err
+        clear_key_state(provider_id, key)
         return True, ""
     except Exception as e:
         s = _http_msg(e).lower()
@@ -1118,40 +1353,109 @@ def list_models(pid, key=None):
     return {"models": out or catalog, "live": bool(out)}
 
 
-# ── قراءة/كتابة المفاتيح في .env ─────────────────────────────────────────────
-def read_keys(env_path):
-    """بيرجّع {provider_id: key} من ملف .env."""
+# ── قراءة/كتابة المفاتيح في .env (مفصولة بفواصل — Task 22) ────────────────────
+def _split_pool(value):
+    """يحوّل قيمة سطر .env لقايمة مفاتيح: يشيل الفراغات والفاضي والتكرار، والترتيب ثابت."""
+    out = []
+    for part in str(value or "").split(","):
+        part = part.strip().strip('"').strip("'")
+        if part and part not in out:
+            out.append(part)
+    return out
+
+
+def _pool_normalize(keys):
+    """يظبط قايمة مفاتيح (مش نص): يشيل الفراغات والفاضي والتكرار مع الحفاظ على الترتيب."""
+    out = []
+    for k in keys or []:
+        k = (k or "").strip().strip('"').strip("'")
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
+def read_key_pools(env_path):
+    """بيرجّع {provider_id: [keys]} من ملف .env — كل مفتاح في مجمّعته بالترتيب."""
     out = {}
     if not os.path.exists(env_path):
         return out
     try:
-        for line in open(env_path, encoding="utf-8"):
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            for pid, m in PROVIDERS.items():
-                if k.strip() == m["env"]:
-                    out[pid] = v.strip().strip('"').strip("'")
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                for pid, m in PROVIDERS.items():
+                    if k.strip() == m["env"]:
+                        pool = _split_pool(v)
+                        if pool:
+                            out[pid] = pool
     except Exception:
         pass
     return out
 
 
-def write_key(env_path, provider_id, key):
-    """بيحفظ مفتاح مزوّد واحد من غير ما يمسح مفاتيح الباقيين."""
-    var = meta(provider_id)["env"]
+def read_keys(env_path):
+    """بيرجّع {provider_id: key} — أول مفتاح من كل مجمّعة (متوافق مع النسخ القديمة)."""
+    return {pid: keys[0] for pid, keys in read_key_pools(env_path).items() if keys}
+
+
+def _set_pool(env_path, var, keys):
+    """
+    يكتب مجمّعة المفاتيح في سطر واحد ويحافظ على باقي أسطر .env ويحدّث os.environ.
+    keys فاضية = السطر بيتمسح (المجمّعة اتشالت خالص).
+    """
     lines, found = [], False
     if os.path.exists(env_path):
         try:
-            for line in open(env_path, encoding="utf-8"):
-                if line.strip().startswith(var + "="):
-                    lines.append(f"{var}={key}\n"); found = True
-                else:
-                    lines.append(line)
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith(var + "="):
+                        found = True
+                        if keys:
+                            lines.append(f"{var}={','.join(keys)}\n")
+                        # فاضية → منكتبش السطر (بيعمله شيل)
+                    else:
+                        lines.append(line)
         except Exception:
             lines = []
-    if not found:
-        lines.append(f"{var}={key}\n")
-    open(env_path, "w", encoding="utf-8").writelines(lines)
-    os.environ[var] = key
+    if not found and keys:
+        lines.append(f"{var}={','.join(keys)}\n")
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    if keys:
+        os.environ[var] = ",".join(keys)
+    else:
+        os.environ.pop(var, None)
+
+
+def write_key(env_path, provider_id, key):
+    """بيحط المفتاح أول المجمّعة ويحافظ على باقي مفاتيح نفس المزوّد وباقي الأسطر."""
+    var = meta(provider_id)["env"]
+    key = (key or "").strip().strip('"').strip("'")
+    existing = read_key_pools(env_path).get(provider_id, [])
+    pool = ([key] + [k for k in existing if k != key]) if key else existing
+    _set_pool(env_path, var, pool)
+
+
+def add_provider_key(env_path, provider_id, key):
+    """بيزوّد مفتاح في آخر المجمّعة من غير تكرار."""
+    var = meta(provider_id)["env"]
+    key = (key or "").strip().strip('"').strip("'")
+    pool = read_key_pools(env_path).get(provider_id, [])
+    if key and key not in pool:
+        pool.append(key)
+    _set_pool(env_path, var, pool)
+
+
+def remove_provider_key(env_path, provider_id, index_or_key):
+    """يشيل مفتاح من المجمّعة (بفهرس أو بالمفتاح نفسه)؛ لو المجمّعة فاضت السطر بيتمسح."""
+    var = meta(provider_id)["env"]
+    pool = read_key_pools(env_path).get(provider_id, [])
+    idx = index_or_key
+    if not isinstance(index_or_key, int):
+        idx = next((i for i, k in enumerate(pool) if k == index_or_key), None)
+    if isinstance(idx, int) and 0 <= idx < len(pool):
+        pool.pop(idx)
+    _set_pool(env_path, var, pool)

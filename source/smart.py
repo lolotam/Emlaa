@@ -222,16 +222,26 @@ class HotkeyLogic:
     والتسجيل شغال = cancel (الكلام اللي اتسجل بيرمي بهدوء).
     """
 
-    def __init__(self, key_map, mode_type, tap_max=TAP_MAX, alt_keys=()):
+    def __init__(self, key_map, mode_type, tap_max=TAP_MAX, alt_keys=(), cancel_keys=()):
         self._key_map = dict(key_map)
         self._hold = mode_type == "hold"
         self._tap_max = tap_max
         self._alt = set(alt_keys)   # المفاتيح اللي في نفس الوقت زراير Alt — "mask" ليهم
+        self._cancel = set(cancel_keys)   # مفاتيح الإلغاء (Esc) — بس لو مش زراير تسجيل
         self._held = {}             # toggle: مفتاح → وقت الدوسة
         self._spoiled = set()       # toggle: مفاتيح اتداست في كورد
         self._active = None         # hold: مفتاح التسجيل اللي ماسكه دلوقتي
 
     def press(self, key, now, recording, busy):
+        # مفتاح إلغاء (مش زرار تسجيل): بيطلّع "cancel" وقت التسجيل في الوضعين،
+        # وno-op وقت الخمول من غير ما يلمس الحالة (منيفسدش hotkey متعقدة).
+        if key in self._cancel and key not in self._key_map:
+            if recording:
+                # F6: لو زرار تسجيل متعقد اتساس دلوقتي والتسجيل هيتلغى، بنففسد كل
+                # المتعقدين — عشان تسيب الزرار بعد الإلغاء ميشغّلش تسجيل جديد.
+                self._spoiled.update(self._held)
+                return ["cancel"]
+            return []
         if self._hold:
             return self._press_hold(key, now, recording, busy)
         return self._press_toggle(key, now)
