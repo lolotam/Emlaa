@@ -34,5 +34,7 @@ jobs:
       - name: Generate the UI Automation type library wrapper
         run: python -c "import comtypes.client; comtypes.client.GetModule('UIAutomationCore.dll')"
 
+      # A hung test would otherwise run into the job timeout, and a cancelled job keeps
+      # no log; after 4 minutes faulthandler prints every thread's stack and exits
       - name: Unit tests
-        run: python -m unittest discover -s tests -p "unit_*.py" -v
+        run: python -X faulthandler -c "import faulthandler, unittest; faulthandler.dump_traceback_later(240, exit=True); unittest.main(module=None, argv=['unittest', 'discover', '-s', 'tests', '-p', 'unit_*.py', '-v'])"
