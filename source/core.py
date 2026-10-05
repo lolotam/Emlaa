@@ -968,16 +968,13 @@ def paste_text(text, target=None, from_snippet=False, guard=None):
             _mark_owned_if_snippet(from_snippet)
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
-    if guard is not None and not guard():
-        # M6: الهدف اتغيّر بعد الانتظار — منحقنش فوق حاجة تانية؛ نسلّم زي الـhandoff
-        if cls != "secure":
-            _pre_copy_suppress(from_snippet)
-            if not _copy_to_clipboard(inj):
-                return "clip_failed"
-            _mark_owned_if_snippet(from_snippet)
-        return "handoff"
+    # الفحص الأخير لازم يبقى قبل الحقن على طول (بعد تجهيز الحافظة اللي ممكن تاخد وقت):
+    # فحص قبلها بكتير كان بيسيب فرصة إن الفوكس يتنقل والنتيجة تتكتب في مكان تاني
+    still_target = (lambda: True) if guard is None else guard
     if cls == "secure":
         # خانة آمنة: كتابة بس — الحافظة مش طريقها
+        if not still_target():
+            return "handoff"
         return "placed" if winput.type_text(inj) else "failed"
     if strategy == "type":
         # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
@@ -986,6 +983,8 @@ def paste_text(text, target=None, from_snippet=False, guard=None):
         backup = _copy_to_clipboard(inj)
         if backup:
             _mark_owned_if_snippet(from_snippet)
+        if not still_target():
+            return "handoff" if backup else "clip_failed"
         if winput.type_text(inj):
             return "placed"
         return "failed" if backup else "clip_failed"
@@ -995,6 +994,8 @@ def paste_text(text, target=None, from_snippet=False, guard=None):
         if not _copy_to_clipboard(inj):
             return "clip_failed"
         _mark_owned_if_snippet(from_snippet)
+        if not still_target():
+            return "handoff"                    # النص على الحافظة بالفعل — المستخدم يلزقه
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
         return "placed" if fn() else "failed"
     return "handoff"

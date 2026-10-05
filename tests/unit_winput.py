@@ -697,3 +697,21 @@ class TestDelayedRenderingIsMarked(unittest.TestCase):
         clip.read = read_with_render
         self.assertEqual(clip.run(), "")     # الرقم اتغيّر → التحديد مش موثوق
         self.assertIn(102, clip.marked())    # بس الرقم الجديد اتوسم «بتاعنا»
+
+
+class TestSameTargetChecksIdentityAfterRead(unittest.TestCase):
+    def test_focus_moving_during_a_slow_selection_read_is_refused(self):
+        # قراية التحديد بتسدّ، والمستخدم بيتنقل من المستند A للخانة B وقتها
+        import core
+        op = core.Operation(mode="edit", hwnd=10, runtime_id=(1, 2),
+                            selection="نص", selection_hash=winput._selection_hash("نص"))
+        state = {"fg": 10, "rid": [1, 2]}
+
+        def slow_read(el):
+            state["fg"], state["rid"] = 20, [9, 9]      # الفوكس اتنقل وإحنا بنقرا
+            return "نص"                                 # التحديد القديم لسه زي ما هو
+        with mock.patch.object(winput, "foreground_hwnd", side_effect=lambda: state["fg"]), \
+                mock.patch.object(winput, "_focused_element",
+                                  side_effect=lambda: FakeElement(runtime_id=list(state["rid"]), texts=[])), \
+                mock.patch.object(winput, "_selection_text", side_effect=slow_read):
+            self.assertFalse(winput.same_target(op))

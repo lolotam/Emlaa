@@ -686,31 +686,26 @@ def same_target(op):
     # بدل ما يكتب فوق حاجة مش متأكد منها.
     if not op.runtime_id:
         return False
-    try:
-        if foreground_hwnd() != int(op.hwnd):
-            return False
-    except Exception:
-        return False
-    el = None
-    if op.runtime_id:
-        el = _focused_element()
-        if el is None:
-            return False
-        try:
-            if _runtime_id(el) != tuple(op.runtime_id):
-                return False
-        except Exception:
-            return False
+    # قراية التحديد الأول (ممكن تسدّ في UIA بتاع برنامج تاني)، وبعدين التحقق من النافذة
+    # والعنصر — لو اتحقق الأول، المستخدم ممكن يتنقل وقت القراية والنتيجة تبقى قديمة
+    sel = None
     if op.selection_hash:
-        if el is None:
-            el = _focused_element()
+        el = _focused_element()
         if el is not None:
             try:
                 sel = _selection_text(el)
             except Exception:
                 sel = None
-            if sel is not None and _selection_hash(sel) != op.selection_hash:
-                return False
+    try:
+        if foreground_hwnd() != int(op.hwnd):
+            return False
+        el = _focused_element()
+        if el is None or _runtime_id(el) != tuple(op.runtime_id):
+            return False
+    except Exception:
+        return False
+    if sel is not None and _selection_hash(sel) != op.selection_hash:
+        return False
     return True
 
 

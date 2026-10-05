@@ -633,3 +633,25 @@ class TestSecureOrdering(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGuardRunsRightBeforeInjection(unittest.TestCase):
+    def test_guard_checked_after_clipboard_preparation(self):
+        # الترتيب: نسخ للحافظة الأول، الفحص بعده، والحقن آخر حاجة
+        import core
+        order = []
+        with mock.patch.object(core, "_copy_to_clipboard", side_effect=lambda t: order.append("copy") or True), \
+                mock.patch("winput.paste_ctrl_v", side_effect=lambda: order.append("inject") or True), \
+                mock.patch.object(core.time, "sleep"):
+            r = core.paste_text("نص", ("gui", "ctrl_v", "نص"), guard=lambda: order.append("guard") or True)
+        self.assertEqual(r, "placed")
+        self.assertEqual(order, ["copy", "guard", "inject"])
+
+    def test_guard_failing_after_copy_hands_off_without_injecting(self):
+        import core
+        with mock.patch.object(core, "_copy_to_clipboard", return_value=True), \
+                mock.patch("winput.paste_ctrl_v") as inject, \
+                mock.patch.object(core.time, "sleep"):
+            r = core.paste_text("نص", ("gui", "ctrl_v", "نص"), guard=lambda: False)
+        self.assertEqual(r, "handoff")
+        inject.assert_not_called()
