@@ -48,6 +48,9 @@ PROVIDERS = {
         "stt":       "whisper-large-v3-turbo",
         "stt_alt":   ["whisper-large-v3"],
         "chat":      "qwen/qwen3.8-27b",
+        # llama-3.3-70b-versatile اتشال من الباقات المجانية والمطوّرين (404) بس لسه شغّال
+        # لمفاتيح Enterprise — فبيفضل في القايمة، والموديل اللي يرجّع model_not_found
+        # بيتشال من السلسلة لباقي الجلسة (_UNAVAILABLE_MODELS) من غير ما نلمس القايمة.
         "chat_alt":  ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "allam-2-7b", "llama-3.3-70b-versatile"],
     },
     "openai": {
@@ -372,6 +375,22 @@ EDIT_SYSTEM = (
 
 def meta(pid):
     return PROVIDERS.get(pid) or PROVIDERS[DEFAULT]
+
+
+# موديلات الشات اللي المزوّد رد عليها «مش موجود/مش متاح لحسابك» في الجلسة دي —
+# (provider_id, بصمة المفتاح, model). بنشيلها من السلسلة عشان مانضيّعش عليها نداء كل
+# مرة، والأهم: المحاولة التانية بعد الانتظار (للموديل الأخير بس) تروح لآخر موديل شغّال
+# مش لموديل ميت. مربوطة بالمفتاح: لو المستخدم غيّر مفتاحه لمفتاح Enterprise من غير ما
+# يقفل البرنامج، الموديل ممكن يبقى متاح للمفتاح الجديد.
+_UNAVAILABLE_MODELS = set()
+
+
+def _key_fingerprint(key):
+    """بصمة قصيرة للمفتاح — عشان الكاش يتربط بالحساب من غير ما نخزّن المفتاح نفسه تاني."""
+    import hashlib
+    return hashlib.sha256(str(key or "").encode("utf-8")).hexdigest()[:12]
+_UNAVAILABLE_MARKERS = ("model_not_found", "does not have access", "decommission",
+                        "does not exist")
 
 
 def _model_list(primary, alt):
@@ -859,6 +878,11 @@ class Client:
 
     def _oa_chat(self, system, text, temperature, raw=False):
         candidates = _model_list(self.m["chat"], self.m.get("chat_alt"))
+        # الموديلات اللي اتأكدنا إنها مش متاحة للمفتاح ده بتتشال — بس لو كله اتشال
+        # بنجرّب القايمة كاملة (يمكن الحساب اتغيّر) بدل ما نرجع النص الخام من غير نداء
+        scope = (self.id, _key_fingerprint(self.key))
+        live = [m for m in candidates if scope + (m,) not in _UNAVAILABLE_MODELS]
+        candidates = live or candidates
         for i, model in enumerate(candidates):
             last = i == len(candidates) - 1
             # الحد في Groq (٨٠٠٠ توكن/دقيقة) لكل موديل لوحده. مكتبة openai بتعيد المحاولة لوحدها
@@ -874,6 +898,8 @@ class Client:
                 return (r.choices[0].message.content or "").strip()
             except Exception as e:
                 s = str(e).lower()
+                if any(k in s for k in _UNAVAILABLE_MARKERS):
+                    _UNAVAILABLE_MODELS.add(scope + (model,))
                 if not last and (
                     "model_not_found" in s or "does not have access" in s
                     or "decommission" in s or "404" in s or "blocked at the project level" in s
