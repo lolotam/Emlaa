@@ -308,11 +308,11 @@ PROMPT_EN_HEADERS = (
     "# Constraints & Guidelines", "# Expected Output",
 )
 
-# ── F2: تصنيف لغة الطلب لما القرار المبدئي ميحسمش ──────────────────────────────
-# smart.prompt_language بيرجّع None للطلبات اللي مش واضحة (كلمات ملتبسة بس أو طلب
-# عربي عادي من غير كلمة قوية). هنا بنسأل الموديل سؤال واحد قصير والمخرج كلمة واحدة
-# (TECH/OTHER) عشان القرار يبقى رخيص ومحدد. النص المُملى بيتحط في رسالة المستخدم
-# مش النظام (قاعدة الأمان: كلام المستخدم عمره ما يتحط في system).
+# ── F2: تصنيف لغة الطلب العربي/المخلوط ─────────────────────────────────────────
+# smart.prompt_language بيقرر الطلب الإنجليزي بس؛ أي طلب عربي أو مخلوط بيتسأل عنه
+# الموديل سؤال واحد قصير والمخرج كلمة واحدة (TECH/OTHER) حسب اللي المستخدم عايز
+# يطلّعه — الكلمات التقنية لوحدها مش كفاية («اكتب إعلان لدورة Python» طلب كتابة).
+# النص المُملى بيتحط في رسالة المستخدم مش النظام (كلام المستخدم عمره ما يتحط في system).
 LANG_CLASSIFY_SYSTEM = (
     "Classify this dictated request by what the user wants produced. Reply with exactly "
     "one word and nothing else:\n"
@@ -778,16 +778,21 @@ class Client:
 
     def _prompt_lang(self, text):
         """
-        لغة برومبت الطلب النهائية (F2): القرار المبدئي من smart.prompt_language، ولو
-        رجّع None (كلمات ملتبسة/طلب مش واضح) بنسأل الموديل تصنيف واحد قصير TECH/OTHER.
-        أي فشل أو مهلة أو رد غريب = "ar" (لغة المستخدم الافتراضية للطلبات غير التقنية)
-        — ومينفعش نرفع خطأ أبدًا: قرار اللغة رفاهية، وكلام المستخدم أهم منه.
+        لغة برومبت الطلب النهائية (F2): الطلب الإنجليزي بيتقرر محليًا
+        (smart.prompt_language)، وأي طلب عربي أو مخلوط بيروح لتصنيف واحد قصير
+        TECH/OTHER حسب اللي المستخدم عايز يطلّعه. لو التصنيف فشل أو رد حاجة غريبة،
+        التخمين بالكلمات التقنية (smart.tech_guess) — ومينفعش نرفع خطأ أبدًا: قرار
+        اللغة رفاهية، وكلام المستخدم أهم منه.
         """
         try:
             lang = smart.prompt_language(text)
             if lang is not None:
                 return lang
-            return self._classify_lang(text) or "ar"
+            try:
+                lang = self._classify_lang(text)
+            except Exception:
+                lang = None                  # فشل التصنيف = التخمين بالكلمات تحت
+            return lang or smart.tech_guess(text)
         except Exception:
             return "ar"
 

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-اختبارات F2 — لغة البرومبت: قرار مبدئي في الكود (smart.prompt_language) والقرار
-النهائي في providers._prompt_lang (تصنيف TECH/OTHER للموديل لما القرار المبدئي None)،
-والـdirective بيتضاف للنظام، والإعادة بتحصل مرة واحدة بس لو الموديل رد باللغة الغلط.
+اختبارات F2 — لغة البرومبت: الطلب الإنجليزي بيتقرر محليًا (smart.prompt_language)،
+وأي طلب عربي أو مخلوط بيتقرر بتصنيف الموديل TECH/OTHER (providers._prompt_lang) حسب
+اللي المستخدم عايز يطلّعه، والكلمات التقنية (smart.tech_guess) تخمين احتياطي بس لو
+التصنيف فشل. الـdirective بيتضاف للنظام، والإعادة مرة واحدة لو الموديل رد باللغة الغلط.
 مفيش شبكة ولا مفاتيح: _chat و_chat_raw متزوّدين fake، والمخرجات ثابتة.
 """
 import os
@@ -17,40 +18,22 @@ import smart      # noqa: E402
 import providers  # noqa: E402
 
 
-# ── prompt_language: جدول حالات (قوي=en / ملتبس أو عادي=None) ───────────────────
-# القرار هنا مبدئي: "en" للتقني الأكيد بس، وNone لكل حاجة تانية (ومنها العربي العادي
-# من غير كلمة تقنية) — لأن «ابني متجر إلكتروني فيه سلة مشتريات» تقني من غير أي كلمة
-# قوية، فالكود مينفعش يقررها لوحده. العربي العادي بيرجّع None مش "ar" عشان القرار
-# النهائي ييجي من تصنيف الموديل (OTHER → "ar").
-CASES = [
-    # كلمات تقنية قوية = "en" أكيد
-    ("ظبط الداتابيز دي", "en"),                   # داتابيز
-    ("اكتب سكريبت إعلان لعطر جديد", None),       # سكريبت ملتبس (إعلان) — للتصنيف
-    ("اكتب رسالة للعملاء فيها كود خصم", None),   # كود ملتبس (خصم) — للتصنيف
-    ("عايز ابليكيشن للسوبر ماركت", "en"),          # ابليكيشن (مصري)
-    ("اعمل الويب سايت بتاعي", "en"),               # الويب سايت
-    ("عايز اتعلم برمجة", "en"),                   # برمجة
-    ("عايز قاعدة بيانات للعملاء", "en"),          # قاعدة بيانات
-    ("عايز اعمل سيرفر للشركة", "en"),             # سيرفر
-    ("عايز مطور فرونت اند", "en"),                # فرونت اند
-    ("عايز مطور برمجيات", "en"),                  # مطور برمجيات (مركّبة)
-    ("الصفحة دي فيها داشبورد", "en"),             # داشبورد
-    # لاتيني تقني أو لاتيني-الغالب = "en"
-    ("Need a React app for my store", "en"),
-    ("build a docker container for me", "en"),
-    # كلمات ملتبسة بس = None (القرار بتاعها للموديل)
-    ("اكتب لي برنامج غذائي لزيادة الوزن", None),  # برنامج = غذائي مش تقني
-    ("اشرح تطبيق القانون", None),                 # تطبيق = القانون
-    ("عايز برنامج تمارين", None),                  # برنامج
-    ("موقع البيت فين", None),                      # موقع = مكان
-    ("ابني متجر إلكتروني فيه سلة مشتريات ودفع أونلاين", None),  # تقني بس من غير كلمة قوية
-    ("عايز صفحة تسجيل دخول بالإيميل والباسورد", None),         # تسجيل دخول ملتبسة
-    # عربي عادي من غير كلمة تقنية = None (التصنيف بيأكد OTHER)
-    ("اكتب رسالة شكر لمديري", None),
-    ("ساعدني أكتب جواب لصاحبي", None),
-    ("اكتب بوست عن الطبخ", None),
-    ("اكتبلي ايميل رسمي للمدير", None),
-    ("اكتب رسالة اعتذار لزميلي", None),
+# ── prompt_language: الإنجليزي محلي، والعربي/المخلوط كله للتصنيف ─────────────────
+# الكلمة التقنية مبتقررش لوحدها: «اكتب إعلان لدورة Python» و«اكتب رسالة فيها كود
+# خصم» طلبات كتابة مش برمجة — فحتى الطلب العربي اللي فيه «داتابيز» بيروح للتصنيف.
+ARABIC_OR_MIXED = [
+    "ظبط الداتابيز دي", "عايز ابليكيشن للسوبر ماركت", "اعمل الويب سايت بتاعي",
+    "اكتب إعلانًا لدورة Python", "عايز API للدفع", "اكتب لي برنامج غذائي لزيادة الوزن",
+    "اشرح تطبيق القانون", "ابني متجر إلكتروني فيه سلة مشتريات ودفع أونلاين",
+    "اكتب رسالة للعميل فيها discount code للطلب الجاي", "اكتب script لإعلان عطر جديد",
+    "اكتب رسالة شكر لمديري", "ويبقى الكلام ده بينا",
+    # الإيميل واللينك والحساب مش لغة الطلب — العنوان مايغلبش الطلب العربي
+    "اكتب رسالة إلى support@example.com", "ابعت اللينك ده https://api.example.com/app لأمي",
+    "اكتب تهنئة لـ @mohamed_ahmed_official",
+]
+ENGLISH = [
+    "Need a React app for my store", "build a docker container for me",
+    "write a short bio for my LinkedIn", "write a thank-you note to support@example.com",
 ]
 
 
@@ -60,39 +43,40 @@ class TestPromptLanguage(unittest.TestCase):
         self.assertEqual(smart.prompt_language(""), "ar")
         self.assertEqual(smart.prompt_language("   "), "ar")
 
-    def test_tech_words_must_stand_alone(self):
-        # كلمة تقنية مش موجودة كاملة (substring/لاحقة غلط) = مش "en" — قبل كده
-        # «ويب» جوه «ويبقى» و«كود» جوه «الكوديه» كانت بتطلع برومبت إنجليزي غلط
-        for text in ("ويبقى الكلام ده بينا", "عايز اتعلم تطوير الذات", "الكوديه دي غريبه"):
-            self.assertEqual(smart.prompt_language(text), None, text)
-        # الكلمة القوية نفسها بسابقة/لاحقة عادية لسه بتتمسك
-        for text in ("الابليكيشن بتاعي بيقع", "عايز سيرفرات جاهزة", "وبرمجة"):
+    def test_english_is_decided_locally(self):
+        for text in ENGLISH:
             self.assertEqual(smart.prompt_language(text), "en", text)
 
-    def test_contacts_and_links_do_not_count_as_english(self):
-        # العنوان/اللينك مش لغة الطلب — طلب عربي عادي فيه إيميل يروح للتصنيف مش "en"
-        for text in ("اكتب رسالة إلى support@example.com", "ابعت اللينك ده https://api.example.com/app لأمي",
-                     "اكتب تهنئة لـ @mohamed_ahmed_official"):
+    def test_arabic_or_mixed_always_goes_to_the_classifier(self):
+        for text in ARABIC_OR_MIXED:
             self.assertIsNone(smart.prompt_language(text), text)
-        # والطلب الإنجليزي فعلًا لسه "en" حتى لو فيه إيميل
-        self.assertEqual(smart.prompt_language("write a thank-you note to support@example.com"), "en")
 
-    def test_ambiguous_latin_words_go_to_the_classifier(self):
-        # «discount code» / «script» إعلان كلمات عادية جوّه طلب عربي — مش قرار "en"
-        for text in ("اكتب رسالة للعميل فيها discount code للطلب الجاي",
-                     "اكتب script لإعلان عطر جديد", "اكتب مقال عن الـ cloud computing للمبتدئين"):
-            self.assertIsNone(smart.prompt_language(text), text)
-        # المصطلح اللي ملوش معنى تاني لسه قرار "en" محلي
-        self.assertEqual(smart.prompt_language("عايز API للدفع"), "en")
-        self.assertEqual(smart.prompt_language("اعمل database للعملاء"), "en")
 
-    def test_table(self):
-        for text, expected in CASES:
-            self.assertEqual(smart.prompt_language(text), expected, text)
+# ── tech_guess: التخمين الاحتياطي لما التصنيف يفشل ──────────────────────────────
+class TestTechGuess(unittest.TestCase):
+    def test_strong_words_guess_en(self):
+        for text in ("ظبط الداتابيز دي", "الابليكيشن بتاعي بيقع", "عايز سيرفرات جاهزة", "وبرمجة",
+                     "عايز مطور برمجيات", "عايز API للدفع", "اعمل database للعملاء"):
+            self.assertEqual(smart.tech_guess(text), "en", text)
+
+    def test_ambiguous_or_plain_words_guess_ar(self):
+        for text in ("اكتب لي برنامج غذائي لزيادة الوزن", "اشرح تطبيق القانون", "موقع البيت فين",
+                     "اكتب رسالة للعملاء فيها كود خصم", "اكتب script لإعلان عطر جديد",
+                     "اكتب رسالة شكر لمديري"):
+            self.assertEqual(smart.tech_guess(text), "ar", text)
+
+    def test_words_must_stand_alone(self):
+        # substring كان بيمسك «ويب» جوّه «ويبقى» — التخمين نفسه لازم يتجنبه
+        for text in ("ويبقى الكلام ده بينا", "عايز اتعلم تطوير الذات", "الكوديه دي غريبه"):
+            self.assertEqual(smart.tech_guess(text), "ar", text)
+
+    def test_links_are_not_technical_terms(self):
+        # «api»/«app» جوّه لينك مش مصطلح تقني في الطلب
+        self.assertEqual(smart.tech_guess("ابعت اللينك ده https://api.example.com/app لأمي"), "ar")
 
 
 class TestPromptLangClassifier(unittest.TestCase):
-    """providers.Client._prompt_lang: القرار النهائي بالتصنيف لما القرار المبدئي None."""
+    """providers.Client._prompt_lang: العربي/المخلوط بالتصنيف، والفشل بالتخمين."""
 
     def _client(self, classify):
         cl = providers.Client("groq", "test-key")
@@ -105,41 +89,33 @@ class TestPromptLangClassifier(unittest.TestCase):
         cl._chat_raw = fake_raw
         return cl, calls
 
-    def test_strong_case_skips_classifier(self):
-        cl, calls = self._client("OTHER")
-        self.assertEqual(cl._prompt_lang("ظبط الداتابيز دي"), "en")
-        self.assertEqual(calls, [])                    # كلمة قوية = مفيش نداء تصنيف
-
-    def test_latin_dominant_skips_classifier(self):
+    def test_english_skips_classifier(self):
         cl, calls = self._client("OTHER")
         self.assertEqual(cl._prompt_lang("build a docker container"), "en")
         self.assertEqual(calls, [])
 
-    def test_ambiguous_other_maps_ar(self):
+    def test_technical_word_still_asks_the_classifier(self):
+        # «اكتب إعلانًا لدورة Python» فيها مصطلح تقني بس طلب كتابة — التصنيف يقرر
+        cl, calls = self._client("OTHER")
+        self.assertEqual(cl._prompt_lang("اكتب إعلانًا لدورة Python"), "ar")
+        self.assertEqual(len(calls), 1)
+
+    def test_other_maps_ar_and_tech_maps_en(self):
         cl, calls = self._client("OTHER")
         self.assertEqual(cl._prompt_lang("اكتب لي برنامج غذائي لزيادة الوزن"), "ar")
         self.assertEqual(len(calls), 1)                # اتسأل مرة واحدة بس
-
-    def test_ambiguous_tech_maps_en(self):
         cl, _ = self._client("TECH")
         self.assertEqual(cl._prompt_lang("ابني متجر إلكتروني فيه سلة مشتريات ودفع أونلاين"), "en")
 
-    def test_plain_arabic_other_maps_ar(self):
-        cl, _ = self._client("OTHER")
-        self.assertEqual(cl._prompt_lang("اكتب رسالة شكر لمديري"), "ar")
-
-    def test_exception_falls_back_ar(self):
-        cl, _ = self._client("OTHER")
-        cl._chat_raw = lambda system, text, temperature=0.0: (_ for _ in ()).throw(RuntimeError("boom"))
-        self.assertEqual(cl._prompt_lang("اكتب لي برنامج غذائي"), "ar")
-
-    def test_unexpected_answer_falls_back_ar(self):
-        cl, _ = self._client("MAYBE")
-        self.assertEqual(cl._prompt_lang("اكتب لي برنامج غذائي"), "ar")
-
-    def test_none_answer_falls_back_ar(self):
-        cl, _ = self._client(None)
-        self.assertEqual(cl._prompt_lang("اكتب لي برنامج غذائي"), "ar")
+    def test_failure_falls_back_to_the_keyword_guess(self):
+        boom = lambda system, text, temperature=0.0: (_ for _ in ()).throw(RuntimeError("boom"))  # noqa: E731
+        for answer in (boom, "MAYBE", None):
+            cl, _ = self._client(answer if not callable(answer) else None)
+            if callable(answer):
+                cl._chat_raw = answer
+            # من غير تصنيف: كلمة تقنية قوية = إنجليزي، وغير كده عربي
+            self.assertEqual(cl._prompt_lang("ظبط الداتابيز دي"), "en", repr(answer))
+            self.assertEqual(cl._prompt_lang("اكتب لي برنامج غذائي"), "ar", repr(answer))
 
 
 class TestToPromptDirective(unittest.TestCase):
@@ -152,29 +128,17 @@ class TestToPromptDirective(unittest.TestCase):
         cl.to_prompt(text)
         return captured
 
-    def test_ar_directive_for_ambiguous_other(self):
-        captured = self._capture("اكتب لي برنامج غذائي لزيادة الوزن", "OTHER")
+    def test_ar_directive_for_writing_request(self):
+        captured = self._capture("اكتب إعلانًا لدورة Python", "OTHER")
         self.assertEqual(len(captured), 1)
         self.assertIn(providers.PROMPT_OUTPUT_AR, captured[0])
         self.assertNotIn(providers.PROMPT_OUTPUT_EN, captured[0])
 
-    def test_en_directive_for_ambiguous_tech(self):
+    def test_en_directive_for_software_request(self):
         captured = self._capture("ابني متجر إلكتروني فيه سلة مشتريات ودفع أونلاين", "TECH")
         self.assertEqual(len(captured), 1)
         self.assertIn(providers.PROMPT_OUTPUT_EN, captured[0])
         self.assertNotIn(providers.PROMPT_OUTPUT_AR, captured[0])
-
-    def test_strong_case_skips_classifier(self):
-        # كلمة قوية (داتابيز) = القرار "en" من غير نداء تصنيف، والـdirective إنجليزي
-        cl = providers.Client("groq", "test-key")
-        captured = []
-        classified = []
-        cl._chat = lambda system, text, temperature=0.2: captured.append(system) or text
-        cl._chat_raw = lambda system, text, temperature=0.0: classified.append(text) or "OTHER"
-        cl.to_prompt("ظبط الداتابيز دي")
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(classified, [])
-        self.assertIn(providers.PROMPT_OUTPUT_EN, captured[0])
 
 
 class TestToPromptRetry(unittest.TestCase):

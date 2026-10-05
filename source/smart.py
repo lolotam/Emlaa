@@ -598,31 +598,36 @@ def latin_dominant(text):
 
 def prompt_language(text):
     """
-    قرار مبدئي للغة برومبت الطلب: "ar" | "en" | None (F2).
-      • "en" لو الطلب تقني أكيد — فيه كلمة عربي تقنية قوية من TECH_ARABIC_KEYWORDS،
-        أو مصطلح/عبارة لاتيني تقني، أو أكتر حروفه لاتيني (الطلب أصله إنجليزي).
-      • None لو مش متأكدين — كل حاجة تانية، ومنها الكلمات الملتبسة (برنامج/تطبيق/
-        موقع…) وطلبات العربي العادية من غير كلمة تقنية: دول القرار بتاعهم بيتاخد
-        من الموديل (providers._prompt_lang بيسأل TECH/OTHER). ليه مش "ar" مباشرة؟
-        عشان «ابني متجر إلكتروني فيه سلة مشتريات» تقني من غير كلمة قوية، فالكود
-        مينفعش يقررها لوحده من غير ما يفوّت التقني.
-      • "ar" للنص الفاضي بس — مفيش حاجة تتحول لبرومبت.
+    القرار المحلي للغة برومبت الطلب: "en" | "ar" | None (F2).
+      • "en" لو الطلب نفسه إنجليزي — أغلب حروفه لاتيني بعد شيل الإيميلات واللينكات.
+      • "ar" للنص الفاضي بس.
+      • None لأي طلب عربي أو مخلوط: القرار هنا بيتاخد من الموديل (providers._prompt_lang
+        بيسأل TECH/OTHER حسب اللي المستخدم عايز يطلّعه). الكلمات التقنية مبتقررش
+        لوحدها: «اكتب إعلان لدورة Python» و«اكتب رسالة فيها كود خصم» طلبات كتابة
+        مش برمجة — فبتستخدم بس كتخمين لو التصنيف نفسه فشل (tech_guess).
     """
     s = str(text or "")
     if not s.strip():
         return "ar"
-    if _TECH_ARABIC_RE.search(normalize(s)):
-        return "en"
     # إيميل أو لينك أو @حساب جوّه طلب عربي مش لغة الطلب: «اكتب رسالة إلى
-    # support@example.com» كانت حروف العنوان بتغلب الطلب، و«api»/«app» جوّه لينك
-    # كانت بتتحسب مصطلح تقني — فبنشيلهم قبل فحوص اللاتيني
-    bare = _IDENTIFIER_RE.sub(" ", s)
-    lower = bare.lower()
-    if _LATIN_TECH_RE.search(lower) or any(p in lower for p in TECH_LATIN_PHRASES):
-        return "en"
-    if latin_dominant(bare):
+    # support@example.com» كانت حروف العنوان بتغلب الطلب
+    if latin_dominant(_IDENTIFIER_RE.sub(" ", s)):
         return "en"
     return None
+
+
+def tech_guess(text):
+    """
+    تخمين احتياطي "en"/"ar" لما تصنيف الموديل يفشل: كلمة تقنية قوية (عربي أو لاتيني)
+    = "en"، غير كده "ar". مش قرار نهائي — الموديل بيشوف القصد، والكلمات مبتشوفوش.
+    """
+    s = str(text or "")
+    if _TECH_ARABIC_RE.search(normalize(s)):
+        return "en"
+    lower = _IDENTIFIER_RE.sub(" ", s).lower()
+    if _LATIN_TECH_RE.search(lower) or any(p in lower for p in TECH_LATIN_PHRASES):
+        return "en"
+    return "ar"
 
 
 # ── F8: الاختصارات الصوتية ──────────────────────────────────────────────────
