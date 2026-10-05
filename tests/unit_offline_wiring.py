@@ -146,6 +146,32 @@ class TestAlwaysOffline(unittest.TestCase):
         m["history"].assert_not_called()
         self.assertEqual(app.events[-1], ("err", "التعديل محتاج إنترنت"))
 
+    def test_always_not_installed_refuses_without_client(self):
+        # N1: وضع "always" ومفيش موديل مثبّت — منبنيش Client ولا ننادي أي مزوّد،
+        # نرفض بـ"مش متثبّت" من غير سجل ولا حافظة
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", installed=None)
+        app.process("WAV", core.Operation(mode="normal"))
+        app.client.assert_not_called()
+        m["transcribe"].assert_not_called()
+        m["paste"].assert_not_called()
+        m["history"].assert_not_called()
+        m["clip"].assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات"))
+
+    def test_edit_always_not_installed_refuses_without_client(self):
+        # N1: تعديل + "always" + مفيش موديل — رفض "التعديل محتاج إنترنت" برضه
+        # من غير ما نبني Client (سواء الموديل متثبّت ولا لأ)
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", installed=None)
+        app.process("WAV", core.Operation(mode="edit"))
+        app.client.assert_not_called()
+        m["paste"].assert_not_called()
+        m["history"].assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "التعديل محتاج إنترنت"))
+
 
 class TestFallbackOffline(unittest.TestCase):
     """offline_mode="fallback" = العميل الأول؛ لو النت وقع والموديل مثبّت → offline."""
@@ -270,9 +296,6 @@ class TestApiOffline(unittest.TestCase):
             self.assertTrue(started.wait(5))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestOfflineHandoffNeverCopiesPasswords(unittest.TestCase):
     def test_prompt_offline_in_password_field_copies_nothing(self):
@@ -287,3 +310,25 @@ class TestOfflineHandoffNeverCopiesPasswords(unittest.TestCase):
         m["history"].assert_not_called()
         self.assertEqual(app.unplaced, [])
         self.assertEqual(app.events[-1][0], "err")
+
+    def test_late_password_focus_copies_nothing(self):
+        # N2: الفوكس وقت التفريغ مش باسورد، بس وقت التسليم اتنقل لخانة باسورد —
+        # الفحص المتأخر لازم يرفض من غير نسخ ولا سجل ولا on_unplaced
+        app = make_app()
+        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
+        m = _wire(self, offline_mode="always", offline_text="كلمة السر")
+        focus = [dict(GUI_FOCUS), {"is_password": True, "class": "", "editable": True}]
+
+        def focused():
+            return focus.pop(0) if focus else {"is_password": True, "class": "", "editable": True}
+
+        with mock.patch("winput.focused_info", side_effect=focused):
+            app.process("WAV", core.Operation(mode="prompt"))
+        m["clip"].assert_not_called()
+        m["history"].assert_not_called()
+        self.assertEqual(app.unplaced, [])
+        self.assertEqual(app.events[-1][1], "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
+
+
+if __name__ == "__main__":
+    unittest.main()

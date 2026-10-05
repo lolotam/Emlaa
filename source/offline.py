@@ -90,19 +90,27 @@ def installed():
             data = json.load(f)
     except Exception:
         return None
+    # N4: الموديل لازم يبقى واحد من اللي بنعرفهم — غير كده مانيڨست بايظ/مزوّر
+    model = data.get("model")
+    if model not in MODELS:
+        return None
     files = data.get("files")
     if not isinstance(files, dict) or not files:
         return None
     # كل ملف لازم يكون موجود وبالظبط بنفس الحجم المسجّل — غير كده = تثبيت بايظ
     root = os.path.dirname(manifest_path)
+    root_real = os.path.realpath(root)
     for rel, size in files.items():
         p = os.path.join(root, rel)
         try:
             if not os.path.exists(p) or os.path.getsize(p) != int(size):
                 return None
+            # N4: المسار لازم يفضل جوّه جذر offline — مانع أي خروج بـ".."
+            if not os.path.realpath(p).startswith(root_real + os.sep):
+                return None
         except OSError:
             return None
-    return data.get("model")
+    return model
 
 
 # ── التنزيل والتثبيت ──────────────────────────────────────────────────────────
@@ -139,6 +147,7 @@ def _extract_bin(zip_path, dest):
     whisper-cli بيشتغل من غيرهم. أي مسار فيه ".." أو مطلق = نرفض الأرشيف كله.
     """
     import zipfile
+    dest_real = os.path.realpath(dest)
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             name = info.filename
@@ -149,13 +158,21 @@ def _extract_bin(zip_path, dest):
             base = name[len("Release/"):]
             if not base:
                 continue
+            # N3: بعد قصّ "Release/" لازم يفضل اسم ملف عادي — أي فاصل مسار
+            # ("/" أو "\\") أو ":" أو اسم خاص "." / ".." = نرفض الأرشيف كله
+            if base in (".", "..") or "/" in base or "\\" in base or ":" in base:
+                raise RuntimeError("الأرشيف فيه مسار مش سليم — اتلغى التثبيت")
             keep = base == "whisper-cli.exe"
             if base.lower().endswith(".dll"):
                 low = base.lower()
                 keep = low != "sdl2.dll" and not low.startswith("parakeet")
             if not keep:
                 continue
-            with zf.open(info) as src, open(os.path.join(dest, base), "wb") as dst:
+            # N3: تأكيد أخير إن المسار النهائي جوّه dest — دفاع ضد أي حيلة مسار
+            final = os.path.realpath(os.path.join(dest, base))
+            if not final.startswith(dest_real + os.sep):
+                raise RuntimeError("الأرشيف فيه مسار مش سليم — اتلغى التثبيت")
+            with zf.open(info) as src, open(final, "wb") as dst:
                 dst.write(src.read())
 
 
@@ -214,31 +231,34 @@ def download(model, progress=None):
             # ننقل للمكان الحقيقي: bin وmodels، من غير ما نلمس الملفات القديمة غير بعد النجاح
             os.makedirs(bin_dir, exist_ok=True)
             os.makedirs(model_dir, exist_ok=True)
+            old_files = _manifest_files(manifest_path)
+            # المانيڨست بيتكتب آخر حاجة، بمسارات نسبية من جذر offline وأحجام حقيقية —
+            # للملفات اللي نقلناها بس، مش لأي حاجة قديمة قاعدة في bin
+            files = {}
             for name in os.listdir(staging):
                 src = os.path.join(staging, name)
                 if not os.path.isfile(src):
                     continue
                 if name == model + ".bin":
-                    dst = os.path.join(model_dir, name)
+                    rel = "models/" + name
                 elif name in ("whisper-cli.exe",) or name.lower().endswith(".dll"):
-                    dst = os.path.join(bin_dir, name)
+                    rel = "bin/" + name
                 else:
                     continue
+                dst = os.path.join(os.path.dirname(manifest_path), rel)
                 os.replace(src, dst)
-
-            # المانيڨست بيتكتب آخر حاجة، بمسارات نسبية من جذر offline وأحجام حقيقية
-            files = {}
-            for name in os.listdir(bin_dir):
-                p = os.path.join(bin_dir, name)
-                files["bin/" + name] = os.path.getsize(p)
-            files["models/" + model + ".bin"] = os.path.getsize(
-                os.path.join(model_dir, model + ".bin"))
+                files[rel] = os.path.getsize(dst)
 
             manifest = {"model": model, "version": WHISPER_CPP_VERSION, "files": files}
             tmp = manifest_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, ensure_ascii=False, indent=1)
             os.replace(tmp, manifest_path)
+            # بعد ما التثبيت الجديد اتثبّت: الموديل التاني (150–190 MB) وأي ملف من
+            # التثبيت القديم مش في الجديد كانوا هيفضلوا يتامى — remove() مش بيشوفهم
+            stale = set(old_files) - set(files)
+            stale |= {"models/" + m + ".bin" for m in MODELS if m != model}
+            _remove_inside(os.path.dirname(manifest_path), stale)
         except Exception:
             _clear_staging(staging)
             raise
@@ -246,23 +266,35 @@ def download(model, progress=None):
             _clear_staging(staging)
 
 
+def _manifest_files(manifest_path):
+    """المسارات النسبية المسجّلة في المانيڨست — قايمة فاضية لو مفيش أو بايظ."""
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            files = json.load(f).get("files")
+    except Exception:
+        return []
+    return list(files) if isinstance(files, dict) else []
+
+
+def _remove_inside(root, rels):
+    """بيمسح المسارات النسبية دي — بس اللي فعلًا جوّه root (N4: مانيڨست متلعوب فيه ميمسحش برّه)."""
+    root_real = os.path.realpath(root)
+    for rel in rels:
+        p = os.path.join(root, rel)
+        if not os.path.realpath(p).startswith(root_real + os.sep):
+            continue
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
 def remove():
     """بيمسح الموديل والـbin والمانيڨست المثبّتين — تحت اللوك عشان ميتعاركش مع تنزيل."""
     with _lock:
         bin_dir, model_dir, staging, manifest_path = _dirs()
         # بنعرف الملفات من المانيڨست عشان مانمسحش حاجة مش بتاعتنا
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, encoding="utf-8") as f:
-                    data = json.load(f)
-                root = os.path.dirname(manifest_path)
-                for rel in (data.get("files") or {}):
-                    try:
-                        os.remove(os.path.join(root, rel))
-                    except OSError:
-                        pass
-            except Exception:
-                pass
+        _remove_inside(os.path.dirname(manifest_path), _manifest_files(manifest_path))
         for p in (manifest_path,):
             try:
                 os.remove(p)
@@ -307,18 +339,19 @@ def transcribe(wav, language):
     (حتى لو فشل). الفشل بيرمي RuntimeError — مفيش حالة بنرجّع فيها نص فاضي
     وندّعي إنه تفريغ.
     """
-    model = installed()
-    if not model:
-        raise RuntimeError("مفيش موديل offline مثبّت — نزّل موديل الأول")
-    _, model_dir, _, _ = _dirs()
-    model_path = os.path.join(model_dir, model + ".bin")
-
     out_base = os.path.join(tempfile.gettempdir(),
                             "emlaa_offline_%d" % int(time.time() * 1000))
     out_txt = out_base + ".txt"
     start = time.time()
 
     with _lock:
+        # N5: اختيار الموديل ومسار الملف جوه اللوك — remove() بياخد نفس اللوك،
+        # فميقدرش يمسح الملفات بين اختيار الموديل وتنفيذ whisper-cli
+        model = installed()
+        if not model:
+            raise RuntimeError("مفيش موديل offline مثبّت — نزّل موديل الأول")
+        _, model_dir, _, _ = _dirs()
+        model_path = os.path.join(model_dir, model + ".bin")
         try:
             # ملف قديم بنفس الاسم ميتقريش كأنه نتيجة التشغيل ده
             try:

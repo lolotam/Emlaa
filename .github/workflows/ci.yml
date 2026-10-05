@@ -24,9 +24,10 @@ jobs:
         run: python -m compileall -q source
 
       # Unit tests need no keys, network or microphone, but they patch these runtime
-      # modules (clipboard, keyboard hook, UI Automation), so the modules must be importable
+      # modules (clipboard, keyboard hook, UI Automation) and check the OpenAI SDK's
+      # network-error mapping, so the modules must be importable
       - name: Install test dependencies
-        run: python -m pip install "pyperclip>=1.8.2" "pynput>=1.7.6" "comtypes>=1.4"
+        run: python -m pip install "pyperclip>=1.8.2" "pynput>=1.7.6" "comtypes>=1.4" "openai>=1.40.0" httpx
 
       # comtypes generates comtypes.gen.UIAutomationClient on first use; the app (and the
       # PyInstaller build) always has it, a fresh runner doesn't

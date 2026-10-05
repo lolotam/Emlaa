@@ -103,7 +103,7 @@ async function setTheme(pref) {
 /* ═══════════ التنقل ═══════════ */
 function go(page) {
   if (!S.boot) return;
-  if (!S.boot.canRun && page !== "welcome") page = "welcome";
+  if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.go === page));
@@ -914,6 +914,8 @@ function fillWelcome() {
   const hint = () => { $("#welHint").textContent = curProv().keyHint; renderGuide($("#welGuide")); };
   provCards($("#welProviders"), hint);
   hint();
+  // نسخة الـStore: مفيش تفريغ من غير إنترنت — بنخبّي الزرار زي قسم الـoffline
+  $("#welOffline").hidden = !!(S.boot.offline && S.boot.offline.packaged);
 }
 $("#welGetKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#welGo").addEventListener("click", async () => {
@@ -931,6 +933,13 @@ $("#welGo").addEventListener("click", async () => {
   applyBoot();
   go("home");
   toast("تمام — دوس على زرار التسجيل واتكلم");
+});
+$("#welOffline").addEventListener("click", () => {
+  go("settings");
+  requestAnimationFrame(() => {
+    const el = $("#offlineHead");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 });
 
 /* ═══════════ الشريط الجانبي والنافذة ═══════════ */
@@ -1006,6 +1015,11 @@ function updFail(err) {
   $("#updGo").textContent = "جرّب تاني";
 }
 
+async function refreshBoot() {
+  S.boot = await api().bootstrap();
+  applyBoot();
+}
+
 function applyBoot() {
   const b = S.boot;
   applyTheme(b.cfg.theme || "dark");
@@ -1020,6 +1034,7 @@ function applyBoot() {
   renderKeys();
   renderStats(b.stats);
   if (!b.canRun) setState("off");
+  else if (S.state === "off") setState("ready");
 }
 
 /* ═══════════ أحداث من Python ═══════════ */
@@ -1059,6 +1074,7 @@ window.emlaa = {
     if (r.ok) {
       toast("اتنزّل ✓");
       refreshOffline();
+      refreshBoot();
     } else {
       $("#offlineDownloadNote").textContent = "بيتنزّل مرة واحدة ويتخزّن على جهازك";
       toast(r.err || "مقدرتش أنزّل الموديل");

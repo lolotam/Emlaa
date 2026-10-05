@@ -126,6 +126,7 @@ const EN = {
   // ── أول مرة ──
   "أهلاً بيك في إملاء": "Welcome to Emlaa", "اختار مزوّد التفريغ وحط مفتاحه — خطوة واحدة وتبدأ تتكلم.": "Pick a transcription provider and paste its key — one step and you're talking.",
   "الصق المفتاح هنا": "Paste the key here", "تأكيد وابدأ": "Confirm and start", "الصق المفتاح الأول": "Paste the key first",
+  "استخدمه من غير إنترنت ومن غير مفتاح": "Use it offline and without a key",
   "تمام — دوس على زرار التسجيل واتكلم": "All set — press record and speak",
   // ── تنبيهات ──
   "اتنسخ ✓": "Copied ✓", "مقدرتش أنسخ": "Couldn't copy", "المحرّك لسه بيجهز…": "The engine is still starting…",
@@ -136,6 +137,7 @@ const EN = {
   "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف": "Recording was too short — speak a little, then stop",
   "اتلغى التسجيل": "Recording cancelled",
   "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت": "Can't copy password-field text — the conversion needs the internet",
+  "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات": "Offline transcription isn't installed — download it from Settings",
   "مقدرتش أحفظ الاختصارات — جرّب تاني": "Couldn't save the snippets — try again",
   "مطلعش نص — قرّب من الميك وجرّب تاني": "No text came out — move closer to the mic and try again",
   "مقدرتش أكتب النص ولا أنسخه — جرّب تاني": "Couldn't type or copy the text — try again",

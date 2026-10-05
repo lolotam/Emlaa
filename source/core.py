@@ -1360,9 +1360,14 @@ class App:
             lang = None if cur_mode == "translate" else CFG.get("language", "ar")
             # F9: مسار offline — "always" بيفرّغ من غير ما نبني Client خالص (من غير مفتاح)،
             # و"fallback" بيرجع للموديل المحلي بس لو النت وقع والموديل مثبّت.
+            # N1: "always" = وضع خصوصية — الصوت عمره ما يروح لأي مزوّد. لو الموديل
+            # مش متثبّت منبنيش Client ولا ننادي مزوّد، نرفض على طول (من غير سجل/حافظة).
             offline_used = False
             offline_model = None
-            if CFG.get("offline_mode") == "always" and offline.installed():
+            if CFG.get("offline_mode") == "always":
+                if not offline.installed():
+                    self.on_state("err", "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات")
+                    return
                 offline_used = True
                 offline_model = offline.installed()
                 text = offline.transcribe(wav, lang)
@@ -1509,6 +1514,12 @@ class App:
         if early_secure:
             self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
             return
+        # N2: فحص أخير للفوكس قبل أي نسخ/عرض/سجل — نفس قراية process المتأخرة.
+        # الفوكس ممكن يكون اتنقل لخانة باسورد بعد التفريغ، فنرفض من غير ما نلمس حاجة.
+        import winput
+        if winput.focused_info().get("is_password") is True:
+            self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
+            return
         engine = {"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
         cur_mode = op.mode
         if _copy_to_clipboard(text):
@@ -1533,9 +1544,9 @@ class App:
         if _probe_password_seen(op):
             self.on_state("err", "مينفعش تعديل خانة باسورد")
             return
-        # F9: التعديل في المكان بيحتاج الموديل (LLM) — وضع offline دايمًا مينفعش معاه
-        # (ومفيش مفتاح في الحالة دي، فـself.client() كان هيرمي «مفيش مفتاح»).
-        if CFG.get("offline_mode") == "always" and offline.installed():
+        # F9/N1: التعديل في المكان بيحتاج الموديل (LLM) — وضع offline دايمًا مينفعش
+        # معاه سواء الموديل متثبّت ولا لأ: مينفعش نبني Client ولا ننادي أي مزوّد.
+        if CFG.get("offline_mode") == "always":
             self.on_state("err", "التعديل محتاج إنترنت")
             return
         cl = self.client()

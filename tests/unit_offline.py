@@ -209,6 +209,23 @@ class TestExtractBin(_BaseCase):
         with self.assertRaises(RuntimeError):
             self._run_extract({abs_name: b"x"}, dest)
 
+    def test_rejects_drive_path_after_release(self):
+        # N3: "Release/C:/x.dll" — بعد قصّ "Release/" بيفضل "C:/x.dll" فيه ":"
+        # و"/" — لازم يترفض قبل ما يتكتب أي حاجة
+        dest = os.path.join(self._tmp.name, "out")
+        os.makedirs(dest)
+        with self.assertRaises(RuntimeError):
+            self._run_extract({"Release/C:/x.dll": b"x"}, dest)
+        self.assertEqual(os.listdir(dest), [])
+
+    def test_rejects_backslash_path_after_release(self):
+        # N3: "Release/a\\b.dll" — فاصل مسار ويندوز مخفّي بعد "Release/"
+        dest = os.path.join(self._tmp.name, "out")
+        os.makedirs(dest)
+        with self.assertRaises(RuntimeError):
+            self._run_extract({"Release/a\\b.dll": b"x"}, dest)
+        self.assertEqual(os.listdir(dest), [])
+
 
 # ── download() ────────────────────────────────────────────────────────────────
 MODEL_URL = "https://example.com/model.bin"
@@ -241,11 +258,38 @@ class TestDownload(_BaseCase):
         p1, p2, p3, p4, p5, p6 = _download_patches()
         with p1, p2, p3, p4, p5, p6:
             offline.download("test-model")
-        self.assertEqual(offline.installed(), "test-model")
-        bin_dir = os.path.join(core.BASE, "offline", "bin")
-        model_dir = os.path.join(core.BASE, "offline", "models")
-        self.assertEqual(sorted(os.listdir(bin_dir)), ["ggml.dll", "whisper-cli.exe"])
-        self.assertEqual(os.listdir(model_dir), ["test-model.bin"])
+            # N4: installed() بيشترط إن اسم الموديل يبقى من MODELS — فـMODELS
+            # لازم يفضل مترقّع لـ"test-model" وقت الفحص (بعد فك الـpatches
+            # "test-model" مش من الموديلات الحقيقية فكان هيرجّع None).
+            self.assertEqual(offline.installed(), "test-model")
+            bin_dir = os.path.join(core.BASE, "offline", "bin")
+            model_dir = os.path.join(core.BASE, "offline", "models")
+            self.assertEqual(sorted(os.listdir(bin_dir)), ["ggml.dll", "whisper-cli.exe"])
+            self.assertEqual(os.listdir(model_dir), ["test-model.bin"])
+
+    def test_switching_model_removes_superseded_files(self):
+        # تبديل الموديل: القديم (150–190 MB) والملفات اللي التثبيت الجديد مبقاش فيها
+        # بتتمسح — غير كده كانت بتفضل يتامى ومحدش يقدر يشيلها من الواجهة
+        two = {"m-a": (MODEL_URL, _sha256(MODEL_BYTES), len(MODEL_BYTES)),
+               "m-b": (MODEL_URL, _sha256(MODEL_BYTES), len(MODEL_BYTES))}
+        p1, p2, p3, p4, p5, p6 = _download_patches()
+        with mock.patch.object(offline, "MODELS", two), p2, p3, p4, p5, p6:
+            offline.download("m-a")
+            root = os.path.join(core.BASE, "offline")
+            # ملف من تثبيت قديم مسجّل في المانيڨست + ملف المستخدم مش مسجّل
+            _write(os.path.join(root, "bin", "old.dll"), b"OLD")
+            with open(os.path.join(root, "manifest.json"), encoding="utf-8") as f:
+                m = json.load(f)
+            m["files"]["bin/old.dll"] = 3
+            with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(m, f)
+            _write(os.path.join(root, "models", "notes.txt"), b"mine")
+            offline.download("m-b")
+            self.assertEqual(offline.installed(), "m-b")
+            self.assertEqual(sorted(os.listdir(os.path.join(root, "models"))), ["m-b.bin", "notes.txt"])
+            self.assertFalse(os.path.exists(os.path.join(root, "bin", "old.dll")))
+            with open(os.path.join(root, "manifest.json"), encoding="utf-8") as f:
+                self.assertNotIn("bin/old.dll", json.load(f)["files"])
 
     def test_progress_reaches_one(self):
         fractions = []
@@ -278,6 +322,48 @@ class TestRemove(_BaseCase):
         offline.remove()
         self.assertIsNone(offline.installed())
         self.assertFalse(os.path.exists(os.path.join(core.BASE, "offline", "manifest.json")))
+
+
+# ── احتواء المانيڨست (N4) ────────────────────────────────────────────────────
+class TestManifestContainment(_BaseCase):
+    def test_installed_none_when_model_not_known(self):
+        # الموديل المسجّل مش من offline.MODELS — المانيڨست مش سليم فرجّع None
+        root = os.path.join(self._tmp.name, "offline")
+        bin_dir = os.path.join(root, "bin")
+        os.makedirs(bin_dir)
+        _write(os.path.join(bin_dir, "whisper-cli.exe"), b"EXE")
+        manifest = {"model": "../x", "version": offline.WHISPER_CPP_VERSION,
+                    "files": {"bin/whisper-cli.exe": 3}}
+        with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False)
+        self.assertIsNone(offline.installed())
+
+    def test_installed_none_when_path_escapes_root(self):
+        # مسار في المانيڨست بيطلع برّه الجذر — installed() لازم يرجّع None
+        root = self._install("base")
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["files"]["../../outside.bin"] = 4
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        self.assertIsNone(offline.installed())
+
+    def test_remove_leaves_outside_file(self):
+        # N4: ملف بيطلع برّه الجذر في المانيڨست — remove() ميمسحهوش
+        root = self._install("base")
+        outside = os.path.join(self._tmp.name, "outside.txt")
+        _write(outside, b"KEEP")
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["files"]["../outside.txt"] = 4
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        offline.remove()
+        self.assertTrue(os.path.exists(outside))
+        self.assertEqual(os.path.getsize(outside), 4)
+        self.assertFalse(os.path.exists(manifest_path))
 
 
 # ── transcribe() ──────────────────────────────────────────────────────────────
@@ -345,6 +431,27 @@ class TestTranscribe(_BaseCase):
     def test_requires_model_installed(self):
         with self.assertRaises(RuntimeError):
             offline.transcribe("w.wav", "ar")
+
+    def test_model_selection_is_inside_lock(self):
+        # N5: installed() لازم يتنده جوه اللوك — عشان remove() (نفس اللوك)
+        # ميقدرش يمسح الملفات بين اختيار الموديل وتنفيذه. لو اتناده برّه،
+        # acquire غير الحاجب هينجح وبنفشل الاختبار.
+        self._install("base")
+        seen = {}
+        real_installed = offline.installed
+
+        def installed_checking_lock():
+            held = offline._lock.acquire(blocking=False)
+            seen["locked"] = not held
+            if held:
+                offline._lock.release()
+            return real_installed()
+
+        fake_run, _ = self._run_writing("نص")
+        with mock.patch.object(offline, "installed", installed_checking_lock), \
+                mock.patch.object(offline, "_run", fake_run):
+            offline.transcribe("w.wav", "ar")
+        self.assertTrue(seen["locked"])
 
     def test_empty_result_raises(self):
         self._install("base")
