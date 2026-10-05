@@ -615,6 +615,7 @@ class EmlaaClassic(tk.Tk):
 
         self._center()
         self.deiconify()
+        core.preload_pystray()
         threading.Thread(target=self._start_tray, daemon=True).start()
         self._watch_show_request()
         self._check_update()
@@ -1516,7 +1517,7 @@ class EmlaaClassic(tk.Tk):
     # ── أيقونة جنب الساعة ──
     def _start_tray(self):
         try:
-            import pystray
+            pystray = core.import_pystray()
             from PIL import Image
             img = Image.open(core.asset("emlaa.png"))
             menu = pystray.Menu(

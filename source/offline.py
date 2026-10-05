@@ -56,6 +56,13 @@ _dl_lock = threading.Lock()
 # الاختبارات بتحط opener مزيّف هنا عشان التنزيل يمشي من غير شبكة
 _opener = None
 
+# ── فحص بصمة الحزمة مرة واحدة لكل عملية (Task 20) ─────────────────────────────
+# الموديل 150–190 MB، فهاشه على كل تفريغ كان هيبطّأ الوضع المحلي — بنحسبه مرة
+# واحدة ونخزّن النتيجة على هوية المانيڨست (mtime_ns, size)، وبنمسحها لما تنزيل
+# أو مسح يحصل. _verify_locked() بتفترض إن _lock ماسك (transcribe بيناديها واللوك
+# معاه)؛ verify() هي اللي بتاخد اللوك وبتخزّن النتيجة.
+_verify_cache = {}
+
 
 def _dirs():
     """
@@ -124,6 +131,122 @@ def installed():
         except (OSError, TypeError, ValueError):
             return None
     return model
+
+
+# ── فحص بصمة الملفات (Task 20) ────────────────────────────────────────────────
+def _sha256_file(path):
+    """sha256 لملف بيتقري على قطع 1 MB — عشان ممن نحمّل الـ150 MB في الذاكرة مرة واحدة."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _manifest_identity(manifest_path):
+    """هوية المانيڨست الحالية (mtime_ns, size) — None لو مفيش ملف."""
+    try:
+        st = os.stat(manifest_path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def cached_verification():
+    """
+    نتيجة الفحص المخزّنة للمانيڨست الحالي: True/False، أو None لو الفحص لسه
+    ما اتعملش (أو مفيش مانيڨست). مبيحسبش بصمات هنا — offline_status لازم يفضل
+    سريع ومش بيحبس الواجهة على هاش 150 MB.
+    """
+    _, _, _, manifest_path = _dirs()
+    identity = _manifest_identity(manifest_path)
+    if identity is None:
+        return None
+    return _verify_cache.get(identity)
+
+
+def verify():
+    """
+    بيفحص بصمة كل ملف في المانيڨست مرة واحدة لكل عملية. النتيجة بتتخزّن على
+    هوية المانيڨست (mtime_ns, size). المانيڨست القديم (من غير "sha256"):
+    الموديل بيتقارن بـMODELS pin، والـbin بيعدّي على الحجم.
+    """
+    _, _, _, manifest_path = _dirs()
+    identity = _manifest_identity(manifest_path)
+    if identity is None:
+        return False
+    result = _verify_cache.get(identity)
+    if result is not None:
+        return result
+    with _lock:
+        return _verified_cached_locked()
+
+
+def _verified_cached_locked():
+    """
+    نتيجة الفحص للمانيڨست الحالي من الكاش، أو بتحسبها مرة وتخزّنها — لازم
+    _lock يكون ماسك. transcribe() بيناديها هي مش _verify_locked() على طول، غير
+    كده كل تفريغ كان هيعيد هاش الـ150–190 MB.
+    """
+    _, _, _, manifest_path = _dirs()
+    identity = _manifest_identity(manifest_path)
+    if identity is None:
+        return False
+    result = _verify_cache.get(identity)
+    if result is None:
+        result = _verify_locked()
+        _verify_cache[identity] = result
+    return result
+
+
+def _verify_locked():
+    """
+    الفحص الفعلي — لازم يتبندّى والـ_lock ماسك (عشان remove/download مش يلمسوا
+    الملفات في نص الهاش). بيرجّع True/False. مبياخدش اللوك بنفسه: transcribe()
+    بيناديه واللوك معاه.
+    """
+    bin_dir, model_dir, staging, manifest_path = _dirs()
+    if not os.path.exists(manifest_path):
+        return False
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    model = data.get("model")
+    if not isinstance(model, str) or model not in MODELS:
+        return False
+    files = data.get("files")
+    if not isinstance(files, dict) or not files:
+        return False
+    hashes = data.get("sha256")
+    hashes = hashes if isinstance(hashes, dict) else {}
+    root = os.path.dirname(manifest_path)
+    root_real = os.path.realpath(root)
+    for rel, size in files.items():
+        p = os.path.join(root, rel)
+        try:
+            if not os.path.exists(p) or not os.path.realpath(p).startswith(root_real + os.sep):
+                return False
+        except OSError:
+            return False
+        if rel in hashes:
+            if _sha256_file(p) != hashes[rel]:
+                return False
+        elif rel == "models/" + model + ".bin":
+            # مانيڨست قديم من غير خريطة بصمات: الموديل بيتقارن بالبصمة المثبّتة
+            if _sha256_file(p) != MODELS[model][1]:
+                return False
+        else:
+            # الـbin من غير خريطة = بيعدّي على الحجم المسجّل
+            try:
+                if os.path.getsize(p) != int(size):
+                    return False
+            except (OSError, TypeError, ValueError):
+                return False
+    return True
 
 
 # ── التنزيل والتثبيت ──────────────────────────────────────────────────────────
@@ -253,6 +376,7 @@ def download(model, progress=None):
                 # المانيڨست بيتكتب آخر حاجة، بمسارات نسبية من جذر offline وأحجام حقيقية —
                 # للملفات اللي نقلناها بس، مش لأي حاجة قديمة قاعدة في bin
                 files = {}
+                hashes = {}
                 for name in os.listdir(staging):
                     src = os.path.join(staging, name)
                     if not os.path.isfile(src):
@@ -266,12 +390,20 @@ def download(model, progress=None):
                     dst = os.path.join(os.path.dirname(manifest_path), rel)
                     os.replace(src, dst)
                     files[rel] = os.path.getsize(dst)
+                    # بصمة الموديل هي المثبّتة (من MODELS) — بصمات الـexe والـdll
+                    # بتيجي من الملفات اللي فُكّت من أرشيف متأكد منه (بصمة الـzip)
+                    if rel == "models/" + model + ".bin":
+                        hashes[rel] = model_sha
+                    else:
+                        hashes[rel] = _sha256_file(dst)
 
-                manifest = {"model": model, "version": WHISPER_CPP_VERSION, "files": files}
+                manifest = {"model": model, "version": WHISPER_CPP_VERSION,
+                            "files": files, "sha256": hashes}
                 tmp = manifest_path + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(manifest, f, ensure_ascii=False, indent=1)
                 os.replace(tmp, manifest_path)
+                _verify_cache.clear()
                 # بعد ما التثبيت الجديد اتثبّت: الموديل التاني (150–190 MB) وأي ملف من
                 # التثبيت القديم مش في الجديد كانوا هيفضلوا يتامى — remove() مش بيشوفهم
                 stale = set(old_files) - set(files)
@@ -342,6 +474,7 @@ def remove():
                 os.remove(p)
             except OSError:
                 pass
+        _verify_cache.clear()
         # الـstaging بتاع تنزيل شغّال مينفعش يتلمس — بنمسحه بس لو قدرنا ناخد _dl_lock
         # من غير استنى (يعني مفيش تنزيل في النص). لو فشلنا فيه تنزيل شغّال: نسيب الـstaging.
         if _dl_lock.acquire(blocking=False):
@@ -400,6 +533,11 @@ def transcribe(wav, language):
             raise RuntimeError("مفيش موديل offline مثبّت — نزّل موديل الأول")
         _, model_dir, _, _ = _dirs()
         model_path = os.path.join(model_dir, model + ".bin")
+        # T20: فحص بصمة الملفات قبل تشغيل whisper — لو الموديل اتلف بعد التثبيت
+        # (بايت اتقلب بنفس الحجم) نرفض برسالة واضحة بدل ما whisper-cli يهب أو
+        # يطلع نص غلط. مرة واحدة في الجلسة (من الكاش) — واحنا ماسكين _lock فعلًا.
+        if not _verified_cached_locked():
+            raise RuntimeError("الموديل المحلي بايظ — شيله ونزّله تاني من الإعدادات")
         try:
             # ملف قديم بنفس الاسم ميتقريش كأنه نتيجة التشغيل ده
             try:
