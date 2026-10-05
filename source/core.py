@@ -1052,10 +1052,13 @@ class App:
             self.recording = False
             self._op = None                   # العملية اتلغت — مفيش ما يستلمها في end()
             self._active_key = None           # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
-        try:
-            self.rec.discard()
-        except Exception as e:
-            log_error(e, "recorder/cancel")
+            # الديسكارد جوّه القفل نفسه: بيقلّب flags ويمسح frames بس، فآمن هنا.
+            # لو فضل برّه، begin() على ثريد تاني كان ممكن يبدأ تسجيل جديد في الفجوة،
+            # والديسكارد المتأخر كان هيمسح التسجيل الجديد.
+            try:
+                self.rec.discard()
+            except Exception as e:
+                log_error(e, "recorder/cancel")
         self.on_state("ready", "اتلغى التسجيل")
 
     def process(self, wav, op):
@@ -1063,6 +1066,14 @@ class App:
         # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
         cur_mode = op.mode
         try:
+            # F2 (خصوصية): معلومات الفوكس بتتقرا مرة واحدة في أول العملية — قبل
+            # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
+            # والوقت اللي التسجيل لسه واقف عليها. لو باسورد، نصها عمره ما يوصل
+            # للموديل ولا يتعدّل (بيتكتب زي ما اتفرّغ).
+            import winput
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            early_secure = info.get("is_password") is True
             self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
                 with wave.open(wav, "rb") as w:
@@ -1079,25 +1090,18 @@ class App:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
-            # F2 (خصوصية): بنجيب معلومات الفوكس مرة واحدة قبل أي نداء للموديل — لو
-            # الخانة باسورد، نصها عمره ما يوصل للموديل ولا يتعدّل (بيتكتب زي ما
-            # اتفرّغ). ده استعلام مبكّر للخصوصية بس.
-            import winput
-            info = winput.focused_info()
-            info["exe"] = _foreground_app()
-            early_secure = info.get("is_password") is True
-
             bypass = False
-            if cur_mode == "prompt":
+            if early_secure:
+                # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
+                # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
+                # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
+                out = text
+            elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
             elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
-            elif early_secure:
-                # خانة باسورد في الوضع العادي: مفيش لفة LLM ولا تنضيف — النص
-                # بيتكتب زي ما اتفرّغ. (التحويلين فوق المستخدم اختارهم بنفسه.)
-                out = text
             elif CFG.get("polish", True):
                 if smart.should_bypass(text, cur_mode, CFG):
                     # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
@@ -1111,13 +1115,17 @@ class App:
                 out = text
 
             # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
-            # قبل تصنيف الهدف. لو أي استعلام (المبكّر أو الأخير) شاف خانة باسورد،
-            # نتعامل معاها آمنة كلها: مفيش سجل/عرض/حافظة/صوت، والكتابة بس.
+            # قبل تصنيف الهدف. الاستعلام الأخير ده هو اللي بيحدد مكان الكتابة.
             info2 = winput.focused_info()
             info2["exe"] = _foreground_app()
-            secure = early_secure or (info2.get("is_password") is True)
-            if secure:
-                info2["is_password"] = True
+            late_secure = info2.get("is_password") is True
+            if early_secure and not late_secure:
+                # الفوكس كان على خانة باسورد وقت التسجيل وبعدين اتنقل — ممن نكتب
+                # كلمة السر في أي مكان تاني (غالبًا خانة عادية المستخدم بيقلّب فيها).
+                # بنرفض من غير سجل/حافظة/صوت/عرض/تسليم.
+                self.on_state("err", "الفوكس اتنقل من خانة الباسورد — مكتبتش حاجة")
+                return
+            secure = late_secure
             # F3 (R1 #1): تصنيف الهدف قبل السجل/الحافظة/الصوت — الهدف الآمن:
             # مفيش حاجة من التسجيل ده بتطلع من هنا (لسجل، صوت، نسخ، ولا عرض النص).
             target = smart.insert_target(info2, out, CFG.get("insert_method"))

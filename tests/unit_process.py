@@ -408,6 +408,25 @@ class TestBeginEnd(unittest.TestCase):
         self.assertTrue(app.recording)
         self.assertEqual(app._op.mode, "prompt")
 
+    def test_cancel_discard_runs_inside_state_lock(self):
+        # K4: الديسكارد لازم يقع جوّه القفل — لو سبق التسجيل الجديد، الديسكارد
+        # المتأخر كان هيمسحه. الستوب بيسجّل حالة القفل وقت الديسكارد.
+        app = make_app()
+        seen = []
+        rec = app.rec
+        real_discard = rec.discard
+
+        def discard():
+            seen.append((app._state_lock.locked(), rec.started))
+            real_discard()
+
+        rec.discard = discard
+        with mock.patch.object(core, "beep"):
+            app.begin("normal")
+            app.cancel()
+        self.assertEqual(rec.discarded, 1)
+        self.assertEqual(seen, [(True, 1)], "الديسكارد اتندى برّه القفل أو شاف جيل غلط")
+
     def test_cancel_when_idle_is_noop(self):
         app = make_app()
         with mock.patch.object(core, "beep"):
@@ -508,7 +527,9 @@ class TestProcess(unittest.TestCase):
         app = make_app()
         app.busy = True
         app.on_state = mock.Mock(side_effect=[RuntimeError("ui gone"), None])
-        with mock.patch.object(core, "log_error"):
+        with mock.patch.object(core, "log_error"), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertFalse(app.busy)
 
@@ -517,7 +538,9 @@ class TestProcess(unittest.TestCase):
         app = make_app()
         app.client = lambda: FakeClient(text="")
         app.busy = True
-        with mock.patch.object(core, "log_error"):
+        with mock.patch.object(core, "log_error"), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertFalse(app.busy)
         self.assertEqual(app.texts, [])
@@ -814,8 +837,9 @@ class TestSecurePrivacy(unittest.TestCase):
         self.assertFalse(ttype.called, "editable=False لازم handoff مش كتابة")
         self.assertEqual(app.unplaced, ["p:نص"])
 
-    def test_early_password_skips_model_even_if_late_is_gui(self):
-        # الاستعلام المبكّر شاف باسورد → الموديل ممن يشتغل، حتى لو الفوكس بقى عادي
+    def test_early_password_then_gui_refuses_insert(self):
+        # K3: الفوكس كان على باسورد وقت التسجيل وبعدين اتنقل لخانة عادية —
+        # ممن نكتب كلمة السر في أي مكان، والموديل عمره ما اشتغل.
         app = make_app()
         fake = FakeClient(text="s3cret!")
         app.client = lambda: fake
@@ -825,15 +849,123 @@ class TestSecurePrivacy(unittest.TestCase):
                     {"is_password": True, "class": "Edit", "editable": True},
                     {"is_password": False, "class": "Edit", "editable": True}]), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
-                mock.patch.object(core, "history_add", return_value=111) as hist, \
-                mock.patch.object(core, "recording_save"), \
-                mock.patch("pyperclip.copy"), \
-                mock.patch("winput.type_text", return_value=True), \
-                mock.patch.object(core.time, "sleep"):
+                mock.patch.object(core, "history_add") as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "paste_text") as paste, \
+                mock.patch("pyperclip.copy") as clip:
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للباسورد")
         hist.assert_not_called()
+        rsave.assert_not_called()
+        paste.assert_not_called()
+        clip.assert_not_called()
         self.assertEqual(app.texts, [])
+        self.assertEqual(app.unplaced, [])
+        self.assertEqual(app.events[-1],
+                         ("err", "الفوكس اتنقل من خانة الباسورد — مكتبتش حاجة"))
+
+    def _run_secure(self, mode, early, late, text="s3cret!"):
+        app = make_app()
+        fake = FakeClient(text=text)
+        app.client = lambda: fake
+        app.busy = True
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=[early, late]), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add") as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "paste_text", return_value="placed") as paste:
+            app.process("WAV", core.Operation(mode=mode))
+        return app, fake, hist, rsave, paste
+
+    def test_early_password_blocks_model_in_prompt_mode(self):
+        app, fake, hist, rsave, paste = self._run_secure(
+            "prompt",
+            {"is_password": True, "class": "Edit", "editable": True},
+            {"is_password": True, "class": "Edit", "editable": True})
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertNotIn(("prompt",), fake.calls)
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertEqual(app.texts, [])
+        paste.assert_called_once_with("s3cret!", ("secure", "type", "s3cret!"))
+
+    def test_early_password_blocks_model_in_translate_mode(self):
+        app, fake, hist, rsave, paste = self._run_secure(
+            "translate",
+            {"is_password": True, "class": "Edit", "editable": True},
+            {"is_password": True, "class": "Edit", "editable": True})
+        self.assertEqual(fake.calls, [("transcribe", None)])
+        self.assertNotIn(("translate",), fake.calls)
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertEqual(app.texts, [])
+        paste.assert_called_once_with("s3cret!", ("secure", "type", "s3cret!"))
+
+    def test_early_password_blocks_model_in_normal_mode(self):
+        app, fake, hist, rsave, paste = self._run_secure(
+            "normal",
+            {"is_password": True, "class": "Edit", "editable": True},
+            {"is_password": True, "class": "Edit", "editable": True})
+        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertFalse(any(c[0] == "polish" for c in fake.calls))
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        self.assertEqual(app.texts, [])
+        paste.assert_called_once_with("s3cret!", ("secure", "type", "s3cret!"))
+
+    def test_early_password_late_password_no_clipboard_copy(self):
+        # الإدراج الآمن كتابة بس — من غير حافظة. نتأكد إن مسار paste_text الحقيقي
+        # ما بيلمسش الحافظة (type بس) ولا سجل ولا صوت.
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        app.busy = True
+        log = []
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=[
+                    {"is_password": True, "class": "Edit", "editable": True},
+                    {"is_password": True, "class": "Edit", "editable": True}]), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add",
+                                  side_effect=lambda *a, **k: log.append("history_add") or 111), \
+                mock.patch.object(core, "recording_save",
+                                  side_effect=lambda *a, **k: log.append("recording_save")), \
+                mock.patch("pyperclip.copy",
+                           side_effect=lambda t: log.append("clipboard_copy")), \
+                mock.patch("winput.type_text",
+                           side_effect=lambda t: log.append("type") or True), \
+                mock.patch.object(core.time, "sleep"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(log, ["type"], "الإدراج الآمن كتابة بس — من غير حافظة/سجل/صوت")
+        self.assertEqual(app.texts, [])
+        self.assertEqual(app.unplaced, [])
+
+    def test_early_focus_capture_happens_before_transcribe(self):
+        # K1: قراية الفوكس المبكّرة لازم تحصل قبل cl.transcribe — عشان نمسك حالة
+        # الخانة والوقت اللي التسجيل لسه واقف عليها.
+        app = make_app()
+        fake = FakeClient(text="مرحبا")
+        order = []
+        fake.transcribe = lambda wav, lang: order.append("transcribe") or "مرحبا"
+        app.client = lambda: fake
+        app.busy = True
+
+        def focused():
+            order.append("focused")
+            return GUI_FOCUS
+
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=focused), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add"), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value="placed"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(order, ["focused", "transcribe", "focused"])
 
 
 class TestHistoryBypassFlag(unittest.TestCase):
