@@ -387,6 +387,7 @@ class Client:
         self.helper = helper      # عميل مزوّد تاني للتنظيف (لو المزوّد ده بيفرّغ بس)
         self._oa = None
         self.vocab = []           # كلمات القاموس — بيحطها core قبل كل تسجيل
+        self.vocab_extra = []     # مفاتيح الاختصارات الصوتية — بتتضاف للـprompt بعد كلمات القاموس
         # الموديلات اللي اشتغلت فعلًا في آخر تسجيل (بعد أي بديل) — بتتحفظ في السجل
         self.last_stt_model = None
         self.last_chat = None     # (اسم المزوّد، الموديل) — None لو التنظيف فشل أو ماتعملش
@@ -596,11 +597,14 @@ class Client:
             return text
 
     def _stt_prompt(self, language="ar"):
-        """البرومبت + كلمات القاموس (Whisper بياخد لحد ~٢٢٤ توكن، فبنقصّ). language=None = ثنائي اللغة."""
+        """البرومبت + كلمات القاموس + مفاتيح الاختصارات (Whisper بياخد لحد ~٢٢٤ توكن، فبنقصّ).
+        language=None = ثنائي اللغة."""
         base = STT_PROMPT if language else STT_PROMPT_BILINGUAL
-        if not self.vocab:
+        vocab = [str(w).strip() for w in (self.vocab or []) if str(w).strip()]
+        extra = [str(w).strip() for w in (self.vocab_extra or []) if str(w).strip()]
+        if not vocab and not extra:
             return base
-        words = "، ".join(str(w).strip() for w in self.vocab[:60])[:500]
+        words = "، ".join((vocab + extra)[:60])[:500]
         if not language:
             return base + " Names and terms that may come up: " + words.replace("، ", ", ") + "."
         return base + " كلمات وأسماء ممكن تيجي: " + words + "."

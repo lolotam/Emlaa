@@ -61,6 +61,13 @@ const EN = {
   "إضافة": "Add", "بتتبعت مع كل تسجيل عشان الموديل يكتبها بنفس الطريقة": "Sent with every recording so the model spells them the same way",
   "القاموس فاضي. ضيف الأسماء والمصطلحات اللي الموديل بيغلط فيها.": "The dictionary is empty. Add names and terms the model gets wrong.",
   "الكلمة موجودة بالفعل": "That word is already there",
+  // ── الاختصارات الصوتية ──
+  "الاختصارات الصوتية": "Voice shortcuts",
+  "قول جملة قصيرة… إملاء يكتب مكانها نص جاهز (عنوان، إيميل، IBAN…).": "Say a short phrase… Emlaa types a ready text in its place (address, email, IBAN…).",
+  "الاختصار (مثلاً: إيميلي الشخصي)": "Shortcut phrase (e.g. my personal email)",
+  "النص اللي يتكتب مكانه…": "The text it types in its place…",
+  "تعديل": "Edit", "حفظ": "Save",
+  "مفيش اختصارات لسه. ضيف جملة قصيرة والنص اللي بيتكتب مكانها.": "No shortcuts yet. Add a short phrase and the text it types in its place.",
   // ── الإعدادات ──
   "التغييرات بتشتغل علطول بعد الحفظ — من غير ما تقفل البرنامج.": "Changes apply as soon as you save — no restart needed.",
   "مزوّد التفريغ": "Transcription provider", "المزوّد": "Provider", "اللي بيفرّغ الصوت وينضّف النص": "Transcribes your voice and cleans up the text",
@@ -204,7 +211,7 @@ Object.assign(EN, {
 
 let LANG = "ar";
 const AR_RE = /[؀-ۿ]/;
-const SKIP = ".row-text, .row-raw, .last-text, .r-text, .clip-text, .word, .app-tag, .user-text";
+const SKIP = ".row-text, .row-raw, .last-text, .r-text, .clip-text, .word, .app-tag, .user-text, .snip-trigger, .snip-text";
 const NODES = new WeakMap();      // text node → { orig, shown }
 
 function tr(ar, force) {

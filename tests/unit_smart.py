@@ -82,6 +82,48 @@ class TestWordCount(unittest.TestCase):
         self.assertEqual(smart.word_count(""), 0)
 
 
+class TestMatchSnippet(unittest.TestCase):
+    """F8: الاختصارات الصوتية — مطابقة نقية بالتطبيع + SequenceMatcher."""
+
+    def _snippets(self):
+        return [
+            {"trigger": "إيميلي الشخصي", "text": "waleed@example.com"},
+            {"trigger": "حساب البنك", "text": "KW123456789"},
+        ]
+
+    def test_exact_match(self):
+        self.assertEqual(smart.match_snippet("إيميلي الشخصي", self._snippets())["text"],
+                         "waleed@example.com")
+
+    def test_normalized_match(self):
+        # «ايميلي الشخصي» من غير همزة = «إيميلي الشخصي» بعد التطبيع
+        self.assertEqual(smart.match_snippet("ايميلي الشخصي", self._snippets())["trigger"],
+                         "إيميلي الشخصي")
+
+    def test_fuzzy_match_small_difference(self):
+        # كلمة اتسمعت غلط بشوية («البنكي» بزيادة ي) لسه بتتطابق
+        self.assertEqual(smart.match_snippet("حساب البنكي", self._snippets())["trigger"],
+                         "حساب البنك")
+
+    def test_no_match(self):
+        self.assertIsNone(smart.match_snippet("تمام شكرا", self._snippets()))
+
+    def test_extra_words_no_match(self):
+        # «افتح حساب البنك» جملة فيها الاختصار — مش الاختصار لوحده، فممن تتوسّع
+        self.assertIsNone(smart.match_snippet("افتح حساب البنك", self._snippets()))
+
+    def test_empty_text(self):
+        self.assertIsNone(smart.match_snippet("", self._snippets()))
+        self.assertIsNone(smart.match_snippet(None, self._snippets()))
+
+    def test_empty_snippets(self):
+        self.assertIsNone(smart.match_snippet("إيميلي الشخصي", []))
+
+    def test_skips_invalid_entries(self):
+        self.assertIsNone(smart.match_snippet("إيميلي الشخصي",
+            [{"trigger": "", "text": "x"}, {"trigger": "   ", "text": "y"}, None]))
+
+
 def _cfg(**over):
     """إعدادات عليها قيم F2 الافتراضية — كل اختبار بيغيّر مفتاح واحد."""
     base = {"polish": True, "bypass_short": True, "bypass_max_words": 3, "dictionary": []}

@@ -15,6 +15,7 @@ import webbrowser
 
 import core
 import providers
+import smart
 
 UI_DIR = "ui"
 
@@ -531,7 +532,7 @@ class Api:
                 "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
-                "context_styles", "app_profiles")},
+                "context_styles", "app_profiles", "snippets")},
             "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if keys.get(h)), None),
             "stats": core.history_stats(),
         }
@@ -628,6 +629,31 @@ class Api:
             if w and w.lower() not in seen:
                 seen.add(w.lower()); clean.append(w[:60])
         core.CFG["dictionary"] = clean[:300]
+        core.save_config(core.CFG)
+        return clean
+
+    # ── الاختصارات الصوتية (F8) ──
+    def snippets_set(self, items):
+        """
+        بيحفظ اختصارات الصوت: قايمة {trigger, text}. المفتاح بيتنضّف من الفراغات،
+        والتكرار بيتحدد على الشكل المطبّع (smart.normalize) مش الحرفي — عشان
+        «إيميلي» و«ايميلي» مايتسجلوش مرتين ويلخبطوا المطابقة. الفاضي (مفتاح
+        أو نص) بيتساقط عشان مايبقاش فيه اختصار ميت.
+        """
+        clean, seen = [], set()
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            trigger = str(it.get("trigger") or "").strip()
+            text = str(it.get("text") or "").strip()
+            if not trigger or not text:
+                continue
+            key = smart.normalize(trigger)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            clean.append({"trigger": trigger[:60], "text": text[:2000]})
+        core.CFG["snippets"] = clean[:100]
         core.save_config(core.CFG)
         return clean
 

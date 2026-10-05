@@ -133,6 +133,7 @@ DEFAULTS = {
     "auto_update":       True,      # نزّل وثبّت الإصدار الجديد لوحده (بعد ما التسجيل يخلص)
     "floating_button":   False,     # الموجة بتظهر وقت التسجيل بس؛ True = زرار صغير ظاهر طول الوقت
     "dictionary":        [],        # كلمات وأسماء خاصة — بتتبعت للموديل عشان يكتبها صح
+    "snippets":          [],        # اختصارات صوتية: {trigger, text} — الكلام المطابق بيتوسّع لنص جاهز (F8)
     "clipboard_history": True,      # يحفظ كل حاجة بتتنسخ في قسم الحافظة
     "open_hotkey":       "<ctrl>+<alt>+n",
     "theme":             "dark",    # dark / light / system
@@ -384,7 +385,6 @@ def history_stats():
 # ── سجل الحافظة (كل حاجة بتتنسخ في الويندوز) ─────────────────────────────────
 CLIP_PATH = os.path.join(BASE, "clipboard.json")
 _clip_lock = threading.Lock()
-
 
 def clip_get():
     return _read_list(CLIP_PATH)[0]
@@ -872,7 +872,14 @@ def _copy_to_clipboard(text):
         return False
 
 
-def paste_text(text, target=None):
+def _mark_owned_if_snippet(from_snippet):
+    """لو النص اللي اننسخ جاي من اختصار صوتي، نعلّم رقم تغييره إنه بتاعنا."""
+    if from_snippet:
+        import winput
+        mark_clip_owned(winput._clipboard_sequence())
+
+
+def paste_text(text, target=None, from_snippet=False):
     """
     بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
       "placed"      = الأحداث اتحقنت كويس
@@ -883,6 +890,8 @@ def paste_text(text, target=None):
                       ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
     target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
     لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
+    from_snippet = النص جاي من اختصار صوتي — أي نسخة للحافظة بتتعلم إنها بتاعتنا
+    عشان مراقب الحافظة مايسجلهاش (نص الاختصار اتسجّل بالفعل كإملاء).
     """
     import winput
     if target is None:
@@ -898,6 +907,7 @@ def paste_text(text, target=None):
             # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
             if not _copy_to_clipboard(inj):
                 return "clip_failed"
+            _mark_owned_if_snippet(from_snippet)
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
     if cls == "secure":
@@ -907,6 +917,8 @@ def paste_text(text, target=None):
         # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
         # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
         backup = _copy_to_clipboard(inj)
+        if backup:
+            _mark_owned_if_snippet(from_snippet)
         if winput.type_text(inj):
             return "placed"
         return "failed" if backup else "clip_failed"
@@ -914,6 +926,7 @@ def paste_text(text, target=None):
         # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
         if not _copy_to_clipboard(inj):
             return "clip_failed"
+        _mark_owned_if_snippet(from_snippet)
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
         return "placed" if fn() else "failed"
     return "handoff"
@@ -1157,6 +1170,11 @@ class App:
                 dur = None
             cl = self.client()
             cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+            # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
+            # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
+            cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                              for s in (CFG.get("snippets") or [])
+                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
             # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
             # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
             lang = None if cur_mode == "translate" else CFG.get("language", "ar")
@@ -1166,10 +1184,13 @@ class App:
                 return
 
             bypass = False
+            snippet = None
             if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
                 # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
                 # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
+                # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
+                # يندسّ في خانة باسورد.
                 out = text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
@@ -1177,17 +1198,25 @@ class App:
             elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
-            elif CFG.get("polish", True):
-                if smart.should_bypass(text, cur_mode, CFG):
-                    # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
-                    # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
-                    out = smart.light_clean(text)
-                    bypass = True
-                else:
-                    # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
-                    out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
             else:
-                out = text
+                # F8 (الوضع العادي): لو الكلام كله اختصار صوتي محفوظ، النص بيتوسّع
+                # لنص الاختصار حرفيًا — من غير أي لفة موديل ولا تنضيف، لأن النص
+                # المخزّن (IBAN/عنوان/إيميل) ممن يتغيّر ولو بحرف. بيعتمد على
+                # التطبيع مش على التطابق الحرفي.
+                snippet = smart.match_snippet(text, CFG.get("snippets"))
+                if snippet is not None:
+                    out = snippet.get("text", "")
+                elif CFG.get("polish", True):
+                    if smart.should_bypass(text, cur_mode, CFG):
+                        # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
+                        # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
+                        out = smart.light_clean(text)
+                        bypass = True
+                    else:
+                        # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
+                        out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
+                else:
+                    out = text
 
             # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
             # قبل تصنيف الهدف. الاستعلام الأخير ده هو اللي بيحدد مكان الكتابة.
@@ -1212,18 +1241,25 @@ class App:
             # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
             # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
             if (cur_mode == "normal" and CFG.get("polish", True)
+                    and snippet is None
                     and not smart.is_dev_app(op.target_app, CFG)
                     and target[0] not in ("terminal", "secure")):
                 out = smart.fix_mixed(out)
                 target = (target[0], target[1], out)
             rid = None
             if not secure:
-                rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
+                # F8: في السجل النتيجة بتظهر «[اختصار] <المفتاح>» — مش نص الاختصار
+                # الكامل — عشان المستخدم يعرف إن اللي اتكتب ده كان اختصار مش إملاء.
+                history_result = ("[اختصار] " + str(snippet.get("trigger") or "")) if snippet is not None else out
+                rid = history_add(cur_mode, text, history_result, dur, engine=cl.engine(),
                                   bypass=bypass, app=op.target_app)
                 self.on_text(out)
             res = None
             if not secure or CFG.get("auto_paste", True):
-                res = paste_text(out, target)
+                if snippet is not None:
+                    res = paste_text(out, target, from_snippet=True)
+                else:
+                    res = paste_text(out, target)
                 if not secure and res == "clip_failed":
                     self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
                 elif not secure and res in ("failed", "handoff"):

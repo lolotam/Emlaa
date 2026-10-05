@@ -17,6 +17,7 @@ const S = {
   clipSel: new Set(),
   clipLimit: 200,
   provider: null,
+  snipEdit: -1,
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة" };
@@ -29,6 +30,7 @@ const ICON = {
   check: '<svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
@@ -106,7 +108,7 @@ function go(page) {
   $("#main").scrollTop = 0;
   if (page === "history") renderHistory();
   if (page === "clipboard") loadClips();
-  if (page === "dictionary") renderDict();
+  if (page === "dictionary") { renderDict(); renderSnippets(); }
   if (page === "settings") fillSettings();
   updateBulk();
 }
@@ -560,6 +562,68 @@ $("#dictList").addEventListener("click", e => {
   const words = [...(S.boot.cfg.dictionary || [])];
   words.splice(Number(b.dataset.i), 1);
   saveDict(words);
+});
+
+/* ═══════════ الاختصارات الصوتية F8 ═══════════ */
+function snippetRowHTML(sn, i) {
+  const flat = String(sn.text || "").replace(/\s+/g, " ").trim();
+  const preview = flat.length > 40 ? flat.slice(0, 40) + "…" : flat;
+  return `<div class="snip-row" data-i="${i}">
+    <span class="snip-trigger">${esc(sn.trigger)}</span>
+    <span class="snip-text">${esc(preview)}</span>
+    <button class="icon-btn snip-edit" type="button" title="تعديل">${ICON.edit}</button>
+    <button class="icon-btn del snip-del" type="button" title="مسح">${ICON.x}</button>
+  </div>`;
+}
+function renderSnippets() {
+  const list = S.boot.cfg.snippets || [];
+  $("#snipList").innerHTML = list.length
+    ? list.map(snippetRowHTML).join("")
+    : `<div class="dict-empty">مفيش اختصارات لسه. ضيف جملة قصيرة والنص اللي بيتكتب مكانها.</div>`;
+}
+function snipFormReset() {
+  S.snipEdit = -1;
+  $("#snipInput").value = "";
+  $("#snipText").value = "";
+  $("#snipAddBtn").textContent = "إضافة";
+}
+async function saveSnippets(items) {
+  S.boot.cfg.snippets = await api().snippets_set(items);
+  renderSnippets();
+}
+$("#snipForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const trigger = $("#snipInput").value.trim();
+  const text = $("#snipText").value;
+  if (!trigger || !text.trim()) return;
+  const items = [...(S.boot.cfg.snippets || [])];
+  if (S.snipEdit >= 0) items[S.snipEdit] = { trigger, text };
+  else items.push({ trigger, text });
+  await saveSnippets(items);
+  snipFormReset();
+  $("#snipInput").focus();
+});
+$("#snipList").addEventListener("click", e => {
+  const row = e.target.closest(".snip-row");
+  if (!row) return;
+  const i = Number(row.dataset.i);
+  const items = [...(S.boot.cfg.snippets || [])];
+  if (e.target.closest(".snip-del")) {
+    items.splice(i, 1);
+    saveSnippets(items);
+    // الصف اللي بيتعدّل لو جه بعد المحذوف، رقمه نزل واحد — غير كده الحفظ بيكتب في مكان غلط
+    if (S.snipEdit === i) snipFormReset();
+    else if (S.snipEdit > i) S.snipEdit -= 1;
+    return;
+  }
+  if (e.target.closest(".snip-edit")) {
+    const sn = items[i];
+    S.snipEdit = i;
+    $("#snipInput").value = sn.trigger;
+    $("#snipText").value = sn.text;
+    $("#snipAddBtn").textContent = "حفظ";
+    $("#snipInput").focus();
+  }
 });
 
 /* ═══════════ الإعدادات ═══════════ */

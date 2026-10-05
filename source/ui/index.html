@@ -241,6 +241,23 @@
         <div class="dict-meta"><span id="dictCount">0 كلمة</span><span class="muted">بتتبعت مع كل تسجيل عشان الموديل يكتبها بنفس الطريقة</span></div>
         <div class="dict-list" id="dictList"></div>
       </div>
+
+      <div class="card snip-card">
+        <div class="card-head">
+          <div>
+            <h2>الاختصارات الصوتية</h2>
+            <p class="sub">قول جملة قصيرة… إملاء يكتب مكانها نص جاهز (عنوان، إيميل، IBAN…).</p>
+          </div>
+        </div>
+        <form class="snip-form" id="snipForm">
+          <input class="input" id="snipInput" placeholder="الاختصار (مثلاً: إيميلي الشخصي)" maxlength="60" autocomplete="off">
+          <textarea class="textarea" id="snipText" placeholder="النص اللي يتكتب مكانه…" rows="3"></textarea>
+          <div class="snip-actions">
+            <button class="cta cta-sm" type="submit" id="snipAddBtn">إضافة</button>
+          </div>
+        </form>
+        <div class="snip-list" id="snipList"></div>
+      </div>
     </section>
 
     <!-- الإعدادات -->

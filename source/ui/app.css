@@ -293,6 +293,24 @@ tr.open .clip-text { -webkit-line-clamp: unset; user-select: text; }
 .word button svg { width: 13px; height: 13px; }
 .dict-empty { color: var(--dim); font-size: 12.5px; padding: 8px 2px; }
 
+/* ── الاختصارات الصوتية ── */
+.snip-card { margin-top: 14px; }
+.snip-card .card-head h2 { font-size: 15px; }
+.snip-form { display: flex; flex-direction: column; gap: 10px; }
+.snip-actions { display: flex; gap: 8px; }
+.textarea { width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md);
+            color: var(--fg); outline: 0; resize: vertical; min-height: 64px; font: inherit; user-select: text; }
+.textarea:focus { border-color: var(--line-2); }
+.textarea::placeholder { color: var(--dim); }
+.snip-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.snip-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg);
+            border: 1px solid var(--line); border-radius: var(--r-md); }
+.snip-trigger { flex: none; max-width: 220px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis; unicode-bidi: plaintext; }
+.snip-text { flex: 1; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden;
+             text-overflow: ellipsis; unicode-bidi: plaintext; text-align: start; }
+.snip-row .icon-btn { flex: none; }
+
 /* ── الإعدادات ── */
 .set-card { margin-bottom: 12px; }
 .set-card h2 { margin-bottom: 12px; }
