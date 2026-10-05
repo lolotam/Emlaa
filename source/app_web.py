@@ -777,6 +777,7 @@ class Api:
         """حالة الموديل المحلي + قايمة الموديلات المتاحة بأحجامها بالميجا."""
         return {
             "installed": offline.installed(),
+            "residual": offline.residual(),   # ملفات باقية من تثبيت بايظ — الإزالة تفضل متاحة
             "mode": core.CFG.get("offline_mode", "fallback"),
             "model": core.CFG.get("offline_model", ""),
             "models": [{"id": m, "size": round(sz / 1_000_000)}

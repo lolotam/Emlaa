@@ -326,6 +326,31 @@ class TestRemove(_BaseCase):
         self.assertFalse(os.path.exists(os.path.join(core.BASE, "offline", "manifest.json")))
 
 
+class TestDamagedPackCleanup(_BaseCase):
+    """تثبيت بايظ (مانيڨست بايظ/ملف ناقص): installed() = None بس الإزالة لازم تشيل الملفات."""
+
+    def test_residual_false_on_clean_base(self):
+        self.assertFalse(offline.residual())
+
+    def test_remove_clears_files_when_manifest_is_unreadable(self):
+        root = self._install("base")
+        with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write("{مش json")
+        _write(os.path.join(root, "bin", "ggml.dll"), b"DLL")
+        self.assertIsNone(offline.installed())
+        self.assertTrue(offline.residual())
+        offline.remove()
+        self.assertFalse(offline.residual())
+        for rel in ("bin/whisper-cli.exe", "bin/ggml.dll", "models/base.bin", "manifest.json"):
+            self.assertFalse(os.path.exists(os.path.join(root, rel)), rel)
+
+    def test_remove_keeps_unknown_user_files(self):
+        root = self._install("base")
+        _write(os.path.join(root, "models", "notes.txt"), b"mine")
+        offline.remove()
+        self.assertTrue(os.path.exists(os.path.join(root, "models", "notes.txt")))
+
+
 # ── احتواء المانيڨست (N4) ────────────────────────────────────────────────────
 class TestManifestContainment(_BaseCase):
     def test_installed_none_when_model_not_known(self):

@@ -299,12 +299,36 @@ def _remove_inside(root, rels):
             pass
 
 
+def _known_leftovers(bin_dir):
+    """
+    ملفات الباك اللي بنعرفها من غير مانيڨست: whisper-cli.exe والـdll في bin/
+    (الفولدر ده بتاعنا لوحدنا) وموديلات MODELS — عشان تثبيت بايظ يتشال برضه.
+    """
+    rels = ["models/" + m + ".bin" for m in MODELS] + ["bin/whisper-cli.exe"]
+    try:
+        rels += ["bin/" + n for n in os.listdir(bin_dir) if n.lower().endswith(".dll")]
+    except OSError:
+        pass
+    return rels
+
+
+def residual():
+    """فيه ملفات باك على الجهاز (حتى لو التثبيت بايظ)؟ — عشان زرار الإزالة يفضل متاح."""
+    bin_dir, model_dir, staging, manifest_path = _dirs()
+    root = os.path.dirname(manifest_path)
+    if os.path.exists(manifest_path):
+        return True
+    return any(os.path.exists(os.path.join(root, rel)) for rel in _known_leftovers(bin_dir))
+
+
 def remove():
     """بيمسح الموديل والـbin والمانيڨست المثبّتين — تحت اللوك عشان ميتعاركش مع تنزيل."""
     with _lock:
         bin_dir, model_dir, staging, manifest_path = _dirs()
-        # بنعرف الملفات من المانيڨست عشان مانمسحش حاجة مش بتاعتنا
-        _remove_inside(os.path.dirname(manifest_path), _manifest_files(manifest_path))
+        # ملفات المانيڨست + الملفات اللي بنعرفها بالاسم — مانيڨست بايظ أو ناقص
+        # ميسيبش 150–190 MB على الجهاز من غير طريقة تشيلهم من الواجهة
+        root = os.path.dirname(manifest_path)
+        _remove_inside(root, set(_manifest_files(manifest_path)) | set(_known_leftovers(bin_dir)))
         for p in (manifest_path,):
             try:
                 os.remove(p)

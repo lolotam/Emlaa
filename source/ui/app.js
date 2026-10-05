@@ -784,7 +784,7 @@ function renderOffline(keepForm) {
   const installed = o.installed;
   const sz = installed ? ((o.models || []).find(m => m.id === installed) || {}).size : null;
   $("#offlineStatus").textContent = installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت";
-  $("#offlineRemove").disabled = !installed;
+  $("#offlineRemove").disabled = !installed && !o.residual;
   const prevModel = $("#offlineModel").value, prevMode = $("#offlineMode").value;
   $("#offlineModel").innerHTML = (o.models || []).map(m =>
     `<option value="${esc(m.id)}">${esc(m.id)} ≈ ${m.size} MB — ${OFFLINE_MODEL_LABEL[m.id] || ""}</option>`).join("");
@@ -822,6 +822,7 @@ $("#offlineDownload").addEventListener("click", async () => {
 $("#offlineRemove").addEventListener("click", async () => {
   await api().offline_remove();
   refreshOffline(true);
+  refreshBoot();          // وضع «دايمًا» من غير مفتاح: من غير الموديل البرنامج مبقاش يقدر يشتغل
   toast("اتشال الموديل");
 });
 
