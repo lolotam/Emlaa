@@ -80,17 +80,28 @@ class TestUnavailableModelsAreSkipped(unittest.TestCase):
 
     def test_all_unavailable_falls_back_to_the_full_list(self):
         # لو كل الموديلات اتعلّمت مش متاحة بنجرّب القايمة كاملة تاني (يمكن الحساب اتغيّر)
+        scope = ("groq", providers._key_fingerprint("test-key"))
         for m in self.chain:
-            providers._UNAVAILABLE_MODELS.add(("groq", m))
+            providers._UNAVAILABLE_MODELS.add(scope + (m,))
         ok = {m: "تمام" for m in self.chain}
         out, calls = self._run(ok)
         self.assertEqual(out, "تمام")
         self.assertEqual(calls[0][0], self.chain[0])
 
     def test_unavailable_is_per_provider(self):
-        providers._UNAVAILABLE_MODELS.add(("openai", self.chain[0]))
+        providers._UNAVAILABLE_MODELS.add(("openai", providers._key_fingerprint("test-key"), self.chain[0]))
         _, calls = self._run({m: "تمام" for m in self.chain})
         self.assertEqual(calls[0][0], self.chain[0])     # مزوّد تاني — Groq لسه بيجرّبه
+
+    def test_unavailable_is_per_key(self):
+        # مفتاح مجاني اتعلّم عليه الموديل مش متاح — مفتاح Enterprise جديد من غير ريستارت
+        # لازم يجرّبه تاني (ممكن يكون متاح له)
+        everything_busy = {m: RATE for m in self.chain}
+        everything_busy[self.chain[-1]] = GONE
+        self._run(everything_busy)
+        self.cl = providers.Client("groq", "enterprise-key")
+        _, calls = self._run({m: (RATE if m != self.chain[-1] else "تمام") for m in self.chain})
+        self.assertEqual(calls[-1][0], self.chain[-1])
 
 
 if __name__ == "__main__":

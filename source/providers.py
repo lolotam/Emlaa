@@ -378,10 +378,17 @@ def meta(pid):
 
 
 # موديلات الشات اللي المزوّد رد عليها «مش موجود/مش متاح لحسابك» في الجلسة دي —
-# (provider_id, model). بنشيلها من السلسلة عشان مانضيّعش عليها نداء كل مرة، والأهم:
-# المحاولة التانية بعد الانتظار (للموديل الأخير بس) تروح لآخر موديل شغّال مش لموديل
-# ميت. القايمة نفسها مبتتغيرش: مفتاح تاني (Enterprise مثلًا) ممكن يكون الموديل متاح له.
+# (provider_id, بصمة المفتاح, model). بنشيلها من السلسلة عشان مانضيّعش عليها نداء كل
+# مرة، والأهم: المحاولة التانية بعد الانتظار (للموديل الأخير بس) تروح لآخر موديل شغّال
+# مش لموديل ميت. مربوطة بالمفتاح: لو المستخدم غيّر مفتاحه لمفتاح Enterprise من غير ما
+# يقفل البرنامج، الموديل ممكن يبقى متاح للمفتاح الجديد.
 _UNAVAILABLE_MODELS = set()
+
+
+def _key_fingerprint(key):
+    """بصمة قصيرة للمفتاح — عشان الكاش يتربط بالحساب من غير ما نخزّن المفتاح نفسه تاني."""
+    import hashlib
+    return hashlib.sha256(str(key or "").encode("utf-8")).hexdigest()[:12]
 _UNAVAILABLE_MARKERS = ("model_not_found", "does not have access", "decommission",
                         "does not exist")
 
@@ -873,7 +880,8 @@ class Client:
         candidates = _model_list(self.m["chat"], self.m.get("chat_alt"))
         # الموديلات اللي اتأكدنا إنها مش متاحة للمفتاح ده بتتشال — بس لو كله اتشال
         # بنجرّب القايمة كاملة (يمكن الحساب اتغيّر) بدل ما نرجع النص الخام من غير نداء
-        live = [m for m in candidates if (self.id, m) not in _UNAVAILABLE_MODELS]
+        scope = (self.id, _key_fingerprint(self.key))
+        live = [m for m in candidates if scope + (m,) not in _UNAVAILABLE_MODELS]
         candidates = live or candidates
         for i, model in enumerate(candidates):
             last = i == len(candidates) - 1
@@ -891,7 +899,7 @@ class Client:
             except Exception as e:
                 s = str(e).lower()
                 if any(k in s for k in _UNAVAILABLE_MARKERS):
-                    _UNAVAILABLE_MODELS.add((self.id, model))
+                    _UNAVAILABLE_MODELS.add(scope + (model,))
                 if not last and (
                     "model_not_found" in s or "does not have access" in s
                     or "decommission" in s or "404" in s or "blocked at the project level" in s
