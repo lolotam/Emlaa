@@ -35,6 +35,8 @@ jobs:
         run: python -c "import comtypes.client; comtypes.client.GetModule('UIAutomationCore.dll')"
 
       # A hung test would otherwise run into the job timeout, and a cancelled job keeps
-      # no log; after 4 minutes faulthandler prints every thread's stack and exits
+      # no log; after 4 minutes faulthandler prints every thread's stack and exits, and
+      # the step timeout fails the step (keeping its log) if even that does not end it
       - name: Unit tests
+        timeout-minutes: 5
         run: python -X faulthandler -c "import faulthandler, unittest; faulthandler.dump_traceback_later(240, exit=True); unittest.main(module=None, argv=['unittest', 'discover', '-s', 'tests', '-p', 'unit_*.py', '-v'])"
