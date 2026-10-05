@@ -294,6 +294,31 @@ class TestProcessEdit(unittest.TestCase):
         self.assertEqual(app.events[-1], ("err", "مكتبتش التعديل — الهدف بقى خانة باسورد"))
         self.assertFalse(app.busy)
 
+    def test_probe_end_password_refuses_before_model(self):
+        # N2: لو بروب التسجيل (begin/end) شاف خانة باسورد وقت التسجيل، التعليمات
+        # ممن توصل للموديل إطلاقًا — رفض قبل cl.transcribe.
+        op = core.Operation(mode="edit", selection="نص محدد أصلي")
+        op.probe["end"] = True
+        app, fake, hist, rsave, paste_fn, _ = self._run(op)
+        self.assertEqual(fake.calls, [], "التعليمات ممن توصل للموديل")
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        paste_fn.assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "مينفعش تعديل خانة باسورد"))
+        self.assertFalse(app.busy)
+
+    def test_probe_begin_password_refuses_before_model(self):
+        # N2: نفس الرفض لو "begin" هو اللي شاف الباسورد.
+        op = core.Operation(mode="edit", selection="نص محدد أصلي")
+        op.probe["begin"] = True
+        app, fake, hist, rsave, paste_fn, _ = self._run(op)
+        self.assertEqual(fake.calls, [], "التعليمات ممن توصل للموديل")
+        hist.assert_not_called()
+        rsave.assert_not_called()
+        paste_fn.assert_not_called()
+        self.assertEqual(app.events[-1], ("err", "مينفعش تعديل خانة باسورد"))
+        self.assertFalse(app.busy)
+
 
 # ── بداية التعديل: أسر التحديد والرفض ──────────────────────────────────────────
 class TestBeginEdit(unittest.TestCase):
@@ -386,6 +411,41 @@ class TestBeginEdit(unittest.TestCase):
         self.assertEqual(app._op.selection, "نص محدد")
         self.assertEqual(app._op.hwnd, 7)
         self.assertIn(("rec", "edit"), app.events)
+
+    def test_cancel_sets_capture_cancel_event(self):
+        # N5: حدث الأسر بيتحفظ على op.probe["cancel"]، وcancel() بيقفله فورًا —
+        # مش بس بعد الـ1.5 ثانية بتاع join في _begin_edit.
+        app = make_app()
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.capture_target",
+                           return_value={"hwnd": 7, "runtime_id": (3,), "class": "Edit",
+                                         "selection": "نص محدد", "selection_hash": "abc"}):
+            app.begin("edit")
+            self.assertTrue(_wait_until(lambda: app._op is not None and "cancel" in app._op.probe, 3))
+        op = app._op
+        self.assertIsInstance(op.probe.get("cancel"), threading.Event)
+        app.cancel()
+        self.assertTrue(op.probe["cancel"].is_set(), "cancel() لازم يقفل حدث الأسر")
+
+    def test_end_sets_capture_cancel_event(self):
+        # N5: end() برضه بيقفل op.probe["cancel"] — عشان أسر edit المعلق في UIA
+        # يبطل فورًا من غير ما يستنى.
+        app = make_app()
+        app.rec.stop_result = None
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch("winput.capture_target",
+                           return_value={"hwnd": 7, "runtime_id": (3,), "class": "Edit",
+                                         "selection": "نص محدد", "selection_hash": "abc"}), \
+                mock.patch("winput.focused_info", return_value=GUI_FOCUS):
+            app.begin("edit")
+            self.assertTrue(_wait_until(lambda: app._op is not None and "cancel" in app._op.probe, 3))
+            op = app._op
+            app.end()
+        self.assertTrue(op.probe["cancel"].is_set(), "end() لازم يقفل حدث الأسر")
 
 
 # ── winput.same_target ─────────────────────────────────────────────────────────

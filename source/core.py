@@ -474,6 +474,31 @@ def _clip_watch_suppressed():
         return time.monotonic() < _clip_suppress_until
 
 
+def _clip_read_text(u32, k32, cf_unicodetext):
+    """
+    نص الحافظة الحالي عبر Win32 — None لو مقدرناش نقراه. مستقل عن _watch_once
+    عشان الاختبار يزوّد قراية مزيّفة من غير GlobalLock ولا wstring_at حقيقي.
+    """
+    import ctypes
+    text = None
+    for _ in range(5):                       # برنامج تاني ممكن يكون فاتحها
+        if u32.OpenClipboard(None):
+            try:
+                h = u32.GetClipboardData(cf_unicodetext)
+                if h:
+                    p = k32.GlobalLock(h)
+                    if p:
+                        try:
+                            text = ctypes.wstring_at(p)
+                        finally:
+                            k32.GlobalUnlock(h)
+            finally:
+                u32.CloseClipboard()
+            break
+        time.sleep(0.05)
+    return text
+
+
 class ClipboardWatcher:
     """
     بيراقب الحافظة (بيقرا رقم التغيير من الويندوز كل نص ثانية) وبيحفظ أي نص جديد.
@@ -507,42 +532,38 @@ class ClipboardWatcher:
         last = u32.GetClipboardSequenceNumber()
         while not self._stop.wait(0.5):
             try:
-                seq = u32.GetClipboardSequenceNumber()
-                if seq == last or not CFG.get("clipboard_history", True):
-                    last = seq
-                    continue
-                # M4: مكبوت = ممن نسجّل التغيير وممن نقدّم last — لما الكبس ينتهي
-                # بنعيد تقييم الرقم الحالي من أول وجديد.
-                if _clip_watch_suppressed():
-                    continue
-                last = seq
-                if _clip_is_owned(seq):
-                    continue
-                if u32.IsClipboardFormatAvailable(excl) or not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
-                    continue
-                text = None
-                for _ in range(5):                       # برنامج تاني ممكن يكون فاتحها
-                    if u32.OpenClipboard(None):
-                        try:
-                            h = u32.GetClipboardData(CF_UNICODETEXT)
-                            if h:
-                                p = k32.GlobalLock(h)
-                                if p:
-                                    try:
-                                        text = ctypes.wstring_at(p)
-                                    finally:
-                                        k32.GlobalUnlock(h)
-                        finally:
-                            u32.CloseClipboard()
-                        break
-                    time.sleep(0.05)
-                if text and text.strip():
-                    e = clip_add(text, _foreground_app())
-                    if e and self.on_new:
-                        self.on_new(e)
+                last = self._watch_once(u32, k32, excl, CF_UNICODETEXT, last)
             except Exception as e:
                 log_error(e, "clipboard/watch")
                 time.sleep(2)
+
+    def _watch_once(self, u32, k32, excl, cf_unicodetext, last):
+        """
+        تكرار واحد من المراقبة: بيرجّع قيمة last الجديدة. مستقل عن _run عشان
+        الاختبار يقدر يشغّل دورة واحدة بـuser32 مزيّف من غير ثريد ولا نوم حقيقي.
+        """
+        seq = u32.GetClipboardSequenceNumber()
+        if seq == last or not CFG.get("clipboard_history", True):
+            return seq
+        # M4: مكبوت = ممن نسجّل التغيير وممن نقدّم last — لما الكبس ينتهي
+        # بنعيد تقييم الرقم الحالي من أول وجديد.
+        if _clip_watch_suppressed():
+            return last
+        if _clip_is_owned(seq):
+            return seq
+        if u32.IsClipboardFormatAvailable(excl) or not u32.IsClipboardFormatAvailable(cf_unicodetext):
+            return seq
+        text = _clip_read_text(u32, k32, cf_unicodetext)
+        # N3: بعد القراية نعيد قراية رقم التسلسل — لو اتغيّر في النص (نسخة تانية
+        # وصلت جوّه قرايتنا) فالقراية بتاعت نص قديم/حد تاني → نتجاهلها ومبنقدّمش
+        # last، عشان التكرار الجاي يعيد تقييم الرقم الحالي من أول.
+        if u32.GetClipboardSequenceNumber() != seq:
+            return last
+        if text and text.strip():
+            e = clip_add(text, _foreground_app())
+            if e and self.on_new:
+                self.on_new(e)
+        return seq
 
 
 def _foreground_app():
@@ -999,6 +1020,21 @@ def _probe_password(probe, key):
     t.start()
 
 
+def _probe_password_seen(op, timeout=1.0):
+    """
+    L1 (خصوصية): بيستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
+    (أقصى timeout ثانية في الإجمالي) وبيرجّع True لو أي واحد فيهم شاف خانة
+    باسورد. مشتركة بين process و_process_edit عشان نفس السلوك في كل الأوضاع.
+    """
+    probe = getattr(op, "probe", {})
+    deadline = time.time() + timeout
+    for t in probe.get("threads") or ():
+        left = deadline - time.time()
+        if left > 0:
+            t.join(left)
+    return probe.get("begin") is True or probe.get("end") is True
+
+
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Operation:
@@ -1172,9 +1208,12 @@ class App:
         """
         import winput
         import dataclasses
-        # M2: حدث إلغاء بيوصل لجوّه الأسر — لو فاضت الميزانية أو العملية بقت
-        # قديمة، ثريد الأسر المتأخر ممن يلمس الحافظة ولا يحقن Ctrl+C بعد كده.
+        # N5: حدث الإلغاء بيتحفظ على العملية نفسها (op.probe["cancel"]) مش متغير
+        # محلي — عشان end()/cancel() يقدروا يقفلوه فورًا ويبطلوا أسر معلق في UIA،
+        # مش بس بعد الـjoin بتاع الـ1.5 ثانية. برضه M2: بيوصل لجوّه الأسر — لو
+        # فاضت الميزانية أو العملية بقت قديمة، ثريد الأسر بيبطل قبل ما يلمس الحافظة.
         cancel = threading.Event()
+        op.probe["cancel"] = cancel
         captured = {}
 
         def _capture():
@@ -1232,6 +1271,11 @@ class App:
         # الريكوردر — عشان لو المستخدم كان واقف في خانة باسورد وقت ما وقّف.
         if op is not None:
             _probe_password(op.probe, "end")
+            # N5: لو في أسر edit لسه شغّال (معلق في UIA)، بنلغيه حالًا — مش
+            # نستنى الـ1.5 ثانية بتاع join في _begin_edit.
+            ev = op.probe.get("cancel")
+            if ev is not None:
+                ev.set()
         beep(500, 90)
         try:
             wav = self.rec.stop()
@@ -1252,8 +1296,15 @@ class App:
             if not self.recording:
                 return
             self.recording = False
+            op = self._op
             self._op = None                   # العملية اتلغت — مفيش ما يستلمها في end()
             self._active_key = None           # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
+            # N5: بنقفل حدث أسر edit لو لسه شغّال — جوّه القفل مباشرة بعد ما
+            # شيلنا العملية، عشان الأسر المعلق في UIA يبطل فورًا مش بعد الـjoin.
+            if op is not None:
+                ev = op.probe.get("cancel")
+                if ev is not None:
+                    ev.set()
             # الديسكارد جوّه القفل نفسه: بيقلّب flags ويمسح frames بس، فآمن هنا.
             # لو فضل برّه، begin() على ثريد تاني كان ممكن يبدأ تسجيل جديد في الفجوة،
             # والديسكارد المتأخر كان هيمسح التسجيل الجديد.
@@ -1280,18 +1331,12 @@ class App:
             # L1: نستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
             # (أقصى ثانية واحدة في الإجمالي) — القراية هنا وحدها مش كفاية لأن
             # الفوكس ممكن يكون اتنقل بين وقت التسجيل وبداية التفريغ.
-            probe = getattr(op, "probe", {})
-            deadline = time.time() + 1.0
-            for t in probe.get("threads") or ():
-                left = deadline - time.time()
-                if left > 0:
-                    t.join(left)
             import winput
             info = winput.focused_info()
             info["exe"] = _foreground_app()
             # أي واحد (begin أو end أو القراية الحالية) شاف باسورد = العملية
             # محمية طول عمرها — مش بنخفّضها أبدًا.
-            early_secure = (probe.get("begin") is True or probe.get("end") is True
+            early_secure = (_probe_password_seen(op)
                             or info.get("is_password") is True)
             self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
@@ -1427,6 +1472,12 @@ class App:
         """
         import winput
         self.on_state("work", "edit")
+        # N2: نفس فحص بروب التسجيل بتاع process — لو begin/end شافوا خانة باسورد
+        # (أثناء التسجيل نفسه)، التعليمات ممن توصل للموديل إطلاقًا، لأن التحديد
+        # ممكن يكون باسورد متسرب من خانة المستخدم اتنقل عنها.
+        if _probe_password_seen(op):
+            self.on_state("err", "مينفعش تعديل خانة باسورد")
+            return
         cl = self.client()
         cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
         cl.vocab_extra = [str(s.get("trigger") or "").strip()

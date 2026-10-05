@@ -655,7 +655,9 @@ class Api:
             clean.append({"trigger": trigger[:60], "text": text[:2000]})
         core.CFG["snippets"] = clean[:100]
         core.save_config(core.CFG)
-        return clean
+        # N7: بنرجّع نفس القايمة المقصوصة اللي اتحفظت (clean[:100]) مش الكاملة —
+        # عشان الواجهة تفضل متطابقة مع اللي فعلاً على القرص.
+        return clean[:100]
 
     # ── التسجيل ──
     def record(self, mode="normal"):

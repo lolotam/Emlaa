@@ -253,6 +253,20 @@ class TestSnippetsSet(unittest.TestCase):
         self.assertEqual(clean, [{"trigger": "إيميلي", "text": "a@b.com"}])
         self.assertEqual(saved["snippets"], clean)
 
+    def test_returns_truncated_list(self):
+        # N7: بنرجّع نفس القايمة المقصوصة اللي اتحفظت (clean[:100]) مش الكاملة —
+        # الواجهة لازم تفضل متطابقة مع اللي فعلاً على القرص.
+        from app_web import Api
+        api = Api.__new__(Api)
+        items = [{"trigger": f"ك{i}", "text": f"نص{i}"} for i in range(105)]
+        with mock.patch.object(core, "CFG", {}), mock.patch.object(core, "save_config") as sv:
+            clean = api.snippets_set(items)
+            saved = sv.call_args[0][0]
+        self.assertEqual(len(clean), 100)
+        self.assertEqual(clean, clean[:100])
+        self.assertEqual(saved["snippets"], clean)
+        self.assertEqual(saved["snippets"][-1]["trigger"], "ك99")
+
 
 if __name__ == "__main__":
     unittest.main()

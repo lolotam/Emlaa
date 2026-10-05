@@ -532,6 +532,10 @@ def _selection_via_clipboard(cancel=None):
     # M3: نسجل الحافظة القديمة بعد ما الموديفايرز تتساب — لو المستخدم لسه ماسك
     # وساب بعد كده، القيمة دي هي اللي نرجعها (مش قيمة أقدم من وقت الدوسة).
     old = _read_clipboard_text()
+    # N4a: قراية القديم فشلت (None) = مفيش سناب شوت نرجع بيه — منحقنش Ctrl+C
+    # خالص (منعرفش نرجع الحافظة لاحقًا، فممن نكتب فوقها).
+    if old is None:
+        return ""
     if cancel is not None and cancel.is_set():
         return ""
     # M4: نكب مراقب الحافظة قبل ما نحقن Ctrl+C — النص اللي بينسخ لازم مايتسجلش
@@ -546,15 +550,23 @@ def _selection_via_clipboard(cancel=None):
     seq_copy = _wait_clipboard_change(seq_before)
     if seq_copy is None:
         return ""                          # مفيش تحديد اتنسخ — الحافظة زي ما هي
-    new = _read_clipboard_text()
-    if _clipboard_sequence() == seq_copy:  # لسه بتاعتنا → نرجّع نص المستخدم
+    # N4b: من هنا ومع بعدين Ctrl+C اتبعت — الرجوع (لو الحافظة لسه بتاعتنا) لازم
+    # يحصل في كل المسارات، حتى لو اتلغينا بعد الحقن، عشان منسيبش التحديد على
+    # الحافظة. try/finally بيضمن ده.
+    try:
+        new = _read_clipboard_text()
+        # N3: بعد قراية النص المحدد، رقم التسلسل لازم يفضل هو هو اللي قررنا
+        # عليه — لو اتغيّر، النص اللي قريناه ممكن يكون بتاع حد تاني → نفشل.
+        if _clipboard_sequence() != seq_copy:
+            return ""
         if cancel is not None and cancel.is_set():
-            return ""                       # M2: اتلغينا قبل الرجوع — منلمسش الحافظة
-        # M3: قراية القديم فشلت (None) = منعرفش نرجّع إيه — ممن نكتب فوق الحافظة.
-        if old is not None:
+            return ""                       # M2: اتلغينا بعد الحقن — الرجوع لسه في finally
+        return new or ""
+    finally:
+        # M3: القديم مقروء (None اترفض فوق) ولسه بتاعتنا → نرجّع نص المستخدم.
+        if _clipboard_sequence() == seq_copy and old is not None:
             if _write_clipboard_text(old):
                 _mark_owned(_clipboard_sequence())
-    return new or ""
 
 
 def _selection_hash(text):
@@ -580,27 +592,54 @@ def capture_target(cancel=None):
         pass
     try:
         el = _focused_element()
-        if el is not None:
-            out["runtime_id"] = _runtime_id(el)
-            out["class"] = el.CurrentClassName or ""
-            # M1: باسورد؟ على نفس العنصر اللي بنقرا منه التحديد. لو باسورد (أو
-            # مقدرناش نقرا) منرفض من غير ما نقرا التحديد ولا نحقن Ctrl+C.
-            if _element_password(el) is not False:
-                out["password"] = True
-                return out
-            sel = _selection_text(el)
-            out["selection"] = sel if sel is not None else ""
-            out["_uia_unsupported"] = sel is None
     except Exception as e:
         try:
             import core
             core.log_error(e, "capture/uia")
         except Exception:
             pass
+        el = None
+    allow_fallback = False
+    if el is not None:
+        # N1: باسورد الأول — قبل أي خاصية تانية (CurrentClassName/GetRuntimeId).
+        # قراية IsPassword بتترفع لمفتاح مستقل بيرجّع True/False/None من غير ما
+        # يرمي، فمفيش خاصية قبلها تقدر تمنع الرفض وتسيّب الخطة البديلة تشتغل.
+        pw = _element_password(el)
+        if pw is not False:                  # True أو مجهول (None) → رفض
+            out["password"] = True
+            return out
+        try:
+            out["runtime_id"] = _runtime_id(el)
+            out["class"] = el.CurrentClassName or ""
+        except Exception as e:
+            try:
+                import core
+                core.log_error(e, "capture/uia")
+            except Exception:
+                pass
+        sel = _selection_text(el)
+        out["selection"] = sel if sel is not None else ""
+        allow_fallback = sel is None
+    else:
+        # N1: العنصر مش متاح → بنسمح بالخطة البديلة بس بعد ما الموديفايرز تتساب
+        # وإعادة قراية العنصر مرة واحدة: لو رجع متاح، نفس قاعدة الباسورد عليه.
+        if cancel is not None and cancel.is_set():
+            pass
+        elif not wait_modifiers_released():
+            pass
+        else:
+            try:
+                el2 = _focused_element()
+            except Exception:
+                el2 = None
+            if el2 is not None:
+                if _element_password(el2) is not False:
+                    out["password"] = True
+                    return out
+            allow_fallback = True
     try:
-        if not out["selection"] and out.pop("_uia_unsupported", True):
+        if not out["selection"] and allow_fallback:
             out["selection"] = _selection_via_clipboard(cancel)
-        out.pop("_uia_unsupported", None)
     except Exception as e:
         try:
             import core

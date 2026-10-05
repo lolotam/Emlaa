@@ -17,7 +17,7 @@ const S = {
   clipSel: new Set(),
   clipLimit: 200,
   provider: null,
-  snipEdit: -1,
+  snipEditKey: null,
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
@@ -582,43 +582,61 @@ function renderSnippets() {
     : `<div class="dict-empty">مفيش اختصارات لسه. ضيف جملة قصيرة والنص اللي بيتكتب مكانها.</div>`;
 }
 function snipFormReset() {
-  S.snipEdit = -1;
+  S.snipEditKey = null;
   $("#snipInput").value = "";
   $("#snipText").value = "";
   $("#snipAddBtn").textContent = "إضافة";
 }
-async function saveSnippets(items) {
-  S.boot.cfg.snippets = await api().snippets_set(items);
-  renderSnippets();
+/* N6: سلسلة حفظ الاختصارات — التعديلات بتتنفّذ واحدة واحدة، وكل تعديل بيقرا
+   القايمة اللي رجّعها آخر حفظ ناجح (S.boot.cfg.snippets) مش القايمة القديمة
+   وقت الدوسة. كده حذفين متتاليين سريعين عمرهم ما يرجّعوا اختصار اتمسح. */
+let snipChain = Promise.resolve();
+function queueSnippetMutation(mutator) {
+  // .catch: لو حفظ فشل، السلسلة متقفش — غير كده كل تعديل بعده كان بيتجاهل بصمت
+  snipChain = snipChain.then(async () => {
+    const next = mutator([...(S.boot.cfg.snippets || [])]);
+    if (!next) return;
+    S.boot.cfg.snippets = await api().snippets_set(next);
+    renderSnippets();
+  }).catch(() => { toast("مقدرتش أحفظ الاختصارات — جرّب تاني"); renderSnippets(); });
+  return snipChain;
 }
-$("#snipForm").addEventListener("submit", async e => {
+// التعديلات بتمسك الاختصار بمفتاحه (trigger) مش برقم الصف: الطابور بيتنفّذ على القايمة
+// بعد آخر حفظ، فرقم صف اتقرا قبل حذف سابق ممكن يشاور على اختصار تاني خالص
+const snipIndex = (items, key) => items.findIndex(s => s.trigger === key);
+$("#snipForm").addEventListener("submit", e => {
   e.preventDefault();
   const trigger = $("#snipInput").value.trim();
   const text = $("#snipText").value;
   if (!trigger || !text.trim()) return;
-  const items = [...(S.boot.cfg.snippets || [])];
-  if (S.snipEdit >= 0) items[S.snipEdit] = { trigger, text };
-  else items.push({ trigger, text });
-  await saveSnippets(items);
+  const editKey = S.snipEditKey;
+  queueSnippetMutation(items => {
+    const i = editKey == null ? -1 : snipIndex(items, editKey);
+    if (i >= 0) items[i] = { trigger, text };
+    else items.push({ trigger, text });
+    return items;
+  });
   snipFormReset();
   $("#snipInput").focus();
 });
 $("#snipList").addEventListener("click", e => {
   const row = e.target.closest(".snip-row");
   if (!row) return;
-  const i = Number(row.dataset.i);
-  const items = [...(S.boot.cfg.snippets || [])];
+  const sn = (S.boot.cfg.snippets || [])[Number(row.dataset.i)];
+  if (!sn) return;
   if (e.target.closest(".snip-del")) {
-    items.splice(i, 1);
-    saveSnippets(items);
-    // الصف اللي بيتعدّل لو جه بعد المحذوف، رقمه نزل واحد — غير كده الحفظ بيكتب في مكان غلط
-    if (S.snipEdit === i) snipFormReset();
-    else if (S.snipEdit > i) S.snipEdit -= 1;
+    const key = sn.trigger;
+    queueSnippetMutation(items => {
+      const i = snipIndex(items, key);
+      if (i < 0) return null;                 // اتمسح قبل كده
+      items.splice(i, 1);
+      return items;
+    });
+    if (S.snipEditKey === key) snipFormReset();
     return;
   }
   if (e.target.closest(".snip-edit")) {
-    const sn = items[i];
-    S.snipEdit = i;
+    S.snipEditKey = sn.trigger;
     $("#snipInput").value = sn.trigger;
     $("#snipText").value = sn.text;
     $("#snipAddBtn").textContent = "حفظ";
