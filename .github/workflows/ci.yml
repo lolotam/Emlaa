@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Windows: the app is Windows-only (ctypes.windll, UI Automation, SendInput)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile every source module
+        run: python -m compileall -q source
+
+      # Unit tests need no keys, network or microphone, but they patch these runtime
+      # modules (clipboard, keyboard hook, UI Automation), so the modules must be importable
+      - name: Install test dependencies
+        run: python -m pip install "pyperclip>=1.8.2" "pynput>=1.7.6" "comtypes>=1.4"
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p "unit_*.py" -v

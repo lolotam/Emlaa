@@ -22,13 +22,16 @@ const S = {
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة" };
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
-  translate: "بيترجم…", done: "اتكتب ✓", err: "في مشكلة", off: "محتاج مفتاح",
+  translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
 };
 const ICON = {
   copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg>',
   check: '<svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
+  download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
 };
 
 /* ═══════════ أدوات ═══════════ */
@@ -210,19 +213,82 @@ function renderChart() {
   }).join("");
 }
 
-/* مؤشّر طول التسجيل: أعمدة شكل موجة — عددها على قد المدة.
-   شكلها ثابت لكل تسجيل (من الـid) لكنه زخرفي — الصوت نفسه مش متخزّن. */
+/* مؤشّر طول التسجيل: أعمدة شكل موجة — عددها على قد المدة، وشكلها ثابت لكل تسجيل (من الـid).
+   آخر ١٠ تسجيلات صوتها متخزّن (i.audio): الموجة بتبقى زرار تشغيل، والأعمدة بتتلوّن مع التقدّم. */
 function waveHTML(i) {
-  if (!i.dur) return "";
-  const n = Math.max(8, Math.min(30, Math.round(i.dur * 1.6)));
+  if (!i.dur && !i.audio) return "";
+  const n = Math.max(8, Math.min(30, Math.round((i.dur || 0) * 1.6)));
   let seed = (i.id % 2147483647) || 7, bars = "";
   for (let k = 0; k < n; k++) {
     seed = (seed * 16807) % 2147483647;
     const env = Math.sin(Math.PI * (k + .5) / n);
     bars += `<i style="height:${Math.round(4 + (seed % 100) / 100 * 16 * (0.45 + env * .55))}px"></i>`;
   }
-  const sec = Math.round(i.dur);
-  return `<div class="wave" aria-hidden="true"><span class="wave-bars">${bars}</span><span class="wave-dur">${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}</span></div>`;
+  const sec = Math.round(i.dur || 0);
+  const dur = `<span class="wave-dur">${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}</span>`;
+  if (!i.audio) return `<div class="wave" aria-hidden="true"><span class="wave-bars">${bars}</span>${dur}</div>`;
+  return `<button class="wave playable" data-act="play" title="تشغيل التسجيل"><span class="wave-icon">${ICON.play}</span><span class="wave-bars">${bars}</span>${dur}</button>`;
+}
+
+/* مين فرّغ ومين نضّف: «Deepgram · nova-3 → Groq · qwen3.8-27b» (الموديل اللي اشتغل فعلًا) */
+function engineHTML(i) {
+  const e = i.engine;
+  if (!e || !e.stt) return "";
+  const short = m => String(m || "").split("/").pop();
+  const parts = [e.stt + (e.stt_model ? " · " + short(e.stt_model) : "")];
+  if (e.chat) parts.push(e.chat + (e.chat_model ? " · " + short(e.chat_model) : ""));
+  const full = [e.stt + (e.stt_model ? " " + e.stt_model : ""), e.chat ? e.chat + " " + (e.chat_model || "") : ""]
+    .filter(Boolean).join("  →  ");
+  return `<span class="engine" title="${esc(full)}">${esc(parts.join("  →  "))}</span>`;
+}
+
+/* ═══════════ تشغيل صوت التسجيل ═══════════ */
+const player = { id: null, audio: null };
+let playToken = 0;
+function paintWave(id) {
+  const el = document.querySelector(`.frow[data-id="${id}"] .wave.playable`);
+  if (!el) return;
+  const a = player.id === id ? player.audio : null;
+  const playing = !!a && !a.paused;
+  el.classList.toggle("playing", playing);
+  el.querySelector(".wave-icon").innerHTML = playing ? ICON.pause : ICON.play;
+  el.title = playing ? "إيقاف" : "تشغيل التسجيل";
+  const bars = el.querySelectorAll(".wave-bars i");
+  const on = a && a.duration ? Math.round(a.currentTime / a.duration * bars.length) : 0;
+  bars.forEach((b, k) => b.classList.toggle("on", k < on));
+}
+function stopPlayer() {
+  const id = player.id;
+  if (player.audio) player.audio.pause();
+  player.id = null;
+  player.audio = null;
+  if (id != null) paintWave(id);
+}
+/* مسح صف من السجل لازم يبطل أي تشغيل/تحميل ليه لسه شغّال: بنزوّد التوكن
+   عشان الرد الرايح يُهمَل، ونوقف أي Audio شغّال دلوقتي. */
+function invalidatePlayback() {
+  playToken++;
+  stopPlayer();
+}
+async function togglePlay(id) {
+  if (player.id === id && player.audio) {
+    return player.audio.paused ? player.audio.play() : player.audio.pause();
+  }
+  // دوسة تانية سريعة لازم تلغي الرد اللي لسه رايح — كل نداء بياخد توكن،
+  // وأي رد توكنه مش آخر واحد بيتهمل (غير كده كان اتنين Audio يشغلوا مع بعض).
+  const token = ++playToken;
+  stopPlayer();
+  const r = await api().history_audio(id);
+  if (token !== playToken) return;
+  if (!r.ok) return toast("الصوت مش متاح");
+  if (!S.history.some(i => i.id === id)) return;   // الصف اتمسح والرد لسه رايح
+  stopPlayer();                                  // اتأكد من جديد قبل ما نعمل Audio جديد
+  const a = new Audio(`data:${r.mime};base64,${r.data}`);
+  player.id = id;
+  player.audio = a;
+  ["play", "pause", "timeupdate"].forEach(ev => a.addEventListener(ev, () => paintWave(id)));
+  a.addEventListener("ended", stopPlayer);
+  a.play().catch(() => { stopPlayer(); toast("مقدرتش أشغّل الصوت"); });
 }
 function histVisible() {
   const q = $("#histSearch").value.trim().toLowerCase();
@@ -247,18 +313,23 @@ function renderHistory() {
     html += `<div class="frow${sel ? " selected" : ""}" data-id="${i.id}">
       <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
       <div class="row-body">
-        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span></div>
+        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span>${engineHTML(i)}</div>
         <div class="row-text">${esc(i.result)}</div>
         ${showRaw ? `<div class="row-raw"><b>الكلام زي ما اتقال</b>${esc(i.raw)}</div>` : ""}
       </div>
       ${waveHTML(i)}
       <div class="row-actions">
+        ${i.audio ? `<button class="icon-btn" data-act="dl" title="تنزيل MP3">${ICON.download}</button>` : ""}
         <button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>
         <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
       </div></div>`;
   }
   if (lastDay) html += `</div>`;
   $("#histList").innerHTML = html || `<div class="empty-state show">${S.history.length ? "مفيش نتايج للبحث ده." : "السجل فاضي — أول تسجيل هيظهر هنا."}</div>`;
+  if (player.id != null) {
+    // التسجيل اللي شغّال اتمسح → يقف؛ وإلا نرجّع شكله بعد ما الصف اتعمل من جديد
+    S.history.some(i => i.id === player.id && i.audio) ? paintWave(player.id) : stopPlayer();
+  }
   updateBulk();
 }
 $("#histSearch").addEventListener("input", renderHistory);
@@ -281,8 +352,16 @@ $("#histList").addEventListener("click", async e => {
     return updateBulk();
   }
   const act = e.target.closest("[data-act]");
+  if (act?.dataset.act === "play") return togglePlay(id);
+  if (act?.dataset.act === "dl") {
+    const r = await api().history_audio_save(id);
+    if (r.ok) toast("اتحفظ ✓");
+    else if (!r.cancelled) toast("مقدرتش أحفظ الملف");
+    return;
+  }
   if (act?.dataset.act === "copy") return copyText(item.result, act);
   if (act?.dataset.act === "del") {
+    invalidatePlayback();
     const r = await api().history_delete([id]);
     S.history = r.items; renderStats(r.stats); renderLast(); renderRecent(); renderHistory();
     return toast("اتمسح");
@@ -327,6 +406,7 @@ $("#bulkDel").addEventListener("click", async e => {
   const n = c.set.size;
   if (!armed(e.currentTarget, `تأكيد مسح ${num(n)}`)) return;
   if (S.page === "history") {
+    invalidatePlayback();
     const r = await api().history_delete([...S.histSel]);
     S.histSel.clear();
     S.history = r.items; renderStats(r.stats); renderLast(); renderRecent(); renderChart(); renderHistory();
@@ -570,6 +650,34 @@ function fillSelect(sel, list, value) {
   sel.innerHTML = list.map(o => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join("");
   sel.value = value ?? "";
 }
+
+/* ── أساليب السياق F5: override لكل برنامج (اسم exe بدون امتداد ← dev/chat/formal) ── */
+const STYLE_OPTS = [["dev", "تطوير"], ["chat", "شات"], ["formal", "رسمي"]];
+function styleRowHTML(exe, prof) {
+  const opts = STYLE_OPTS.map(([v, ar]) => `<option value="${v}"${v === prof ? " selected" : ""}>${ar}</option>`).join("");
+  return `<div class="style-row">
+    <input class="input style-exe" value="${esc(exe)}" placeholder="اسم البرنامج" maxlength="60" autocomplete="off">
+    <select class="select style-prof">${opts}</select>
+    <button class="icon-btn del style-del" type="button" title="حذف">${ICON.x}</button>
+  </div>`;
+}
+function renderStyleRows() {
+  const rows = S.boot.cfg.app_profiles || {};
+  const keys = Object.keys(rows);
+  $("#styleList").innerHTML = keys.length
+    ? keys.map(k => styleRowHTML(k, rows[k])).join("")
+    : `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
+  $("#styleBox").hidden = !S.boot.cfg.context_styles;
+}
+function collectStyles() {
+  const out = {};
+  $$("#styleList .style-row").forEach(r => {
+    const exe = r.querySelector(".style-exe").value.trim().toLowerCase();
+    const prof = r.querySelector(".style-prof").value;
+    if (exe && prof) out[exe] = prof;
+  });
+  return out;
+}
 function fillSettings() {
   const c = S.boot.cfg;
   S.provider = c.provider;
@@ -599,18 +707,39 @@ function fillSettings() {
   fillSelect($("#hkTranslate"), S.boot.hotkeys, c.hotkey_translate);
   fillSelect($("#hkOpen"), S.boot.openHotkeys, c.open_hotkey || "");
   $("#recMode").value = c.mode === "hold" ? "hold" : "toggle";
-  $("#sInsert").value = c.insert_method === "paste" ? "paste" : "type";
+  $("#sInsert").value = c.insert_method === "auto" || c.insert_method === "paste" ? c.insert_method : "type";
   $("#sTheme").value = c.theme || "dark";
   $("#sLang").value = c.lang === "en" ? "en" : "ar";
   $("#sKeep10").checked = !!c.history_keep_last10;
   $("#sTheme").onchange = e => applyTheme(e.target.value);      // معاينة فورية قبل الحفظ
-  const sw = { sPolish: "polish", sPaste: "auto_paste", sTray: "minimize_to_tray", sFloat: "floating_button",
-               sClip: "clipboard_history", sBeep: "beep", sUpd: "check_updates", sAutoUpd: "auto_update" };
+  const sw = { sPolish: "polish", sStyle: "context_styles", sPaste: "auto_paste", sTray: "minimize_to_tray", sFloat: "floating_button",
+                sClip: "clipboard_history", sBeep: "beep", sUpd: "check_updates", sAutoUpd: "auto_update" };
   Object.entries(sw).forEach(([id, k]) => { $("#" + id).checked = !!c[k]; });
+  renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
 }
 $("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
+$("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
+$("#styleAdd").addEventListener("click", () => {
+  const empty = $("#styleList .dict-empty");
+  if (empty) empty.remove();
+  const wrap = document.createElement("div");
+  wrap.innerHTML = styleRowHTML("", "dev");
+  const row = wrap.firstElementChild;
+  $("#styleList").appendChild(row);
+  row.querySelector(".style-exe").focus();
+});
+$("#styleList").addEventListener("click", e => {
+  const b = e.target.closest(".style-del");
+  if (!b) return;
+  b.closest(".style-row").remove();
+  // آخر صف اتشال: اعرض placeholder فاضي من غير ما تعيد البناء من S.boot.cfg —
+  // (renderStyleRows كانت هترجّع الاستثناء المحذوف تاني، فما كنش ممكن يتشال)
+  if (!$("#styleList .style-row")) {
+    $("#styleList").innerHTML = `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
+  }
+});
 $("#saveBtn").addEventListener("click", async () => {
   const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value];
   const msg = $("#saveMsg");
@@ -627,7 +756,8 @@ $("#saveBtn").addEventListener("click", async () => {
     provider: S.provider, key: $("#setKey").value.trim(), model: S.model,
     hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2],
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
-    polish: $("#sPolish").checked, auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
+    polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
+    auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
@@ -768,6 +898,15 @@ window.emlaa = {
     S.clips = [entry, ...S.clips.filter(c => c.id !== entry.id && c.text !== entry.text)];
     fillClipApps();
     if (S.page === "clipboard") renderClips();
+  },
+  onConfig(cfg) {
+    // تغيير سريع جاي من قايمة التراي («تفريغ حرفي») من غير ما المستخدم يفتح
+    // الإعدادات — بنحدّث الإعدادات المحفوظة ونحدّث مفتاح «تنظيف النص» بس،
+    // من غير ما نلمس بقية الحقول (ممكن يكون المستخدم لسه بيفضّلها في الصفحة)
+    if (!S.boot || !S.boot.cfg) return;
+    Object.assign(S.boot.cfg, cfg);
+    const sw = $("#sPolish");
+    if (sw) sw.checked = !!S.boot.cfg.polish;
   },
   onUpdate(info) { showUpdate(info); },
   onUpdateProgress(p) { setUpdProgress(p); },

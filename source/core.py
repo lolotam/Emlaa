@@ -21,6 +21,7 @@ import wave
 import tempfile
 import threading
 import urllib.request
+from dataclasses import dataclass, field
 
 # ── شهادات SSL جوّه الـexe ───────────────────────────────────────────────────
 # نثبّت مسار حزمة certifi كمتغيّر بيئة كمان — عشان أي نداء HTTPS بمكتبة
@@ -33,6 +34,7 @@ except Exception:
     pass
 
 import providers
+import smart     # القرارات النقية (تخطّي الردود القصيرة F2…) — core بيستورد smart، مش العكس
 
 # ── مسار البيانات ────────────────────────────────────────────────────────────
 # لما يبقى .exe مبنيّ بـPyInstaller، __file__ بيبقى فولدر مؤقت — فبنستخدم
@@ -117,9 +119,13 @@ DEFAULTS = {
     "mic":               "",
     "language":          "ar",
     "polish":            True,
+    "bypass_short":      True,    # ردود قصيرة من القايمة → من غير لفة LLM خالص (F2)
+    "bypass_max_words":  3,       # حد عدد الكلمات اللي بيتسمح التخطّي فيه
+    "context_styles":    True,    # أساليب السياق: شكل الكتابة بيتغيّر حسب البرنامج (F5)
+    "app_profiles":      {},      # overrides: {اسم البرنامج: dev/chat/formal}
     "prompt_mode":       False,
     "auto_paste":        True,
-    "insert_method":     "type",
+    "insert_method":     "auto",   # F3: auto = Ctrl+V للنص الطويل/المتعدد، وإلا حرف حرف
     "beep":              True,
     "minimize_to_tray":  True,
     "check_updates":     True,
@@ -190,10 +196,14 @@ def history_get(limit=100):
     return _read_list(HISTORY_PATH)[0][:limit]
 
 
-def history_add(mode, raw_text, result_text, dur=None):
-    """بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني)."""
+def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False, app=""):
+    """
+    بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني،
+    engine = مين فرّغ ومين نضّف، bypass = الـLLM اتتخطّت للرد القصير F2،
+    app = اسم البرنامج اللي اتكتب قدامه F5). بيرجّع الـid عشان الصوت يتحفظ بيه.
+    """
     if not result_text or not result_text.strip():
-        return
+        return None
     import datetime
     now = datetime.datetime.now()
     entry = {
@@ -208,6 +218,16 @@ def history_add(mode, raw_text, result_text, dur=None):
     }
     if dur:
         entry["dur"] = round(float(dur), 2)
+    if engine:
+        entry["engine"] = engine
+    if bypass:
+        # بيتكتب بس لو الـLLM اتتخطّت فعلًا — السجلات العادية والقديمة من غيره،
+        # والواجهة بتقراه بـ .get
+        entry["bypass"] = True
+    if app:
+        # F5: بيتكتب بس لو اسم البرنامج اتعرف فعلًا — السجلات القديمة والأقدم
+        # من غير المفتاح، والواجهة بتقراه بـ .get
+        entry["app"] = app
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
         items.insert(0, entry)
@@ -215,6 +235,92 @@ def history_add(mode, raw_text, result_text, dur=None):
             _write_list(HISTORY_PATH, items[:history_cap()])
         except Exception as e:
             log_error(e, "history/write")
+    return entry["id"]
+
+
+# ── صوت آخر ١٠ تسجيلات (يتسمع ويتنزّل mp3 من السجل) ─────────────────────────
+RECORDINGS_DIR = os.path.join(BASE, "recordings")
+AUDIO_KEEP = 10
+
+
+def recording_path(rid):
+    return os.path.join(RECORDINGS_DIR, f"{int(rid)}.mp3")
+
+
+def recording_ids():
+    """الـid بتاع كل تسجيل صوته محفوظ."""
+    try:
+        names = os.listdir(RECORDINGS_DIR)
+    except FileNotFoundError:
+        return set()
+    return {int(n[:-4]) for n in names if n.endswith(".mp3") and n[:-4].isdigit()}
+
+
+def recording_save(rid, wav):
+    """يحوّل الـwav لـmp3 (‏64kbps ≈ ٨ كيلو للثانية) ويحفظه باسم الـid، وبعدين يشيل الزيادة."""
+    try:
+        import lameenc
+        with wave.open(wav, "rb") as w:
+            pcm, rate, ch = w.readframes(w.getnframes()), w.getframerate(), w.getnchannels()
+        enc = lameenc.Encoder()
+        enc.set_bit_rate(64)
+        enc.set_in_sample_rate(rate)
+        enc.set_channels(ch)
+        enc.set_quality(2)
+        data = enc.encode(pcm) + enc.flush()
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        tmp = recording_path(rid) + ".tmp"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, recording_path(rid))
+        except Exception:
+            # الملف المؤقت فيه صوت المستخدم — لو فشلنا نكتبه أو نبدّله لازم يتمسح
+            # مش يفضل معلق (الـprune كان بيتجاهله خالص)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
+    except Exception as e:
+        log_error(e, "recordings/save")
+    recordings_prune()
+
+
+def _remove_stray_tmp():
+    """بيمسح ملفات .mp3.tmp اللي فضلت من كتابة فاشلة (بيبقى فيها صوت مسجّل)."""
+    try:
+        for n in os.listdir(RECORDINGS_DIR):
+            if n.endswith(".mp3.tmp"):
+                try:
+                    os.remove(os.path.join(RECORDINGS_DIR, n))
+                except Exception as e:
+                    log_error(e, "recordings/prune")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log_error(e, "recordings/prune")
+
+
+def recordings_prune():
+    """
+    الصوت بيفضل لآخر AUDIO_KEEP تسجيلات موجودة في السجل بس: أي ملف أقدم،
+    أو تسجيله اتمسح من السجل، بيتمسح (الـid = وقت التسجيل، فالأكبر = الأحدث).
+    """
+    with _store_lock:
+        _remove_stray_tmp()
+        items, ok = _read_list(HISTORY_PATH)
+        if not ok:                     # السجل بايظ = مانعرفش مين عايش — مانمسحش صوت حد
+            return
+        live = {i.get("id") for i in items}
+        ids = sorted(recording_ids(), reverse=True)
+        keep = set([i for i in ids if i in live][:AUDIO_KEEP])
+        for i in ids:
+            if i not in keep:
+                try:
+                    os.remove(recording_path(i))
+                except Exception as e:
+                    log_error(e, "recordings/prune")
 
 
 def history_cap():
@@ -231,6 +337,7 @@ def history_prune():
                 _write_list(HISTORY_PATH, items[:history_cap()])
             except Exception as e:
                 log_error(e, "history/prune")
+    recordings_prune()
 
 
 def history_clear():
@@ -240,6 +347,7 @@ def history_clear():
             os.remove(HISTORY_PATH)
     except Exception:
         pass
+    recordings_prune()
 
 
 def history_delete(ids):
@@ -251,6 +359,7 @@ def history_delete(ids):
             _write_list(HISTORY_PATH, items)
         except Exception as e:
             log_error(e, "history/write")
+    recordings_prune()
 
 
 def history_stats():
@@ -698,6 +807,13 @@ class Recorder:
             w.writeframes(audio.tobytes())
         return wav
 
+    def discard(self):
+        """يوقف التجميع ويرمي الصوت من غير ما يكتب ملف (زرار الإلغاء)."""
+        self._active = False
+        with self._lock:
+            self._frames = []
+        self._level = 0.0
+
     def close(self):
         try:
             self.stream.stop(); self.stream.close()
@@ -711,74 +827,130 @@ def has_text_focus():
     True لو المؤشر واقف في خانة كتابة (Edit / Document قابل للكتابة)،
     False لو مفيش (سطح المكتب، صورة، زرار…)، None لو مقدرناش نعرف.
     بيستخدم UI Automation — بيشتغل مع كروم وVS Code والبرامج العادية.
+    (F3: الشغل اتنقّل لـwinput.focused_info — الكفاية هنا ترفيلة بنفس العقد القديم.)
     """
+    import winput
+    return winput.focused_info()["editable"]
+
+
+def _copy_to_clipboard(text):
+    """بيرجّع True/False هل نشري النص للحافظة نجح — مش بيقطع الشغل لو فشل."""
     try:
-        import comtypes, comtypes.client
-        comtypes.CoInitialize()             # كل تسجيل بيتعالج في ثريد جديد — COM لازم يتعمل لكل ثريد
-        from comtypes.gen.UIAutomationClient import IUIAutomation, CUIAutomation
-        uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-        el = uia.GetFocusedElement()
-        if not el:
-            return False
-        ct = el.CurrentControlType
-        # الترمنال (Windows Terminal / cmd / ConEmu / mintty) مش بيقول عن نفسه إنه خانة كتابة
-        if (el.CurrentClassName or "") in ("TermControl", "ConsoleWindowClass", "PseudoConsoleWindow",
-                                           "VirtualConsoleClass", "mintty"):
-            return True
-        # 30043 = IsValuePatternAvailable · 30046 = ValueIsReadOnly · 30040 = IsTextPatternAvailable
-        if el.GetCurrentPropertyValue(30043):
-            return not el.GetCurrentPropertyValue(30046)
-        if ct == 50004:                                   # Edit
-            return True
-        if ct == 50030 and el.GetCurrentPropertyValue(30040):   # Document بنص (Word، Notepad)
-            return True
-        return False
-    except Exception as e:
-        log_error(e, "focus/uia")
-        return None
-
-
-def paste_text(text):
-    """
-    النتيجة بتتنسخ للحافظة دايمًا (آخر نسخة)، وبتتكتب مكان المؤشر لو فيه خانة كتابة.
-    بيرجّع True لو اتكتبت، False لو مفيش مكان تتكتب فيه (الواجهة بتعرضها ساعتها).
-    """
-    import pyperclip
-    from pynput.keyboard import Controller, Key
-    try:
-        pyperclip.copy(text)                  # نسخة احتياطية دايمًا
-    except Exception:
-        pass
-    if not CFG.get("auto_paste"):
-        return False
-    if has_text_focus() is False:             # None = مش عارفين → نكتب زي الأول
-        return False
-
-    time.sleep(0.12)
-    kb = Controller()
-    if CFG.get("insert_method") == "paste":
-        with kb.pressed(Key.ctrl):
-            kb.press("v"); kb.release("v")
+        import pyperclip
+        pyperclip.copy(text)
         return True
-    # الافتراضي: يكتب حرف حرف — بيشتغل في الحقول اللي Ctrl+V مبيشتغلش فيها
-    try:
-        kb.type(text)
-    except Exception:
-        with kb.pressed(Key.ctrl):
-            kb.press("v"); kb.release("v")
-    return True
+    except Exception as e:
+        log_error(e, "clipboard/copy")
+        return False
+
+
+def paste_text(text, target=None):
+    """
+    بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
+      "placed"      = الأحداث اتحقنت كويس
+      "failed"      = الحقن فشل بس النص على الحافظة (المستخدم يقدر يلزقه)
+      "clip_failed" = مفيش حقن ولا نسخة على الحافظة (نشر الحافظة فشل، أو
+                      الكتابة فشلت والنسخة الاحتياطية فشلت كمان)
+      "handoff"     = ممن متحقن (مفيش خانة كتابة / auto_paste مقفول / متعدد في
+                      ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
+    target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
+    لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
+    """
+    import winput
+    if target is None:
+        info = winput.focused_info()
+        info["exe"] = _foreground_app()
+        target = smart.insert_target(info, text, CFG.get("insert_method"))
+    cls, strategy, inj = target
+    if strategy == "handoff" or not CFG.get("auto_paste", True):
+        # مفيش حقن: ننسخ للمستخدم والواجهة تعرضه — غير الخانة الآمنة:
+        # دي عمرها ماتوصل للحافظة
+        if cls != "secure":
+            # L3: لو نشر الحافظة فشل مفيش حاجة وصلت للمستخدم — منرجعش "handoff"
+            # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
+            if not _copy_to_clipboard(inj):
+                return "clip_failed"
+        return "handoff"
+    time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
+    if cls == "secure":
+        # خانة آمنة: كتابة بس — الحافظة مش طريقها
+        return "placed" if winput.type_text(inj) else "failed"
+    if strategy == "type":
+        # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
+        # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
+        backup = _copy_to_clipboard(inj)
+        if winput.type_text(inj):
+            return "placed"
+        return "failed" if backup else "clip_failed"
+    if strategy in ("ctrl_v", "shift_insert"):
+        # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
+        if not _copy_to_clipboard(inj):
+            return "clip_failed"
+        fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
+        return "placed" if fn() else "failed"
+    return "handoff"
+
+
+def _probe_password(probe, key):
+    """
+    L1 (خصوصية): قراية «الخانة باسورد؟» على ثريد دايمون منفصل — UI Automation
+    بيقدر يسدّ ثواني، فممن نحبس بيه ثريد الـlistener (pynput لازم يفضل سريع)
+    ولا ثريد الواجهة. النتيجة بتتحفظ في probe[key] من لحظة النداء، والثريد نفسه
+    بيتسجّل في probe["threads"] عشان process يستناه ويرجع لحالة الخانة الحقيقية.
+    """
+    def run():
+        try:
+            import winput
+            info = winput.focused_info()
+            probe[key] = info.get("is_password") is True
+        except Exception:
+            probe[key] = False
+
+    t = threading.Thread(target=run, daemon=True)
+    probe.setdefault("threads", []).append(t)
+    t.start()
 
 
 # ── التطبيق (تسجيل + hotkey) ─────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Operation:
+    """
+    بيانات دورة إملاء واحدة (تسجيل → تفريغ → كتابة).
+    ثابت (frozen) وبيتولد مرة واحدة في begin() — قبل كده كان «الوضع» بيتقرأ
+    من متغيّر بيتنازع عليه ثريدين: الدوسة اللي فتحت التسجيل وقفلته من
+    ثريد تاني كانت ممكن تقرأ الوضع الغلط أو توصل بيانات فوق عملية لسه شغّالة.
+    (target_app بيتعبأ في begin() — F5، وباقي حقول الهدف hwnd / selection…
+    بتتملّأ في مهام تالية).
+    """
+    mode: str
+    target_app: str = ""
+    target_class: str = ""
+    hwnd: int = 0
+    runtime_id: tuple = ()
+    selection: str = ""
+    selection_hash: str = ""
+    # L1 (خصوصية): حامل متغيّر للـprobe — الـdict نفسه mutable رغم إن العملية
+    # frozen. فيه probe["begin"/"end"] (نتيجة قراية «باسورد؟» على ثريد دايمون)
+    # وprobe["threads"] (الثريدين اللي قرؤوا عشان process يستناهم).
+    probe: dict = field(default_factory=dict, compare=False)
+
+
 class App:
     """
     الواجهة بترث منه وبتعمل override لـ on_state / on_text عشان تعرض الحالة.
     """
 
+    # قفل واحد بيحرس (recording, busy, _op): أي انتقال بينهم لازم يبقى خطوة
+    # واحدة — عشان دوسة الزرار والضغط من الواجهة في نفس اللحظة ما يشغلوش
+    # عملية اتنين فوق بعض (كان بيحصل: end() قفل recording والـworker لسه
+    # لسه ماحجزش busy، فتسجيل جديد كان بيبدأ فوق الأول).
+    _state_lock = threading.Lock()
+
     def __init__(self):
         self.rec = Recorder()
         self.recording = False
         self.busy = False
+        self._op = None
         self._client = None
         self._client_sig = None
         self._listener = None
@@ -819,40 +991,137 @@ class App:
         pass
 
     # ── دورة التسجيل ──
+    def _set_busy(self, on):
+        # busy بيتحوّل من جوّه القفل زي recording: لو اتستنى عليه ثريد
+        # تاني (begin)، الفحص والتحويل لازم يقعّا في نفس اللحظة.
+        with self._state_lock:
+            self.busy = on
+
     def begin(self, mode="normal"):
-        if self.recording or self.busy:
-            return
-        # لو الميك مات (الجهاز اتفصل والبرنامج شغّال) بنحاول نفتحه تاني هنا
+        # F5: اسم البرنامج بيتقعد على العملية قبل القفل — هو اللي هيحدد أسلوب
+        # السياق (dev/chat/formal) وقت التنظيف، ومبيغادرش يتغيّر في نص الدورة.
+        target_app = (_foreground_app() or "").strip().lower()
+        with self._state_lock:
+            # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
+            # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
+            if self.recording or self.busy:
+                return
+            self.recording = True
+            self.active_mode = mode
+            op = Operation(mode=mode, target_app=target_app)
+            self._op = op
+        # L1 (خصوصية): نقرا «باسورد؟» على ثريد دايمون من لحظة الحجز — عشان
+        # process يرجع لحالة الخانة وقت التسجيل نفسه، مش وقت بداية التفريغ
+        # (الفوكس ممكن يكون اتنقل في النص، وكلمة السر عمرها ما تضيع حمايتها).
+        _probe_password(op.probe, "begin")
+        # فتح الميك جوه القفل كان بيقعد فيه: لو الجهاز اتفصل والستريم بيأخد
+        # وقت يتفتح، كان end() يقعد منتظر القفل والمستخدم مش قادر يوقف.
         if not self.rec.ensure_open():
+            with self._state_lock:
+                # الدورة ممكن تكون اتلغت/اتبدلت ولسه شغّالة؟ لو _op بقى عملية تانية،
+                # الدولة ملكها — ممن نمسحها ولا ننشر خطأ ميك فوقها
+                if self._op is not op:
+                    return
+                self.recording = False
+                self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
             return
-        self.active_mode = mode
-        self.recording = True
+        # F1: فتح الميك ممكن ياخد وقت (ريكونكت)، وجوّه الوقت ده end()/cancel()
+        # بيقدروا يقفلوا recording ويشيلوا _op. بنفحص تاني جوّه القفل إن الدورة
+        # لسه ملكنا (نفس الـOperation) — غير كده منبدأش تسجيل يتيم.
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+        # الصفارة برّه القفل وقبل الالتقاط: لو سبقت الالتقاط كانت بتتسجّل جوّه
+        # الصوت، ولو جوّه القفل كانت بتقعد فيه ~90ms بتمنع cancel يوصّل.
         beep(880, 90)
-        self.rec.start()
+        # فحص تاني بعد الصفارة: cancel ممكن يكون وصل في النص — ومنبدأش التقاط
+        # يتيم من غير عملية تملكه
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+            self.rec.start()
         self.on_state("rec", mode)
+        # لو cancel وصل بين الالتقاط وإعلان "rec"، رسالة "rec" بتسبق رسالة
+        # الإلغاء وتسيّب الواجهة على "rec" — فننادي "ready" برّه القفل عشان
+        # الواجهة متفضلش واقفة على "rec"
+        with self._state_lock:
+            stale = self._op is not op
+        if stale:
+            self.on_state("ready")
 
     def end(self):
-        if not self.recording:
-            return
-        self.recording = False
+        with self._state_lock:
+            # نقفل التسجيل ونحجز التفريغ (busy) في نفس اللحظة: قبل كده كانت
+            # الفجوة بين الاتنين بتسمح بتسجيل جديد يبدأ فوق الأول — الـworker
+            # لسه مشغّل والوضع الجديد بينتقل مع القديم.
+            if not self.recording:
+                return
+            self.recording = False
+            self.busy = True
+            op = self._op
+            self._op = None
+        # L1 (خصوصية): نقرا «باسورد؟» كمان لحظة الإيقاف — قبل الصفارة ما توقف
+        # الريكوردر — عشان لو المستخدم كان واقف في خانة باسورد وقت ما وقّف.
+        if op is not None:
+            _probe_password(op.probe, "end")
         beep(500, 90)
         try:
             wav = self.rec.stop()
         except Exception as e:
             log_error(e, "recorder/stop")
+            self._set_busy(False)             # مفيش worker بدأ — الحجز اتأخد على الفاضي فبيترجّع
             self.on_state("err", "مشكلة في قراية الصوت — جرّب تاني")
             return
         if not wav:
+            self._set_busy(False)             # نفس السبب: مفيش عملية هتبدأ فالحجز بيتترجّع
             self.on_state("ready", "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف")
             return
-        cur_mode = getattr(self, "active_mode", "normal")
-        threading.Thread(target=self.process, args=(wav, cur_mode), daemon=True).start()
+        threading.Thread(target=self.process, args=(wav, op), daemon=True).start()
 
-    def process(self, wav, mode="normal"):
-        self.busy = True
-        self.on_state("work", mode)
+    def cancel(self):
+        """إلغاء التسجيل: الصوت بيترمي ومفيش تفريغ."""
+        with self._state_lock:
+            if not self.recording:
+                return
+            self.recording = False
+            self._op = None                   # العملية اتلغت — مفيش ما يستلمها في end()
+            self._active_key = None           # وضع hold: سيبان الزرار بعد كده مايعملش حاجة
+            # الديسكارد جوّه القفل نفسه: بيقلّب flags ويمسح frames بس، فآمن هنا.
+            # لو فضل برّه، begin() على ثريد تاني كان ممكن يبدأ تسجيل جديد في الفجوة،
+            # والديسكارد المتأخر كان هيمسح التسجيل الجديد.
+            try:
+                self.rec.discard()
+            except Exception as e:
+                log_error(e, "recorder/cancel")
+        self.on_state("ready", "اتلغى التسجيل")
+
+    def process(self, wav, op):
+        # busy اتحجز بالفعل في end() (قبل ما الثريد ده يبدأ) — هنا بنفكّه
+        # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
+        cur_mode = op.mode
         try:
+            # F2 (خصوصية): معلومات الفوكس بتتقرا مرة واحدة في أول العملية — قبل
+            # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
+            # والوقت اللي التسجيل لسه واقف عليها. لو باسورد، نصها عمره ما يوصل
+            # للموديل ولا يتعدّل (بيتكتب زي ما اتفرّغ).
+            # L1: نستنى ثريدَيّ البروب اللي قرؤوا «باسورد؟» من لحظة begin/end
+            # (أقصى ثانية واحدة في الإجمالي) — القراية هنا وحدها مش كفاية لأن
+            # الفوكس ممكن يكون اتنقل بين وقت التسجيل وبداية التفريغ.
+            probe = getattr(op, "probe", {})
+            deadline = time.time() + 1.0
+            for t in probe.get("threads") or ():
+                left = deadline - time.time()
+                if left > 0:
+                    t.join(left)
+            import winput
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            # أي واحد (begin أو end أو القراية الحالية) شاف باسورد = العملية
+            # محمية طول عمرها — مش بنخفّضها أبدًا.
+            early_secure = (probe.get("begin") is True or probe.get("end") is True
+                            or info.get("is_password") is True)
+            self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
             try:
                 with wave.open(wav, "rb") as w:
                     dur = w.getnframes() / float(w.getframerate())
@@ -860,32 +1129,96 @@ class App:
                 dur = None
             cl = self.client()
             cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-            text = cl.transcribe(wav, CFG.get("language", "ar"))
+            # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
+            # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
+            lang = None if cur_mode == "translate" else CFG.get("language", "ar")
+            text = cl.transcribe(wav, lang)
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
-            if mode == "prompt":
+            bypass = False
+            if early_secure:
+                # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
+                # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
+                # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
+                out = text
+            elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
-            elif mode == "translate":
+            elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
             elif CFG.get("polish", True):
-                out = cl.polish(text)
+                if smart.should_bypass(text, cur_mode, CFG):
+                    # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
+                    # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
+                    out = smart.light_clean(text)
+                    bypass = True
+                else:
+                    # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
+                    out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
             else:
                 out = text
 
-            history_add(mode, text, out, dur)
-            self.on_text(out)
-            if not paste_text(out):
-                self.on_unplaced(out)
-            self.on_state("done", mode)
+            # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
+            # قبل تصنيف الهدف. الاستعلام الأخير ده هو اللي بيحدد مكان الكتابة.
+            info2 = winput.focused_info()
+            info2["exe"] = _foreground_app()
+            late_secure = info2.get("is_password") is True
+            if early_secure and not late_secure:
+                # الفوكس كان على خانة باسورد وقت التسجيل وبعدين اتنقل — ممن نكتب
+                # كلمة السر في أي مكان تاني (غالبًا خانة عادية المستخدم بيقلّب فيها).
+                # بنرفض من غير سجل/حافظة/صوت/عرض/تسليم.
+                self.on_state("err", "الفوكس اتنقل من خانة الباسورد — مكتبتش حاجة")
+                return
+            secure = late_secure
+            # F3 (R1 #1): تصنيف الهدف قبل السجل/الحافظة/الصوت — الهدف الآمن:
+            # مفيش حاجة من التسجيل ده بتطلع من هنا (لسجل، صوت، نسخ، ولا عرض النص).
+            target = smart.insert_target(info2, out, CFG.get("insert_method"))
+            # F7: بعد مخرج الوضع العادي (polish أو تخطّي الرد القصير) بنصلّح
+            # النص المختلط: الحرف العاري قبل الكلمة اللاتيني على شكله المثالي
+            # («للـ branch») والترقيم العربي — بس من غير تطبيقات dev (الكود لازم
+            # يفضل شكله التقني) ومن غير الترمنال: النص ممكن يكون أمر، وتغيير
+            # بايتاته خطر. التصنيف ماشي عليه زي ما هو: مبنصنّفش تاني، بنغيّر
+            # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
+            # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
+            if (cur_mode == "normal" and CFG.get("polish", True)
+                    and not smart.is_dev_app(op.target_app, CFG)
+                    and target[0] not in ("terminal", "secure")):
+                out = smart.fix_mixed(out)
+                target = (target[0], target[1], out)
+            rid = None
+            if not secure:
+                rid = history_add(cur_mode, text, out, dur, engine=cl.engine(),
+                                  bypass=bypass, app=op.target_app)
+                self.on_text(out)
+            res = None
+            if not secure or CFG.get("auto_paste", True):
+                res = paste_text(out, target)
+                if not secure and res == "clip_failed":
+                    self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+                elif not secure and res in ("failed", "handoff"):
+                    self.on_unplaced(out)
+            else:
+                # L2: خانة آمنة واللزق التلقائي مقفول — مفيش كتابة ولا نسخ (الحافظة
+                # ممن توصلها الباسورد)، فالمستخدم لازم يكتبها بنفسه. من غير الرسالة
+                # دي الواجهة كانت بتفضل واقفة على "work".
+                self.on_state("err", "الكتابة التلقائية مقفولة — خانة الباسورد مينفعش أنسخ لها")
+            if rid:
+                recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
+            # "done" بس لما النتيجة انكتبت أو اتسلّمت للمستخدم. «clip_failed» ناشر
+            # "err" فوق فمينفعش يتغطى بـ"done". الخانة الآمنة لو الكتابة فشلت: "err"
+            # من غير "done" — مفيش حافظة تلزق منها، المستخدم لازم يكتبها بنفسه.
+            if res == "placed" or res == "handoff" or (not secure and res == "failed"):
+                self.on_state("done", cur_mode)
+            elif secure and res == "failed":
+                self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:
             log_error(e, "process/transcribe")
             self.on_state("err", friendly_error(e))
         finally:
-            self.busy = False
+            self._set_busy(False)
             try:
                 os.remove(wav)
             except Exception:
@@ -894,6 +1227,8 @@ class App:
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
         from pynput import keyboard
+        import winput   # آثار جانبية Win32 (mask/مفاتيح القفل) — جوّه الدالة عشان
+                       # ماتستورداش في مستوى موديول core (وsmart مالمسهاش خالص)
 
         def _parse_key(val):
             if not val:
@@ -923,6 +1258,32 @@ class App:
 
         self._active_key = None
 
+        # أي زرار من التلاتة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
+        # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
+        # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
+        ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
+        LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
+                    "scroll_lock": winput.VK_SCROLL_LOCK}
+        alt_keys, lock_vks = set(), {}
+        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans)):
+            if not k:
+                continue
+            s = str(raw).lower().strip()
+            if s in ALT_NAMES:
+                alt_keys.add(k)
+            if s in LOCK_VKS:
+                lock_vks[k] = LOCK_VKS[s]
+
+        # القرار نفسه (toggle: دوسة نضيفة / hold: دوسة-تسيب + أي زرار تاني
+        # وقت التسجيل = cancel) بقى جوّه smart.HotkeyLogic — مبسوط هنا
+        # عشان الاختبار من غير pynput ولا ويندوز.
+        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys)
+        # مفاتيح قفل اتداست ولسه ماتسابتش. كل دوسة حقيقية على Caps/Scroll Lock بتقلب
+        # الحالة مرة واحدة بالظبط (التكرار التلقائي مابيقلبهاش)، فعند التسيب بنرجّعها
+        # بدوسة واحدة. مش بنقارن GetKeyState قبل وبعد: من ثريد الـhook الحالة بتبان
+        # متقلبة من وقت الدوسة نفسها، فالمقارنة كانت دايمًا «متغيرتش» (اتجرّب فعليًا).
+        locks_down = set()
+
         def guard(fn):
             def wrapped(key):
                 try:
@@ -937,52 +1298,42 @@ class App:
                         pass
             return wrapped
 
-        # وضع toggle: «دوسة نضيفة» على أي زرار من التلاتة = يبدأ، ودوسة تانية على
-        # أي زرار من التلاتة = يوقف. أي زرار تاني مالوش دعوة.
-        # «نضيفة» = الزرار اتداس واتساب لوحده: لو اتداس معاه حرف (Shift+A، Ctrl+C)
-        # يبقى المستخدم بيكتب أو بيعمل اختصار — مانبدأش تسجيل. ولو فضل ماسكه
-        # (التكرار التلقائي بتاع الكيبورد) مايتحسبش أكتر من دوسة.
-        TAP_MAX = 0.6
-        held = {}            # key → وقت الدوسة
-        spoiled = set()      # زراير اتداس معاها زرار تاني
-
         @guard
         def on_press(key):
-            if mode_type == "hold":
-                if key in key_map and not self.recording and not self.busy:
-                    self._active_key = key
-                    self.begin(mode=key_map[key])
-                return
-            for k in held:
-                if k != key:
-                    spoiled.add(k)
-            if key in key_map:
-                if key in held:              # تكرار تلقائي وهو ماسك
-                    return
-                held[key] = time.time()
-                if len(held) > 1:
-                    spoiled.add(key)
-            else:
-                spoiled.update(held)
+            now = time.time()
+            if key in lock_vks:
+                locks_down.add(key)
+            for act in logic.press(key, now, self.recording, self.busy):
+                if act == "mask":
+                    winput.send_vk(winput.VK_MASK)
+                elif act == "end":
+                    self.end()
+                elif act == "cancel":
+                    self.cancel()
+                elif act.startswith("begin:"):
+                    self.begin(mode=act[len("begin:"):])
 
         @guard
         def on_release(key):
-            if mode_type == "hold":
-                if key == self._active_key:
-                    self._active_key = None
+            for act in logic.release(key, time.time(), self.recording, self.busy):
+                if act == "end":
                     self.end()
-                return
-            t0 = held.pop(key, None)
-            clean = key not in spoiled
-            spoiled.discard(key)
-            if key not in key_map or t0 is None or not clean or time.time() - t0 > TAP_MAX:
-                return
-            if self.recording:
-                self.end()
-            elif not self.busy:
-                self.begin(mode=key_map[key])
+                elif act == "cancel":
+                    self.cancel()
+                elif act.startswith("begin:"):
+                    self.begin(mode=act[len("begin:"):])
+            if key in locks_down:
+                locks_down.discard(key)
+                winput.send_vk(lock_vks[key])
 
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        def win32_event_filter(msg, data):
+            # أحداثنا التركيبية (معلّمة EMLAA_TAG) مابنسمعهاش:
+            # غير كده منطق زرار التسجيل كان هيسمع دوساته هو. بنفلتر
+            # أحداثنا إحنا بس — مفاتيح المستخدم الحقيقية مالهاش دعوة بالفلتر.
+            return data.dwExtraInfo != winput.EMLAA_TAG
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release,
+                                           win32_event_filter=win32_event_filter)
         self._listener.daemon = True
         self._listener.start()
 

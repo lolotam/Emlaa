@@ -138,7 +138,8 @@ class Controller:
                 self.wave = None
         if self.wave is None:
             self.wave = W(self.root, on_click=lambda: self.toggle_record("normal"),
-                          on_menu=self.show_window)
+                          on_menu=self.show_window,
+                          on_cancel=lambda: self.engine and self.engine.cancel())
         return self.wave
 
     # ═══════════ الحالة (من المحرّك) ═══════════
@@ -272,12 +273,52 @@ class Controller:
             pystray.MenuItem(T("الحافظة", "Clipboard"), lambda: self.show_window("clipboard")),
             pystray.MenuItem(T("الإعدادات", "Settings"), lambda: self.show_window("settings")),
             pystray.MenuItem(T("تسجيل / إيقاف", "Record / stop"), lambda: self.toggle_record("normal")),
+            pystray.MenuItem(T("تفريغ حرفي (من غير تحسين)", "Raw transcription (no polish)"),
+                             lambda: self.toggle_raw(),
+                             checked=lambda item: not core.CFG.get("polish", True)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(T("خروج", "Quit"), lambda: self.quit()),
         )
 
     def _tray_title(self):
         return "Emlaa — voice to text" if core.CFG.get("lang") == "en" else "إملاء — صوت إلى نص عربي"
+
+    def toggle_raw(self):
+        """
+        «تفريغ حرفي» من قايمة التراي: يقلب «تنظيف النص» من غير ما المستخدم
+        يفتح الإعدادات — حاجة يتكرّر عليها بسرعة (تفريغ طويل وهوينفع يكون
+        زي ما اتقال، بالظبط). العلم بيتحفظ ويوصل للواجهة عشان مفتاح
+        الإعدادات يبان صح، والقايمة بتتحدّث علشان علامة الصح تأخذ مكانها.
+        إعادة رسم الموجة (علامة «خام» فوق الكبسولة) لازم تيجي من ثريد Tk
+        فبيتمرّرها عبر tk_call() زي set_state().
+        """
+        core.CFG["polish"] = not core.CFG.get("polish", True)
+        core.save_config(core.CFG)
+        self.push("onConfig", {"polish": core.CFG["polish"]})
+        try:
+            if self.tray is not None:
+                self.tray.update_menu()
+        except Exception as e:
+            core.log_error(e, "tray/raw-toggle")
+
+        def redraw():
+            w = self.wave
+            if w is None:
+                return
+            try:
+                if not bool(w.winfo_exists()):
+                    return
+                # الكبسولة الكبيرة بس عندها «خام» — الزرار الصغير (idle)
+                # لي رسم تاني، فـ_draw هيرسمه غلط فوقه
+                if w._state not in ("rec", "work", "prompt", "translate"):
+                    return
+            except Exception:
+                return
+            try:
+                w._draw(getattr(w, "_lvl", 0.0))
+            except Exception:
+                pass
+        self.tk_call(redraw)
 
     def apply_lang(self):
         """بعد تغيير اللغة: قايمة التراي وعنوان النافذة بيتغيّروا علطول."""
@@ -489,7 +530,8 @@ class Api:
                 "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "open_hotkey",
                 "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
-                "dictionary", "theme", "lang", "history_keep_last10", "models")},
+                "dictionary", "theme", "lang", "history_keep_last10", "models",
+                "context_styles", "app_profiles")},
             "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if keys.get(h)), None),
             "stats": core.history_stats(),
         }
@@ -503,7 +545,51 @@ class Api:
 
     # ── السجل ──
     def history(self):
-        return {"items": core.history_get(limit=1000), "stats": core.history_stats()}
+        items = core.history_get(limit=1000)
+        has = core.recording_ids()
+        for i in items:
+            i["audio"] = i.get("id") in has
+        return {"items": items, "stats": core.history_stats()}
+
+    def history_audio(self, rid):
+        """صوت التسجيل base64 عشان الواجهة تشغّله (mp3 صغير: ‏١٠ ثواني ≈ ٨٠ كيلو)."""
+        import base64
+        try:
+            with open(core.recording_path(rid), "rb") as f:
+                return {"ok": True, "mime": "audio/mpeg", "data": base64.b64encode(f.read()).decode("ascii")}
+        except (OSError, ValueError, TypeError):
+            return {"ok": False}
+
+    def history_audio_save(self, rid):
+        """نافذة «حفظ باسم» من ويندوز وبعدين نسخة من الـmp3 للمكان اللي اختاره."""
+        import shutil
+        import webview
+        try:
+            src = core.recording_path(rid)
+        except (ValueError, TypeError):
+            return {"ok": False}
+        if not os.path.exists(src):
+            return {"ok": False}
+        item = next((i for i in core.history_get(limit=1000) if i.get("id") == rid), {})
+        stamp = (item.get("time") or "").replace(":", "-").replace(" ", "_") or str(rid)
+        try:
+            kind = webview.FileDialog.SAVE
+        except AttributeError:                       # pywebview أقدم من 6
+            kind = webview.SAVE_DIALOG
+        dest = self._c.window.create_file_dialog(kind, save_filename=f"emlaa_{stamp}.mp3",
+                                                 file_types=("MP3 (*.mp3)",))
+        if isinstance(dest, (list, tuple)):
+            dest = dest[0] if dest else None
+        if not dest:
+            return {"ok": False, "cancelled": True}
+        if not str(dest).lower().endswith(".mp3"):
+            dest = str(dest) + ".mp3"
+        try:
+            shutil.copyfile(src, dest)
+            return {"ok": True, "path": dest}
+        except OSError as e:
+            core.log_error(e, "recordings/download")
+            return {"ok": False}
 
     def history_delete(self, ids):
         core.history_delete(ids)
@@ -571,9 +657,21 @@ class Api:
             if k in data:
                 cfg[k] = data[k]
         for k in ("polish", "prompt_mode", "auto_paste", "beep", "minimize_to_tray",
-                  "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10"):
+                  "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10",
+                  "context_styles"):
             if k in data:
                 cfg[k] = bool(data[k])
+        # F5: overrides لكل برنامج — {اسم البرنامج: dev/chat/formal} بس، واللي
+        # مش سليم (اسم فاضي، قيمة غلط) بيتساقط عشان ما يوصلش للـmodel.
+        if "app_profiles" in data and isinstance(data["app_profiles"], dict):
+            clean, seen = {}, set()
+            for name, prof in data["app_profiles"].items():
+                name = str(name).strip().lower()[:60]
+                prof = str(prof or "").strip().lower()
+                if name and prof in ("dev", "chat", "formal") and name not in seen:
+                    seen.add(name)
+                    clean[name] = prof
+            cfg["app_profiles"] = dict(list(clean.items())[:100])
         if data.get("theme") in ("dark", "light", "system"):
             cfg["theme"] = data["theme"]
         old_lang = cfg.get("lang", "ar")

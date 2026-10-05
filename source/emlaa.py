@@ -22,7 +22,7 @@ from tkinter import ttk
 import core
 import providers
 
-APP_VERSION = "1.9"
+APP_VERSION = "1.10"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
@@ -64,7 +64,7 @@ STATE = {
     "work":      (AMBER,     "بفرّغ الكلام…"),
     "prompt":    (AMBER,     "بحوّله لبرومبت…"),
     "translate": ("#06b6d4", "بترجم الكلام…"),
-    "done":      (GREEN,     "اتكتب ✓"),
+    "done":      (GREEN,     "اتبعت ✓"),   # F3: «اتبعت» مش «اتكتب» — مبنقدرش نشوف هل الهدف استلم (R1 #12)
     "err":       (RED,       "في مشكلة"),
 }
 
@@ -96,19 +96,27 @@ def open_link(url):
 # ═══════════════════════════════════════════════════════════════════════════
 class WaveOverlay(tk.Toplevel):
     """
-    زرار عائم صغير (Typeless Style) فوق كل البرامج:
+    زرار عائم صغير فوق كل البرامج:
     - وهو فاضي: كبسولة صغيرة (54x20) فيها نقط موجة هادية — بتنوّر لما الماوس يعدّي عليها
-    - ضغطة واحدة: يبدأ/يوقف التسجيل · كليك يمين: يفتح نافذة إملاء
-    - وقت التسجيل بيكبر لشريط الموجة (140x34) ولما يخلص بيرجع صغير تاني
-    - قابل للتحريك بالسحب في أي مكان مع حفظ مكانه الأخير تلقائياً
-    - يوضح وضع التسجيل بلون مميز (عادي: بنفسجي، برومبت: برتقالي، ترجمة: تركواز)
+    - ضغطة عليه وهو فاضي: يبدأ التسجيل · كليك يمين: يفتح نافذة إملاء
+    - وقت التسجيل بيكبر لكبسولة سودا (150x38): ✕ إلغاء على الشمال، موجة الصوت في النص، ✓ إنهاء على اليمين
+    - قابل للتحريك بالسحب من أي مكان غير الزرارين، مع حفظ مكانه الأخير تلقائياً
+    - الموجة بيضا في الوضع العادي، وبلون الوضع في البرومبت (برتقالي) والترجمة (تركواز)
+    - لو التفريغ الحرفي شغّال (polish فاضي)، علامة «خام» هادية بتبان جنب الموجة
     - لو اتقفل من الإعدادات بيرجع يظهر وقت التسجيل بس
     """
-    W, H   = 140, 34                  # حجم شريط الموجة وقت التسجيل
+    W, H   = 150, 38                  # حجم الكبسولة وقت التسجيل
     IW, IH = 54, 20                   # حجم الزرار وهو فاضي
-    N    = 16                         # عدد أعمدة الموجة
+    BTN_R  = 13                       # نص قطر زرار ✕ / ✓
+    BTN_PAD = 6                       # المسافة بين الزرار وحرف الكبسولة
+    N    = 11                         # عدد أعمدة الموجة
     KEY  = "#010203"                  # لون خلفية شفاف
     DRAG = 4                          # أقل حركة (px) تتحسب سحب مش ضغطة
+
+    BODY      = "#0e0e12"
+    EDGE      = "#24252d"
+    CANCEL_BG = ("#2c2d35", "#3d3e48")   # عادي / هوفر
+    STOP_BG   = ("#ffffff", "#dcdce2")
 
     MODE_COLORS = {
         "normal":    ("#8b5cf6", "#a78bfa"),   # بنفسجي
@@ -116,18 +124,21 @@ class WaveOverlay(tk.Toplevel):
         "translate": ("#06b6d4", "#22d3ee"),   # تركواز / أزرق سماوي
     }
 
-    def __init__(self, master, level_getter=None, on_click=None, on_menu=None):
+    def __init__(self, master, level_getter=None, on_click=None, on_menu=None, on_cancel=None):
         super().__init__(master)
         self._get   = level_getter or (lambda: getattr(getattr(master, "engine", None), "rec", None) and getattr(master.engine.rec, "level", 0.0) or 0.0)
-        self._on_click = on_click
-        self._on_menu  = on_menu
-        self._hist  = [0.0] * self.N
+        self._on_click  = on_click
+        self._on_menu   = on_menu
+        self._on_cancel = on_cancel
+        self._lvl   = 0.0
         self._job   = None
         self._rec   = False
         self._state = "ready"
         self._mode  = "normal"
         self._phase = 0.0
         self._hover = False
+        self._hot   = None                # الزرار اللي الماوس عليه: "cancel" / "stop" / None
+        self._btn   = None                # الزرار اللي اتداس عليه في الضغطة الحالية
 
         # إحداثيات السحب بالفأرة
         self._drag_x = 0
@@ -149,11 +160,12 @@ class WaveOverlay(tk.Toplevel):
                             bg=self.KEY, highlightthickness=0, cursor="hand2")
         self.cv.pack()
 
-        # ضغطة = تسجيل · سحب = تحريك · كليك يمين = فتح البرنامج
+        # ✕ = إلغاء · ✓ = إنهاء · سحب من النص = تحريك · كليك يمين = فتح البرنامج
         self.cv.bind("<Button-1>", self._start_drag)
         self.cv.bind("<B1-Motion>", self._on_drag)
         self.cv.bind("<ButtonRelease-1>", self._end_drag)
         self.cv.bind("<Button-3>", lambda e: self._on_menu and self._on_menu())
+        self.cv.bind("<Motion>", self._on_motion)
         self.cv.bind("<Enter>", lambda e: self._set_hover(True))
         self.cv.bind("<Leave>", lambda e: self._set_hover(False))
         self.bind("<Destroy>", self._on_destroy)
@@ -174,8 +186,37 @@ class WaveOverlay(tk.Toplevel):
     def _size(self):
         return (self.IW, self.IH) if self._state == "idle" else (self.W, self.H)
 
+    # ── الزرارين (شغّالين وقت التسجيل بس) ──
+    def _btn_centers(self):
+        off = self.BTN_PAD + self.BTN_R
+        return {"cancel": (off, self.H / 2), "stop": (self.W - off, self.H / 2)}
+
+    def _hit(self, x, y):
+        if self._state != "rec":
+            return None
+        r2 = (self.BTN_R + 2) ** 2
+        for name, (bx, by) in self._btn_centers().items():
+            if (x - bx) ** 2 + (y - by) ** 2 <= r2:
+                return name
+        return None
+
+    def _cursor_for(self, hot):
+        if hot or self._state == "idle":
+            return "hand2"
+        return "fleur"
+
+    def _on_motion(self, e):
+        if self._btn or self._moved:
+            return
+        hot = self._hit(e.x, e.y)
+        if hot != self._hot:
+            self._hot = hot
+            self.cv.config(cursor=self._cursor_for(hot))
+
     def _set_hover(self, on):
         self._hover = on
+        if not on and self._btn is None:
+            self._hot = None
         if self._state == "idle":
             self._draw_idle()
 
@@ -184,8 +225,11 @@ class WaveOverlay(tk.Toplevel):
         self._drag_y = e.y_root - self.winfo_y()
         self._press  = (e.x_root, e.y_root)
         self._moved  = False
+        self._btn    = self._hit(e.x, e.y)
 
     def _on_drag(self, e):
+        if self._btn:                      # الضغطة بدأت على زرار — مفيش سحب
+            return
         if not self._moved:
             dx, dy = e.x_root - self._press[0], e.y_root - self._press[1]
             if abs(dx) < self.DRAG and abs(dy) < self.DRAG:
@@ -196,13 +240,24 @@ class WaveOverlay(tk.Toplevel):
         self.geometry(f"{w}x{h}+{e.x_root - self._drag_x}+{e.y_root - self._drag_y}")
 
     def _end_drag(self, e):
-        self.cv.config(cursor="hand2")
-        if not self._moved:
-            if self._on_click:
+        btn, self._btn = self._btn, None
+        if btn:
+            # زي أي زرار عادي: الأكشن بيحصل لو السيبان كان على نفس الزرار
+            if self._hit(e.x, e.y) == btn:
+                cb = self._on_cancel if btn == "cancel" else self._on_click
+                if cb:
+                    cb()
+            return
+        moved, self._moved = self._moved, False
+        self._hot = self._hit(e.x, e.y)
+        self.cv.config(cursor=self._cursor_for(self._hot))
+        if not moved:
+            # وقت التسجيل الضغط في النص مالوش أكشن — الإلغاء والإنهاء من الزرارين
+            if self._state == "idle" and self._on_click:
                 self._on_click()
             return
-        # المكان بيتحفظ كمركز الزرار (محسوب على مقاس شريط الموجة)
-        # عشان الزرار الصغير والشريط الكبير يفضلوا متمركزين في نفس النقطة
+        # المكان بيتحفظ كمركز الزرار (محسوب على مقاس الكبسولة الكبيرة)
+        # عشان الزرار الصغير والكبسولة يفضلوا متمركزين في نفس النقطة
         w, h = self._size()
         cx = e.x_root - self._drag_x + w // 2
         cy = e.y_root - self._drag_y + h // 2
@@ -232,7 +287,7 @@ class WaveOverlay(tk.Toplevel):
         self._mode = mode or "normal"
         self._state = "rec"
         self._rec = True
-        self._hist = [0.0] * self.N
+        self._lvl = 0.0
         self._place()
         self.deiconify()
         try:
@@ -247,6 +302,9 @@ class WaveOverlay(tk.Toplevel):
             self._mode = mode
         self._state = st
         self._rec = (st == "rec")
+        if st != "rec":
+            self._hot = self._btn = None
+            self.cv.config(cursor=self._cursor_for(None))
         if st == "rec":
             self.show(mode=self._mode)
         elif st in ("work", "prompt", "translate"):
@@ -276,8 +334,10 @@ class WaveOverlay(tk.Toplevel):
                 pass
             self._job = None
         self._rec = False
+        self._hot = self._btn = None
         if self.enabled():
             self._state = "idle"
+            self.cv.config(cursor="hand2")
             self._place()
             self._draw_idle()
             self.deiconify()
@@ -295,17 +355,18 @@ class WaveOverlay(tk.Toplevel):
         except Exception:
             lvl = 0.0
         disp = min(1.0, lvl * 2.4)
-        self._hist.pop(0)
-        self._hist.append(disp)
+        # طلوع سريع ونزول هادي عشان الموجة متترعشش
+        self._lvl = disp if disp > self._lvl else self._lvl * 0.82 + disp * 0.18
         self._phase += 0.25
-        self._draw(disp)
+        self._draw(self._lvl)
         self._job = self.after(40, self._tick)
 
-    def _pill(self, w=None, h=None, border_col="#242a3e"):
+    def _pill(self, w=None, h=None, border_col=None):
         c = self.cv
         W, H = w or self.W, h or self.H
         r = H / 2
-        bg_col = "#121522"
+        bg_col = self.BODY
+        border_col = border_col or self.EDGE
         # الحشوة الأول من غير حدود، وبعدين الإطار كخط واحد متصل حوالين الكبسولة
         c.create_oval(0, 0, H, H, fill=bg_col, outline="")
         c.create_oval(W - H, 0, W, H, fill=bg_col, outline="")
@@ -320,18 +381,38 @@ class WaveOverlay(tk.Toplevel):
         c = self.cv
         c.delete("all")
         W, H = self.IW, self.IH
-        primary_col, glow_col = self.MODE_COLORS["normal"]
-        self._pill(W, H, border_col=primary_col if self._hover else "#242a3e")
+        self._pill(W, H, border_col="#5a5b66" if self._hover else self.EDGE)
         cy = H / 2
         heights = (1.5, 3.0, 4.5, 3.0, 1.5) if self._hover else (1.2,) * 5
-        col = glow_col if self._hover else "#5b6178"
+        col = "#ffffff" if self._hover else "#6b6d7a"
         gap = 6
         x0 = W / 2 - gap * (len(heights) - 1) / 2
         for i, hh in enumerate(heights):
             xc = x0 + i * gap
-            c.create_rectangle(xc - 1.4, cy - hh, xc + 1.4, cy + hh, fill=col, outline="")
+            c.create_line(xc, cy - hh, xc, cy + hh, fill=col, width=2.4, capstyle="round")
+
+    def _draw_buttons(self):
+        c = self.cv
+        r = self.BTN_R
+        pos = self._btn_centers()
+        lx, ly = pos["cancel"]
+        rx, ry = pos["stop"]
+
+        # ✕ إلغاء — دايرة رمادي غامق
+        c.create_oval(lx - r, ly - r, lx + r, ly + r, outline="",
+                      fill=self.CANCEL_BG[self._hot == "cancel"])
+        s = 4
+        c.create_line(lx - s, ly - s, lx + s, ly + s, fill="#ffffff", width=2, capstyle="round")
+        c.create_line(lx - s, ly + s, lx + s, ly - s, fill="#ffffff", width=2, capstyle="round")
+
+        # ✓ إنهاء — دايرة بيضا وعلامة صح غامقة
+        c.create_oval(rx - r, ry - r, rx + r, ry + r, outline="",
+                      fill=self.STOP_BG[self._hot == "stop"])
+        c.create_line(rx - 5, ry + 0.5, rx - 1.5, ry + 4, rx + 5, ry - 3.5,
+                      fill=self.BODY, width=2.2, capstyle="round", joinstyle="round")
 
     def _draw(self, cur):
+        import math
         c = self.cv
         c.delete("all")
         self._pill()
@@ -347,28 +428,41 @@ class WaveOverlay(tk.Toplevel):
                           font=(FONT, 10, "bold"))
             return
 
-        primary_col, glow_col = self.MODE_COLORS.get(self._mode, ("#8b5cf6", "#a78bfa"))
-        dot_col = RED if self._rec else primary_col
-        rr = 3.5 + (cur * 2.5 if self._rec else 0)
-        c.create_oval(13 - rr, cy - rr, 13 + rr, cy + rr, fill=dot_col, outline="")
+        _, glow_col = self.MODE_COLORS.get(self._mode, self.MODE_COLORS["normal"])
+        busy = self._state in ("work", "prompt", "translate")
 
-        x0, x1 = 26, self.W - 14
-        slot = (x1 - x0) / self.N
-        bw = max(2.5, slot - 2.8)
+        if busy:
+            # بنفرّغ: مفيش زراير، والموجة بتتموّج لوحدها على عرض الكبسولة
+            x0, x1 = 22, self.W - 22
+            col = glow_col
+        else:
+            self._draw_buttons()
+            edge = self.BTN_PAD + self.BTN_R * 2 + 7
+            x0, x1 = edge, self.W - edge
+            col = "#ffffff" if self._mode == "normal" else glow_col
 
-        import math
-        for i, v in enumerate(self._hist):
-            if self._state in ("work", "prompt", "translate"):
-                h = max(2.0, (math.sin(self._phase + i * 0.45) + 1.0) * 4.5 + 2)
-                col = glow_col
+        if self._mode == "normal" and not core.CFG.get("polish", True):
+            # التفريغ الحرفي (الوضع العادي بس): «خام» جنب الموجة عشان المستخدم
+            # يعرف إن الكلام هيتكتب زي ما اتقال من غير LLM — البرومبت والترجمة
+            # بيستخدموا الموديل، فمفيش «خام» عندهم. المجال بيتقصّ ~18px بس على
+            # يمين الموجة، والزرارين والقياسات دي كلها مكانها ثابت
+            x1 -= 18
+            c.create_text(x1 + 9, cy, text="خام", fill="#8b8d98", font=(FONT, 8))
+
+        n = self.N
+        mid = (n - 1) / 2
+        slot = (x1 - x0) / n
+        max_h = self.H / 2 - 8                      # أطول نص عمود
+        for i in range(n):
+            d = abs(i - mid) / mid                  # 0 في النص → 1 على الأطراف
+            if busy:
+                h = 2.0 + (math.sin(self._phase - i * 0.55) + 1.0) * 3.2
             else:
-                h = max(1.5, v * 11 + 1.5)
-                col = glow_col if h > 5 else primary_col
-
+                env = 1.0 - 0.7 * d ** 1.4          # أطول في النص وبتقل على الجناب
+                wob = 0.78 + 0.22 * math.sin(self._phase * 1.6 + d * 4.0)
+                h = 1.6 + (max_h - 1.6) * max(cur, 0.03) * env * wob
             xc = x0 + i * slot + slot / 2
-            c.create_rectangle(xc - bw / 2, cy - h, xc + bw / 2, cy + h,
-                               fill=col, outline="")
-
+            c.create_line(xc, cy - h, xc, cy + h, fill=col, width=2.6, capstyle="round")
 
 
 class ResultToast(tk.Toplevel):
@@ -418,7 +512,7 @@ class ResultToast(tk.Toplevel):
                         wraplength=360, justify="right", anchor="e", cursor="hand2")
         body.pack(fill="x", pady=(8, 2))
         body.bind("<Button-1>", lambda e: self._copy())
-        tk.Label(box, text=self._t("مكانش فيه خانة كتابة — اتحفظ في السجل كمان", "No text field was focused — also saved to History"), bg=self.BG,
+        tk.Label(box, text=self._t("اتنسخ — الصقه بنفسك · اتحفظ في السجل كمان", "Copied — paste it yourself · also saved to History"), bg=self.BG,
                  fg=DIM, font=(FONT, 8)).pack(anchor="e")
 
         for w in (self, box, body):
@@ -1253,7 +1347,8 @@ class EmlaaClassic(tk.Tk):
             self.wave = None
         if self.wave is None:
             self.wave = WaveOverlay(self, on_click=self._toggle_record,
-                                    on_menu=self._tray_show)
+                                    on_menu=self._tray_show,
+                                    on_cancel=self._cancel_record)
         return self.wave
 
     def _wave_alive(self):
@@ -1362,6 +1457,13 @@ class EmlaaClassic(tk.Tk):
         if not self.engine:
             return
         self.engine.end() if self.engine.recording else self.engine.begin(mode="normal")
+
+    def _cancel_record(self):
+        if not self.engine:
+            return
+        if hasattr(self.engine, "cancel"):
+            self.engine.cancel()
+        self._wave_hide()
 
     # ── المحرّك ──
     def _start_engine(self):
