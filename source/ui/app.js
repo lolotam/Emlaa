@@ -783,7 +783,10 @@ function renderOffline(keepForm) {
   if (packaged) return;
   const installed = o.installed;
   const sz = installed ? ((o.models || []).find(m => m.id === installed) || {}).size : null;
-  $("#offlineStatus").textContent = installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت";
+  // T20: الموديل اتلف (الفحص رجّع false) — نعرض حالة «بايظ» مع إبقاء زرار الإزالة متاح
+  $("#offlineStatus").textContent = o.verified === false
+    ? "الموديل بايظ — شيله ونزّله تاني"
+    : (installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت");
   $("#offlineRemove").disabled = !installed && !o.residual;
   const prevModel = $("#offlineModel").value, prevMode = $("#offlineMode").value;
   $("#offlineModel").innerHTML = (o.models || []).map(m =>

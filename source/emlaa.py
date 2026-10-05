@@ -24,7 +24,7 @@ import offline
 import providers
 import winput
 
-APP_VERSION = "1.12"
+APP_VERSION = "1.13"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
@@ -604,6 +604,9 @@ class EmlaaClassic(tk.Tk):
         self.bind("<Map>", self._on_map)
         self.bind("<Unmap>", self._on_unmap)
 
+        # قبل ثريد المحرّك: start_hotkey بيستورد pynput (اللي بيستورد six) — لو اتداخل
+        # مع استيراد pystray بيحصل سباق six.moves (#6)
+        core.preload_pystray()
         keys = providers.read_keys(core.ENV_PATH)
         # F9: وضع offline دايمًا + موديل مثبّت بيشتغل من غير مفتاح — زي الواجهة الأساسية
         if keys.get(self._sel_provider) or (
@@ -1516,7 +1519,7 @@ class EmlaaClassic(tk.Tk):
     # ── أيقونة جنب الساعة ──
     def _start_tray(self):
         try:
-            import pystray
+            pystray = core.import_pystray()
             from PIL import Image
             img = Image.open(core.asset("emlaa.png"))
             menu = pystray.Menu(

@@ -255,6 +255,11 @@ class TestFriendlyErrorOffline(unittest.TestCase):
         self.assertIn("مفيش اتصال بالنت", msg)
         self.assertNotIn("تقدر تنزّل", msg)
 
+    def test_offline_corrupt_message_passes_through(self):
+        # T20: رسالة الموديل البايظ لازم توصل للمستخدم زي ما هي — مش «مشكلة مش متوقّعة»
+        msg = "الموديل المحلي بايظ — شيله ونزّله تاني من الإعدادات"
+        self.assertEqual(core.friendly_error(RuntimeError(msg)), msg)
+
 
 class _Ctrl:
     """وحدة تحكم مزيّفة لـApi — الحقول اللي bootstrap/save_settings محتاجاها."""
@@ -315,6 +320,16 @@ class TestApiOffline(unittest.TestCase):
             self.assertIn("شغّال", r2["err"])
             release.set()
             self.assertTrue(started.wait(5))
+
+    def test_offline_status_exposes_verified(self):
+        # T20: verified بييجي من cached_verification (من غير هاش جوه offline_status)
+        api = app_web.Api(_Ctrl())
+        with mock.patch.object(offline, "installed", return_value="base"), \
+                mock.patch.object(offline, "residual", return_value=False), \
+                mock.patch.object(offline, "cached_verification", return_value=True), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)):
+            r = api.offline_status()
+        self.assertIs(r["verified"], True)
 
 
 

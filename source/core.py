@@ -108,6 +108,57 @@ def request_show():
         pass
 
 
+# ── استيراد pystray الآمن (Task 19) ──────────────────────────────────────────
+# أول تشغيل لبناء جديد كان بيفشل بـ ImportError من pystray جوه ثريد التراي:
+# «No module named 'six.moves'; 'six' is not a package». السبب إن pystray بيستورد
+# six.moves، وفي نفس اللحظة استيراد تاني كان بيخلّي "six" يتسجّل نصّ استيراد —
+# فـ"six.moves" بيبوظ. القفل بيخلي استيراد واحد في نفس الوقت، ولو فشل بنشيل
+# الموديولات النصّية ونعيد مرة واحدة بس.
+_pystray_lock = threading.Lock()
+
+
+def _purge_pystray_modules():
+    """
+    بشيل الموديولات النصّية بتاعت pystray وsix من sys.modules قبل إعادة الاستيراد.
+    بنشيل "pystray" وكل حاجة تحت "pystray." و"six." (وده بيشمل "six.moves").
+    منشيلش "six" نفسه: لو "six" اتسجّل كويس كـpackage فمسحه مش هيصلّح حاجة وهيفكك
+    الموديولات اللي مستوردة جواه — اللي فعلاً بايظ هو "six.moves" اللي اتضاف نصّ
+    استيراد، وده بيتغطّى بـ"six." من غير ما نلمس "six" نفسه.
+    """
+    for name in list(sys.modules):
+        if name == "pystray" or name.startswith("pystray.") or name.startswith("six."):
+            sys.modules.pop(name, None)
+
+
+def import_pystray():
+    """
+    استيراد pystray تحت قفل. لو الاستيراد فشل بـImportError بنشيل الموديولات
+    النصّية ونعيد مرة واحدة بس؛ فشل تاني بيتصعّد للـcaller (بيتسجّل والتراي
+    بيشتغل من غيره).
+    """
+    with _pystray_lock:
+        try:
+            import pystray
+        except ImportError:
+            _purge_pystray_modules()
+            # «'six' is not a package» = ثريد تاني (pynput مثلًا) لسه في نص استيراد six —
+            # نستنى شوية عشان يخلص قبل ما نعيد، غير كده الإعادة بتلاقي نفس الحالة
+            time.sleep(0.3)
+            import pystray
+        return pystray
+
+
+def preload_pystray():
+    """
+    بيستورد pystray على الثريد الرئيسي قبل ما ثريدات البداية (التراي، pynput) تشتغل
+    — ده العلاج الأساسي للسباق (#6). الفشل بيتسجّل بس: ثريد التراي هيحاول تاني.
+    """
+    try:
+        import_pystray()
+    except Exception as e:
+        log_error(e, "tray/preload")
+
+
 DEFAULTS = {
     "provider":          providers.DEFAULT,
     "models":            {},        # موديل التفريغ المختار لكل مزوّد {provider: model}
@@ -1784,6 +1835,10 @@ def friendly_error(e):
 
     if "مفيش مفتاح" in str(e):
         return "محطّتش مفتاح للمزوّد ده — افتح الإعدادات وحطّه"
+    # T20: رسالة الموديل المحلي البايظ بتوصل للمستخدم زي ما هي — فيها توجيه
+    # واضح (شيله ونزّله تاني) فممن تلبس زي «مشكلة مش متوقّعة»
+    if "الموديل المحلي بايظ" in str(e):
+        return str(e).strip()
     if "project has been denied access" in s or "permission_denied" in s:
         return "مشروع Google محظور أو مرفوض (Project denied access) — أنشئ مشروع جديد ومفتاح جديد من Google AI Studio"
     if "blocked at the project level" in s:

@@ -113,6 +113,7 @@ const EN = {
   // ── التفريغ من غير إنترنت (F9) ──
   "التفريغ من غير إنترنت": "Offline transcription",
   "الحالة": "Status", "الموديل مش متثبّت": "Model not installed",
+  "الموديل بايظ — شيله ونزّله تاني": "Model is corrupt — remove it and download it again",
   "إزالة الموديل": "Remove model",
   "الأصغر أسرع والأكبر أدق": "Smaller is faster, bigger is more accurate",
   "تنزيل الموديل": "Download model", "تنزيل": "Download",

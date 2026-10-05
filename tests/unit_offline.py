@@ -76,6 +76,10 @@ class _BaseCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self._base = mock.patch.object(core, "BASE", self._tmp.name)
         self._base.start()
+        # كاش الفحص على مستوى الموديول ومفتاحه (mtime_ns, size) — من غير المسح
+        # نتيجة اختبار ممكن تعدّي لاختبار تاني مانيڨسته بنفس الحجم
+        offline._verify_cache.clear()
+        self.addCleanup(offline._verify_cache.clear)
 
     def tearDown(self):
         self._base.stop()
@@ -87,10 +91,15 @@ class _BaseCase(unittest.TestCase):
         bin_dir = os.path.join(root, "bin")
         model_dir = os.path.join(root, "models")
         os.makedirs(bin_dir); os.makedirs(model_dir)
-        _write(os.path.join(bin_dir, "whisper-cli.exe"), b"EXE")
-        _write(os.path.join(model_dir, model + ".bin"), b"MODEL")
+        exe = b"EXE"
+        model_data = b"MODEL"
+        _write(os.path.join(bin_dir, "whisper-cli.exe"), exe)
+        _write(os.path.join(model_dir, model + ".bin"), model_data)
+        # T20: بنكتب خريطة بصمات صحيحة عشان verify()/transcribe() يعدّوا من غير
+        # ما يعتمدوا على بصمة الموديل الحقيقية (المحتوى هنا وهمي).
         manifest = {"model": model, "version": offline.WHISPER_CPP_VERSION,
-                    "files": {"bin/whisper-cli.exe": 3, "models/" + model + ".bin": 5}}
+                    "files": {"bin/whisper-cli.exe": len(exe), "models/" + model + ".bin": len(model_data)},
+                    "sha256": {"bin/whisper-cli.exe": _sha256(exe), "models/" + model + ".bin": _sha256(model_data)}}
         with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False)
         return root
@@ -524,6 +533,99 @@ class TestTranscribe(_BaseCase):
         with mock.patch.object(offline, "_run", fake_run):
             with self.assertRaises(RuntimeError):
                 offline.transcribe("w.wav", "ar")
+
+
+# ── فحص بصمة الحزمة (Task 20) ─────────────────────────────────────────────────
+class TestVerify(_BaseCase):
+    def test_verify_match_is_cached(self):
+        # فحص سليم بيتخزّن — الفحص التاني من نفس المانيڨست ميهاشيش تاني
+        self._install("base")
+        with mock.patch.object(offline, "_sha256_file", wraps=offline._sha256_file) as h:
+            self.assertTrue(offline.verify())
+            first = h.call_count
+            self.assertTrue(offline.verify())
+            self.assertEqual(h.call_count, first)
+
+    def test_transcribe_hashes_once_per_session(self):
+        # التفريغ نفسه لازم يستخدم الكاش — غير كده كل تفريغ بيعيد هاش 150–190 MB
+        self._install("base")
+
+        def fake_run(cmd, timeout=None):
+            with open(cmd[cmd.index("-of") + 1] + ".txt", "w", encoding="utf-8") as f:
+                f.write("نص")
+            return SimpleNamespace(returncode=0)
+
+        with mock.patch.object(offline, "_run", fake_run),                 mock.patch.object(offline, "_sha256_file", wraps=offline._sha256_file) as h:
+            offline.transcribe("w.wav", "ar")
+            first = h.call_count
+            offline.transcribe("w.wav", "ar")
+            offline.transcribe("w.wav", "ar")
+        self.assertGreater(first, 0)
+        self.assertEqual(h.call_count, first)
+
+    def test_cached_verification_reflects_verify(self):
+        self.assertIsNone(offline.cached_verification())
+        self._install("base")
+        self.assertIsNone(offline.cached_verification())   # لسه متفحصش
+        self.assertTrue(offline.verify())
+        self.assertIs(offline.cached_verification(), True)
+
+    def test_same_size_flipped_byte_detected_and_transcribe_refuses(self):
+        # بايت اتقلب من غير ما الحجم يتغيّر — installed() بيعدّي بس verify() بيمسكه
+        self._install("base")
+        p = os.path.join(self._tmp.name, "offline", "models", "base.bin")
+        data = bytearray(open(p, "rb").read())
+        data[0] ^= 0xFF
+        _write(p, bytes(data))
+        with mock.patch.object(offline, "_run") as run:
+            with self.assertRaises(RuntimeError) as cm:
+                offline.transcribe("w.wav", "ar")
+        run.assert_not_called()
+        self.assertEqual(str(cm.exception), "الموديل المحلي بايظ — شيله ونزّله تاني من الإعدادات")
+
+    def test_cache_cleared_by_remove(self):
+        self._install("base")
+        self.assertTrue(offline.verify())
+        self.assertTrue(offline._verify_cache)
+        offline.remove()
+        self.assertFalse(offline._verify_cache)
+
+    def test_cache_cleared_by_download(self):
+        self._install("base")
+        self.assertTrue(offline.verify())
+        self.assertTrue(offline._verify_cache)
+        p1, p2, p3, p4, p5, p6 = _download_patches()
+        with p1, p2, p3, p4, p5, p6:
+            offline.download("test-model")
+        self.assertFalse(offline._verify_cache)
+
+    def test_legacy_manifest_wrong_model_hash_detected(self):
+        # مانيڨست قديم من غير "sha256": الموديل بيتقارن بـMODELS pin فبيقفش
+        root = os.path.join(self._tmp.name, "offline")
+        bin_dir = os.path.join(root, "bin")
+        model_dir = os.path.join(root, "models")
+        os.makedirs(bin_dir); os.makedirs(model_dir)
+        _write(os.path.join(bin_dir, "whisper-cli.exe"), b"EXE")
+        _write(os.path.join(model_dir, "base.bin"), b"WRONG-MODEL-CONTENT")
+        manifest = {"model": "base", "version": offline.WHISPER_CPP_VERSION,
+                    "files": {"bin/whisper-cli.exe": 3, "models/base.bin": 19}}
+        with open(os.path.join(root, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False)
+        self.assertFalse(offline.verify())
+
+    def test_download_writes_sha256_map(self):
+        p1, p2, p3, p4, p5, p6 = _download_patches()
+        with p1, p2, p3, p4, p5, p6:
+            offline.download("test-model")
+        manifest_path = os.path.join(core.BASE, "offline", "manifest.json")
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("sha256", data)
+        self.assertEqual(sorted(data["sha256"].keys()), sorted(data["files"].keys()))
+        # الموديل = البصمة المثبّتة، الـexe/الـdll = بصمة الملف الفعلي
+        self.assertEqual(data["sha256"]["models/test-model.bin"], _sha256(MODEL_BYTES))
+        self.assertEqual(data["sha256"]["bin/whisper-cli.exe"], _sha256(b"EXE"))
+        self.assertEqual(data["sha256"]["bin/ggml.dll"], _sha256(b"GGML"))
 
 
 # ── NetworkError ──────────────────────────────────────────────────────────────

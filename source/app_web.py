@@ -34,6 +34,24 @@ def ui_path(name):
     return core.asset(os.path.join(UI_DIR, name))
 
 
+def _warm_offline_check():
+    """
+    بيسخّن فحص بصمة الموديل المحلي في ثريد جانبي (#6): لو الموديل مثبّت، نفحصه
+    مرة واحدة في الجلسة عشان offline_status يعرض حالته (سليم/بايظ) من غير ما
+    الواجهة تفضل محبوسة على هاش 150–190 MB. الفشل بيتسجّل ومبيطلعش.
+    """
+    if not offline.installed():
+        return
+
+    def run():
+        try:
+            offline.verify()
+        except Exception as e:
+            core.log_error(e, "offline/verify-warm")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def combo_listener(combo, fire):
     """
     اختصار عام زي "<ctrl>+<alt>+n" بيتقارن بأكواد الزراير (vk) مش بالحروف.
@@ -339,7 +357,7 @@ class Controller:
     def start_tray(self):
         def run():
             try:
-                import pystray
+                pystray = core.import_pystray()
                 from PIL import Image
                 img = Image.open(core.asset("emlaa.png"))
                 self.tray = pystray.Icon("emlaa", img, self._tray_title(), self._tray_menu())
@@ -464,6 +482,7 @@ class Controller:
     # ═══════════ التشغيل ═══════════
     def run(self):
         import webview
+        core.preload_pystray()
         threading.Thread(target=self._tk_thread, daemon=True).start()
         self._tk_ready.wait(5)
 
@@ -482,6 +501,7 @@ class Controller:
             self.start_clipboard()
             self.start_open_hotkey()
             self.watch_show_request()
+            _warm_offline_check()
             if keys.get(core.CFG.get("provider", providers.DEFAULT)) or (
                     core.CFG.get("offline_mode") == "always" and offline.installed()):
                 self.start_engine()
@@ -778,6 +798,7 @@ class Api:
         return {
             "installed": offline.installed(),
             "residual": offline.residual(),   # ملفات باقية من تثبيت بايظ — الإزالة تفضل متاحة
+            "verified": offline.cached_verification(),   # True/False بعد الفحص، None لو لسه متفحصش
             "mode": core.CFG.get("offline_mode", "fallback"),
             "model": core.CFG.get("offline_model", ""),
             "models": [{"id": m, "size": round(sz / 1_000_000)}
