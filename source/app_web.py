@@ -526,12 +526,16 @@ class Api:
         # F9: تنزيل offline — تنزيل واحد في نفس الوقت بس (الملفات مشتركة)
         self._offline_lock = threading.Lock()
         self._offline_busy = False
+        # Task 24: قفل واحد بيحوّش key_add / key_remove وكتابة المفتاح في save_settings
+        # عشان دوستين متتاليتين سريعتين مايخلطوش قراية/كتابة .env فوق بعض.
+        self._key_lock = threading.Lock()
 
     # ── بيانات أول ما الواجهة تفتح ──
     def bootstrap(self):
         c = self._c
         cfg = core.CFG
         keys = providers.read_keys(core.ENV_PATH)
+        pools = providers.read_key_pools(core.ENV_PATH)
         pid = cfg.get("provider", providers.DEFAULT)
         return {
             "version": c.version,
@@ -554,6 +558,7 @@ class Api:
                                keyUrl=providers.PROVIDERS[p]["key_url"],
                                keyHint=providers.PROVIDERS[p]["key_hint"],
                                hasKey=bool(keys.get(p)),
+                               keyCount=len(pools.get(p, [])),
                                sttOnly=not providers.PROVIDERS[p].get("chat"),
                                guide=providers.GUIDES.get(p, {}),
                                models=providers.MODELS.get(p, []))
@@ -714,7 +719,8 @@ class Api:
             ok, err = providers.verify(pid, new_key)
             if not ok:
                 return {"ok": False, "err": err}
-            providers.write_key(core.ENV_PATH, pid, new_key)
+            with self._key_lock:
+                providers.write_key(core.ENV_PATH, pid, new_key)
         elif not keys.get(pid) and not offline_ok:
             return {"ok": False, "err": "محتاج مفتاح للمزوّد ده — الصقه في الخانة"}
 
@@ -791,6 +797,80 @@ class Api:
                 w.hide()
         c.tk_call(wave_setting)
         return {"ok": True, "boot": self.bootstrap()}
+
+    # ── مجمّعة المفاتيح لكل مزوّد (Task 24) ──
+    def key_pool(self, pid):
+        """
+        قايمة المفاتيح المموّهة للمزوّد مع حالة كل واحد — من غير أي مفتاح كامل أبدًا.
+        بيعتمد على read_key_pools + key_status، وبيترجّع خطأ لمزوّد مش معروف.
+        """
+        if pid not in providers.PROVIDERS:
+            return {"ok": False, "err": "مزوّد مش معروف"}
+        pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
+        keys = []
+        for i, k in enumerate(pool):
+            st = providers.key_status(pid, k)
+            keys.append({"index": i,
+                         "masked": providers.mask_key(k),
+                         "status": st["status"],
+                         "retryIn": st["retry_in"]})
+        return {"ok": True, "keys": keys}
+
+    def key_reveal(self, pid, index):
+        """
+        الـAPI الوحيد اللي بيرجّع مفتاح كامل — لمفتاح واحد بس (مفحوص الحدود).
+        منسجّلش المفتاح ولا نطبعه في أي حاجة.
+        """
+        if pid not in providers.PROVIDERS:
+            return {"ok": False, "err": "مزوّد مش معروف"}
+        pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
+        if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(pool)):
+            return {"ok": False, "err": "المفتاح مش موجود"}
+        return {"ok": True, "key": pool[index]}
+
+    def key_add(self, pid, key):
+        """
+        يتحقق من مفتاح جديد (verify) وبعدين يضيفه آخر المجمّعة. التحقق فشل = مبيتكتبش
+        حاجة. المفتاح موجود بالفعل = مبيرحلش verify خالص.
+        """
+        key = (key or "").strip()
+        if not key:
+            return {"ok": False, "err": "الصق المفتاح الأول"}
+        if pid not in providers.PROVIDERS:
+            return {"ok": False, "err": "مزوّد مش معروف"}
+        with self._key_lock:
+            pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
+            if key in pool:
+                return {"ok": False, "err": "المفتاح ده موجود بالفعل"}
+            ok, err = providers.verify(pid, key)
+            if not ok:
+                return {"ok": False, "err": err}
+            providers.add_provider_key(core.ENV_PATH, pid, key)
+            return {"ok": True, **self.key_pool(pid)}
+
+    def key_remove(self, pid, index, masked=None):
+        """
+        يشيل مفتاح بفهرسه. بيمنع شيل آخر مفتاح للمزوّد المختار — إلا لو وضع offline
+        "always" والموديل مثبّت (فالمفتاح مش ضروري للاشتغال).
+        """
+        if pid not in providers.PROVIDERS:
+            return {"ok": False, "err": "مزوّد مش معروف"}
+        if isinstance(index, bool) or not isinstance(index, int):
+            return {"ok": False, "err": "المفتاح مش موجود"}
+        with self._key_lock:
+            pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
+            if not (0 <= index < len(pool)):
+                return {"ok": False, "err": "المفتاح مش موجود"}
+            # الواجهة بتبعت المقنّع اللي شايفاه: لو .env اتغيّر من ورا القايمة (الفهرس
+            # بقى بيشاور على مفتاح تاني) منمسحش حاجة
+            if masked is not None and providers.mask_key(pool[index]) != masked:
+                return {"ok": False, "err": "قايمة المفاتيح اتغيّرت — جرّب تاني"}
+            selected = core.CFG.get("provider", providers.DEFAULT) == pid
+            offline_ok = (core.CFG.get("offline_mode") == "always" and bool(offline.installed()))
+            if selected and len(pool) == 1 and not offline_ok:
+                return {"ok": False, "err": "ده آخر مفتاح للمزوّد المختار — ضيف مفتاح تاني الأول أو غيّر المزوّد"}
+            providers.remove_provider_key(core.ENV_PATH, pid, index)
+            return {"ok": True, **self.key_pool(pid)}
 
     # ── التفريغ من غير إنترنت (F9) ──
     def offline_status(self):

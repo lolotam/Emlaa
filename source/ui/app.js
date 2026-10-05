@@ -19,6 +19,7 @@ const S = {
   provider: null,
   snipEditKey: null,
   offline: null,
+  keyPool: { pid: null, keys: [] },
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
@@ -36,6 +37,8 @@ const ICON = {
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
+  eye: '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
 };
 
 /* ═══════════ أدوات ═══════════ */
@@ -111,7 +114,8 @@ function go(page) {
   if (page === "history") renderHistory();
   if (page === "clipboard") loadClips();
   if (page === "dictionary") { renderDict(); renderSnippets(); }
-  if (page === "settings") fillSettings();
+  if (page === "settings") { fillSettings(); startKeyPoolTimer(); }
+  else stopKeyPoolTimer();
   updateBulk();
 }
 document.addEventListener("click", e => {
@@ -832,20 +836,16 @@ $("#offlineRemove").addEventListener("click", async () => {
 function fillSettings() {
   const c = S.boot.cfg;
   S.provider = c.provider;
-  const keyHint = () => {
-    const p = curProv();
-    $("#setKeyHint").textContent = p.hasKey ? `${p.keyHint} · فيه مفتاح محفوظ — سيب الخانة فاضية عشان تفضل عليه`
-                                            : `${p.keyHint} · لازم مفتاح قبل الحفظ`;
-    $("#setKey").value = "";
-  };
   const ps = $("#setProvider");
   ps.innerHTML = S.boot.providers.map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.tag)}${p.hasKey ? " ✓" : ""}</option>`).join("");
   ps.value = S.provider;
+  $("#setKey").value = "";
   const provChanged = () => {
-    keyHint(); renderGuide($("#setGuide")); sttOnlyNote();
+    renderGuide($("#setGuide")); sttOnlyNote();
     S.model = (c.models || {})[S.provider] || ""; loadModels("");
+    refreshKeyPool();
   };
-  ps.onchange = () => { S.provider = ps.value; provChanged(); };
+  ps.onchange = () => { S.provider = ps.value; $("#setKey").value = ""; provChanged(); };
   provChanged();
   let kt;
   $("#setKey").oninput = e => {                                   // مفتاح جديد → نجيب الموديلات بتاعته
@@ -874,6 +874,154 @@ function fillSettings() {
   $("#saveMsg").className = "save-msg";
   refreshOffline();
 }
+
+/* ═══════════ مجمّعة المفاتيح لكل مزوّد (Task 24) ═══════════ */
+const KEY_BADGE = { active: "🟢 نشط", rate_limited: "🔴 نفدت الكوتا مؤقتاً", invalid: "⚠️ غير صالح" };
+let keyPoolTimer = null;
+
+function keyBadgeHTML(st, retryIn) {
+  const label = KEY_BADGE[st] || KEY_BADGE.active;
+  // الوقت المتبقي في title بس — النص الظاهر لسه قابل للترجمة
+  const title = st === "rate_limited" && retryIn != null ? `⏱ ${Math.max(0, Math.round(retryIn))}s` : "";
+  return `<span class="key-badge ${esc(st)}"${title !== "" ? ` title="${title}"` : ""}>${label}</span>`;
+}
+function renderKeyPool() {
+  const box = $("#keyList");
+  const keys = S.keyPool.keys || [];
+  if (!keys.length) {
+    box.innerHTML = `<div class="key-empty">مفيش مفاتيح محفوظة للمزوّد ده</div>`;
+    return;
+  }
+  box.innerHTML = keys.map(k => `
+    <div class="key-item" data-i="${k.index}">
+      <span class="key-val" data-masked="${esc(k.masked)}">${esc(k.masked)}</span>
+      ${keyBadgeHTML(k.status, k.retryIn)}
+      <span class="key-acts">
+        <button class="icon-btn" data-act="reveal" title="إظهار المفتاح">${ICON.eye}</button>
+        <button class="icon-btn del" data-act="remove" title="مسح">${ICON.trash}</button>
+      </span>
+    </div>`).join("");
+}
+function renderKeyHint() {
+  const p = curProv();
+  const n = (S.keyPool.keys || []).length;
+  let base = p.hasKey ? `${p.keyHint} · فيه مفتاح محفوظ — سيب الخانة فاضية عشان تفضل عليه`
+                      : `${p.keyHint} · لازم مفتاح قبل الحفظ`;
+  if (n > 1) base += " · المفاتيح الإضافية بتتدار من القايمة تحت";
+  $("#setKeyHint").textContent = base;
+}
+function applyKeyPool(r) {
+  S.keyPool.keys = (r && r.keys) || [];
+  renderKeyPool();
+  renderKeyHint();
+}
+// soft (تحديث الحالة الدوري): لو القايمة نفسها متغيّرتش بنحدّث الشارات بس — إعادة رسم
+// كاملة كانت بتخفي المفتاح المعروض وبتلغي «متأكد؟» في نص التأكيد
+function softKeyPool(r) {
+  const keys = (r && r.keys) || [];
+  const rows = $$("#keyList .key-item");
+  const same = rows.length === keys.length &&
+    keys.every((k, i) => rows[i].querySelector(".key-val").dataset.masked === k.masked);
+  if (!same) { applyKeyPool(r); return; }
+  S.keyPool.keys = keys;
+  keys.forEach((k, i) => { rows[i].querySelector(".key-badge").outerHTML = keyBadgeHTML(k.status, k.retryIn); });
+}
+async function refreshKeyPool(soft = false) {
+  const pid = S.provider;
+  S.keyPool.pid = pid;
+  const r = await api().key_pool(pid);
+  if (S.provider !== pid) return r;   // المستخدم غيّر المزوّد في النص — تجاهل الرد القديم
+  if (soft) softKeyPool(r); else applyKeyPool(r);
+  return r;
+}
+function startKeyPoolTimer() {
+  stopKeyPoolTimer();
+  keyPoolTimer = setInterval(() => { if (S.page === "settings") refreshKeyPool(true); }, 15000);
+}
+function stopKeyPoolTimer() {
+  if (keyPoolTimer) { clearInterval(keyPoolTimer); keyPoolTimer = null; }
+}
+function keyTrashDisarm(btn) {
+  btn.dataset.armed = "";
+  btn.classList.remove("confirm");
+  if (btn.dataset.orig) { btn.innerHTML = btn.dataset.orig; delete btn.dataset.orig; }
+}
+function collapseKeyAdd() {
+  $("#keyAddRow").hidden = true;
+  const err = $("#keyAddErr");
+  err.hidden = true; err.textContent = "";
+  $("#keyAddInput").value = "";
+}
+$("#keyAdd").addEventListener("click", () => {
+  $("#keyAddRow").hidden = false;
+  $("#keyAddInput").focus();
+});
+$("#keyAddCancel").addEventListener("click", collapseKeyAdd);
+$("#keyAddGo").addEventListener("click", async () => {
+  const inp = $("#keyAddInput");
+  const key = inp.value.trim();
+  if (!key) return;
+  const btn = $("#keyAddGo");
+  const errEl = $("#keyAddErr");
+  btn.disabled = true;
+  btn.textContent = "بيتأكد…";
+  errEl.hidden = true;
+  let r;
+  try { r = await api().key_add(S.keyPool.pid, key); }
+  catch (e) { r = { ok: false, err: "مقدرتش أضيف المفتاح" }; }
+  btn.disabled = false;
+  btn.textContent = "تحقق وأضف";
+  if (!r || !r.ok) {
+    errEl.textContent = (r && r.err) || "مقدرتش أضيف المفتاح";
+    errEl.hidden = false;
+    return;
+  }
+  collapseKeyAdd();
+  applyKeyPool(r);
+  refreshBoot().then(renderKeyHint);
+  toast("اتضاف المفتاح ✓");
+});
+$("#keyPool").addEventListener("click", async e => {
+  const act = e.target.closest("[data-act]");
+  const item = e.target.closest(".key-item");
+  if (!act || !item) return;
+  const i = Number(item.dataset.i);
+  if (act.dataset.act === "reveal") {
+    const val = item.querySelector(".key-val");
+    if (val.dataset.revealed === "1") {
+      val.textContent = val.dataset.masked;
+      delete val.dataset.revealed;
+      act.innerHTML = ICON.eye;
+      act.title = "إظهار المفتاح";
+      return;
+    }
+    const r = await api().key_reveal(S.keyPool.pid, i);
+    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أعرض المفتاح"); return; }
+    val.textContent = r.key;
+    val.dataset.revealed = "1";
+    act.innerHTML = ICON.eyeOff;
+    act.title = "إخفاء المفتاح";
+    return;
+  }
+  if (act.dataset.act === "remove") {
+    if (act.dataset.armed !== "1") {
+      act.dataset.armed = "1";
+      act.classList.add("confirm");
+      act.dataset.orig = act.innerHTML;
+      act.innerHTML = "<span>متأكد؟</span>";
+      clearTimeout(act._t);
+      act._t = setTimeout(() => keyTrashDisarm(act), 3000);
+      return;
+    }
+    keyTrashDisarm(act);
+    // المفتاح المقنّع معاه: لو القايمة اتغيّرت من ورانا الفهرس ميمسحش مفتاح تاني
+    const masked = item.querySelector(".key-val").dataset.masked;
+    const r = await api().key_remove(S.keyPool.pid, i, masked);
+    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أمسح المفتاح"); refreshKeyPool(); return; }
+    applyKeyPool(r);
+    refreshBoot().then(renderKeyHint);
+  }
+});
 $("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
 $("#styleAdd").addEventListener("click", () => {

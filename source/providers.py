@@ -428,6 +428,11 @@ def _mask_key(key):
     return k[:4] + "…" + k[-4:]
 
 
+def mask_key(key):
+    """الواجهة العامة لـ_mask_key (نفس الشكل) — عشان app_web يعرض مفتاح مقنّع من غير ما يلمس الخاص."""
+    return _mask_key(key)
+
+
 def _clamp_cooldown(v):
     """يحصر مهلة التبريد بين ثانية و٢٤ ساعة — «340ms» مايبقاش ٥ ساعات ولا يبقى صفر."""
     return max(_COOLDOWN_MIN, min(_COOLDOWN_MAX, v))
