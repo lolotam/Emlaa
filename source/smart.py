@@ -526,6 +526,81 @@ def fix_mixed(text):
     return s
 
 
+# ── F2: لغة البرومبت تتقرر هنا مش في الموديل ──────────────────────────────────
+# قرار نقي: الطلب التقني = برومبت إنجليزي، والباقي عربي. الكلمات العربي التقنية
+# بتمسك على شكلها المطبّع (normalize) عشان الهمزة والتاء المربوطة والألف مايفرقوش
+# في الكتابات المصرية (ابليكيشن/الابليكيشن/الويب سايت…).
+
+# كلمات تقنية عربي شائعة (والمصري منها) — أي واحدة في الطلب = الطلب تقني.
+TECH_ARABIC_KEYWORDS = frozenset({
+    "تطبيق", "ابليكيشن", "الابليكيشن", "أبليكيشن", "الأبليكيشن",
+    "برنامج كمبيوتر", "برنامج", "برامج", "سوفتوير", "سوفت وير", "كمبيوتر",
+    "موقع", "مواقع", "ويب", "الويب", "ويب سايت", "الويب سايت", "سايت",
+    "كود", "أكواد", "اكواد", "برمجة", "مبرمج", "سكريبت", "سكربت",
+    "سيرفر", "سرفر", "داتابيز", "داتا بيز", "قاعدة بيانات", "قاعده بيانات",
+    "باك اند", "الباك اند", "فرونت اند", "الفرونت اند",
+    "اندرويد", "أندرويد", "ايفون", "أيفون", "مطور", "ديفلوبر",
+})
+
+# مصطلحات تقنية لاتيني — بتتطابق على حدود الكلمة (عشان "app" ماتمسكش في "happy").
+TECH_LATIN_TERMS = (
+    "api", "python", "react", "node", "nodejs", "javascript", "typescript",
+    "html", "css", "docker", "github", "git", "sql", "mysql", "postgres",
+    "database", "backend", "frontend", "fullstack", "website", "server", "code",
+    "coding", "programming", "developer", "software", "framework", "library",
+    "deployment", "devops", "cloud", "aws", "azure", "android", "ios",
+    "flutter", "kotlin", "swift", "java", "php", "ruby", "django", "flask",
+    "vue", "angular", "svelte", "kubernetes", "graphql", "json", "rest",
+    "linux", "terminal", "script", "algorithm", "blockchain", "ai", "app",
+)
+
+# عبارات لاتيني من أكتر من كلمة — بتمسك كـsubstring بعد تصغير الحروف.
+TECH_LATIN_PHRASES = (
+    "back end", "back-end", "front end", "front-end", "machine learning",
+    "deep learning", "artificial intelligence", "smart contract",
+)
+
+# الكلمة لازم تقف لوحدها (بعد التطبيع): مسموح سابقة (و/ف/ب/ل/ك + ال/لل) ولاحقة قصيرة
+# (جمع/ضمير) بس. المطابقة كـsubstring كانت بتمسك «ويب» جوّه «ويبقى» و«موقع» جوّه
+# «موقعة» — فطلبات عربي عادية كانت بتطلع برومبت إنجليزي (نفس الغلطة اللي بنصلّحها).
+# «تطوير» اتشالت: «تطوير الذات» مش طلب تقني.
+_TECH_ARABIC_RE = re.compile(
+    r"(?:^| )(?:[وفبلك])?(?:ال|لل)?(?:"
+    + "|".join(sorted((re.escape(normalize(k)) for k in TECH_ARABIC_KEYWORDS), key=len, reverse=True))
+    + r")(?:ات|ين|ان|ه|ها|ي|ك|كم|نا|هم)?(?= |$)")
+
+_LATIN_TECH_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in TECH_LATIN_TERMS) + r")\b", re.I)
+
+
+def latin_dominant(text):
+    """حروف لاتينية أكتر من عربي — بيستخدم في فحص لغة مخرج البرومبت (F2)."""
+    s = str(text or "")
+    ar = sum(1 for c in s if _AR_LETTER.fullmatch(c))
+    la = sum(1 for c in s if c.isascii() and c.isalpha())
+    return la > ar
+
+
+def prompt_language(text):
+    """
+    لغة برومبت الطلب: "ar" | "en". القرار بيطلع من الكود مش من الموديل (F2):
+      • "en" لو الطلب تقني — فيه مصطلح لاتيني تقني أو كلمة عربي تقنية من
+        TECH_ARABIC_KEYWORDS — أو لو أكتر حروفه لاتيني (الطلب أصله إنجليزي).
+      • غير كده "ar".
+    """
+    s = str(text or "")
+    if not s.strip():
+        return "ar"
+    if _TECH_ARABIC_RE.search(normalize(s)):
+        return "en"
+    lower = s.lower()
+    if _LATIN_TECH_RE.search(lower) or any(p in lower for p in TECH_LATIN_PHRASES):
+        return "en"
+    if latin_dominant(s):
+        return "en"
+    return "ar"
+
+
 # ── F8: الاختصارات الصوتية ──────────────────────────────────────────────────
 # أدنى تشابه بين الكلام المنطوق ومفتاح الاختصار عشان نعتبره «هو هو». التطبيع
 # (normalize) بيوحّد اختلافات الكتابة الكبيرة (همزة، تاء مربوطة، ى/ي…)، والباقي
