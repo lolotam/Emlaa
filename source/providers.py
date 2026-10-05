@@ -446,6 +446,10 @@ class Client:
                 if detected == "en" and text:
                     return text
             except RuntimeError as e:
+                # 400 بس = برامترات التعرّف مش مدعومة → نعيد كعربي. غير كده
+                # (401 مفتاح، حصة، نت) مش هيفيد تعيد — بيطلع للمستخدم زي ما هو.
+                if getattr(e, "status", None) != 400:
+                    raise
                 try:
                     import core
                     core.log_error(e, "deepgram/detect_language (هنفرّغ كعربي)")
@@ -487,11 +491,17 @@ class Client:
                         continue        # يمكن الكلمات المخصوصة مش مدعومة للغة دي → من غيرها
                     if e.code in (400, 403, 404) and i < len(candidates) - 1:
                         break           # الموديل مش متاح للعربي/للمفتاح → البديل
-                    raise RuntimeError(_http_msg(e))
+                    err = RuntimeError(_http_msg(e))
+                    err.status = e.code   # عشان المتصل يفرّق 400 عن غيرها
+                    raise err
                 except Exception as e:
-                    raise RuntimeError(_http_msg(e))
+                    err = RuntimeError(_http_msg(e))
+                    err.status = None     # خطأ شبكة: مفيش حالة HTTP
+                    raise err
         if last_err:
-            raise RuntimeError(_http_msg(last_err))
+            err = RuntimeError(_http_msg(last_err))
+            err.status = getattr(last_err, "code", None)
+            raise err
         return "", language
 
     def _oa_transcribe(self, wav_path, language):

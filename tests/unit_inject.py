@@ -191,15 +191,42 @@ class TestPasteText(unittest.TestCase):
         cv.assert_called_once_with()
         self.assertFalse(ttype.called)
 
-    def test_ctrl_v_clipboard_failure_is_failed_without_inject(self):
-        # اللزق محتاج الحافظة: نشرها فشل = failed، ومفيش محاولة كتابة بديلة
+    def test_ctrl_v_clipboard_failure_is_clip_failed(self):
+        # اللزق محتاج الحافظة: نشرها فشل = مفيش حقن ولا نسخة → clip_failed
         with self.patch_cfg(), \
                 mock.patch("pyperclip.copy", side_effect=RuntimeError("no clip")), \
                 mock.patch("winput.paste_ctrl_v") as cv, \
                 mock.patch.object(core, "log_error"), \
                 mock.patch.object(core.time, "sleep"):
-            self.assertEqual(core.paste_text("hello", ("gui", "ctrl_v", "hello")), "failed")
+            self.assertEqual(core.paste_text("hello", ("gui", "ctrl_v", "hello")), "clip_failed")
         self.assertFalse(cv.called)
+
+    def test_shift_insert_clipboard_failure_is_clip_failed(self):
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy", side_effect=RuntimeError("no clip")), \
+                mock.patch("winput.paste_shift_insert") as si, \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("echo hi", ("terminal", "shift_insert", "echo hi")),
+                             "clip_failed")
+        self.assertFalse(si.called)
+
+    def test_type_failure_and_backup_failure_is_clip_failed(self):
+        # الكتابة فشلت والنسخة الاحتياطية فشلت كمان → ولا حاجة وصلت
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy", side_effect=RuntimeError("no clip")), \
+                mock.patch("winput.type_text", return_value=False), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("hello", ("gui", "type", "hello")), "clip_failed")
+
+    def test_type_failure_with_backup_success_is_failed(self):
+        # الكتابة فشلت بس النص وصل الحافظة → failed (المستخدم يقدر يلزقه)
+        with self.patch_cfg(), \
+                mock.patch("pyperclip.copy", return_value=True), \
+                mock.patch("winput.type_text", return_value=False), \
+                mock.patch.object(core.time, "sleep"):
+            self.assertEqual(core.paste_text("hello", ("gui", "type", "hello")), "failed")
 
     def test_ctrl_v_sendinput_failure(self):
         with self.patch_cfg(), \
@@ -476,6 +503,25 @@ class TestSecureOrdering(unittest.TestCase):
                 mock.patch.object(core.time, "sleep"):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(app.unplaced, ["p:مرحبا بالعالم"])
+
+    def test_clip_failed_routes_to_err_not_unplaced(self):
+        # مفيش حقن ولا نسخة على الحافظة → رسالة خطأ، مش toast "انسخه بنفسك"
+        app = make_app()
+        fake = FakeClient()
+        app.client = lambda: fake
+        with mock.patch.object(core, "beep"), \
+                mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", _cfg()), \
+                mock.patch("winput.focused_info",
+                           return_value={"is_password": False, "class": "Edit",
+                                          "editable": True}), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=111), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch.object(core, "paste_text", return_value="clip_failed"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(app.unplaced, [])
+        self.assertIn(("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني"), app.events)
 
     def test_multiline_terminal_is_handoff(self):
         # متعدد لحد الترمنال: نسخ + toast، ومفيش حقن خالص (R1 #4)

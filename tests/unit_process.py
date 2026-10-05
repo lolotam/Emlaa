@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import time
+import wave
 import tempfile
 import dataclasses
 import threading
@@ -377,6 +378,30 @@ class TestBeginEnd(unittest.TestCase):
         self.assertEqual(rec.started, 0, "rec.start اتندى رغم إن التسجيل اتلغى")
         self.assertFalse(app.recording)
 
+    def test_begin_order_beep_then_start_then_rec(self):
+        # الترتيب المطلوب: الصفارة برّه القفل، بعدها الالتقاط، وبعدين إعلان "rec"
+        app = make_app()
+        order = []
+        app.rec.start = mock.Mock(side_effect=lambda: order.append("start"))
+        app.on_state = lambda st, msg=None: order.append("state:" + st)
+        with mock.patch.object(core, "beep", side_effect=lambda *a: order.append("beep")), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("normal")
+        self.assertEqual(order, ["beep", "start", "state:rec"])
+
+    def test_begin_cancel_during_beep_never_starts_and_not_rec(self):
+        # المستخدم ألغى جوّه الصفارة: الالتقاط ممن يبدأ، وآخر حالة مش "rec"
+        app = make_app()
+
+        def beep_cancel(freq, dur):
+            app.cancel()
+
+        with mock.patch.object(core, "beep", side_effect=beep_cancel), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("normal")
+        self.assertEqual(app.rec.started, 0, "rec.start اتندى رغم الإلغاء في الصفارة")
+        self.assertNotEqual(app.events[-1][0], "rec")
+
 
 class TestProcess(unittest.TestCase):
     def test_process_reads_mode_from_operation(self):
@@ -625,6 +650,77 @@ class TestSecurePrivacy(unittest.TestCase):
         hist.assert_not_called()
         self.assertFalse(app.busy)
 
+    def test_late_password_after_gui_goes_secure_path(self):
+        # الفوكس كان عادي وقت الاستعلام المبكّر (الموديل اشتغل)، واتحوّل لباسورد
+        # قبل التصنيف → النتيجة بتتعامل آمنة: مفيش سجل/عرض/حافظة/صوت، كتابة بس
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        log = []
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=[
+                    {"is_password": False, "class": "Edit", "editable": True},
+                    {"is_password": True, "class": "Edit", "editable": True}]), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add",
+                                  side_effect=lambda *a, **k: log.append("history_add") or 111), \
+                mock.patch.object(core, "recording_save",
+                                  side_effect=lambda *a, **k: log.append("recording_save")), \
+                mock.patch("pyperclip.copy",
+                           side_effect=lambda t: log.append("clipboard_copy")), \
+                mock.patch("winput.type_text",
+                           side_effect=lambda t: log.append("type") or True), \
+                mock.patch.object(core.time, "sleep"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)],
+                         "الموديل اشتغل لأن الاستعلام المبكّر شافه خانة عادية")
+        self.assertEqual(log, ["type"], "النتيجة اتعاملت آمنة بعد الاستعلام الأخير")
+        self.assertEqual(app.texts, [])
+        self.assertEqual(app.unplaced, [])
+        self.assertFalse(app.busy)
+
+    def test_late_no_text_field_after_gui_is_handoff(self):
+        # الفوكس اتساب لمكان من غير خانة كتابة قبل التصنيف → handoff مش كتابة
+        app = make_app()
+        fake = FakeClient(text="نص")
+        app.client = lambda: fake
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=[
+                    {"is_password": False, "class": "Edit", "editable": True},
+                    {"is_password": False, "class": "", "editable": False}]), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=111), \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch("pyperclip.copy"), \
+                mock.patch("winput.type_text") as ttype, \
+                mock.patch.object(core.time, "sleep"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertFalse(ttype.called, "editable=False لازم handoff مش كتابة")
+        self.assertEqual(app.unplaced, ["p:نص"])
+
+    def test_early_password_skips_model_even_if_late_is_gui(self):
+        # الاستعلام المبكّر شاف باسورد → الموديل ممن يشتغل، حتى لو الفوكس بقى عادي
+        app = make_app()
+        fake = FakeClient(text="s3cret!")
+        app.client = lambda: fake
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", side_effect=[
+                    {"is_password": True, "class": "Edit", "editable": True},
+                    {"is_password": False, "class": "Edit", "editable": True}]), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=111) as hist, \
+                mock.patch.object(core, "recording_save"), \
+                mock.patch("pyperclip.copy"), \
+                mock.patch("winput.type_text", return_value=True), \
+                mock.patch.object(core.time, "sleep"):
+            app.process("WAV", core.Operation(mode="normal"))
+        self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للباسورد")
+        hist.assert_not_called()
+        self.assertEqual(app.texts, [])
+
 
 class TestHistoryBypassFlag(unittest.TestCase):
     def test_bypass_key_stored_only_when_true(self):
@@ -791,6 +887,45 @@ class TestFixMixedProcess(unittest.TestCase):
         app, fake, _ = self._run(text="تمام, شكرا")
         self.assertEqual(fake.calls, [("transcribe", "ar")])
         self.assertEqual(app.texts, ["تمام، شكرا"])
+
+
+class TestRecordingSaveTmpCleanup(unittest.TestCase):
+    """G5: ملف .mp3.tmp لازم يتمسح لو الكتابة أو os.replace فشل، والـprune بينضّف الزيادة."""
+
+    def _fake_lameenc(self):
+        fake = mock.MagicMock()
+        fake.Encoder.return_value.encode.return_value = b"mp3"
+        fake.Encoder.return_value.flush.return_value = b""
+        return fake
+
+    def test_replace_failure_removes_tmp(self):
+        with tempfile.TemporaryDirectory() as d:
+            wav = os.path.join(d, "in.wav")
+            with wave.open(wav, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+                w.writeframes(b"\x00\x00" * 1600)
+            recs = os.path.join(d, "recs")
+            with mock.patch.dict(sys.modules, {"lameenc": self._fake_lameenc()}), \
+                    mock.patch.object(core, "RECORDINGS_DIR", recs), \
+                    mock.patch.object(core, "HISTORY_PATH", os.path.join(d, "history.json")), \
+                    mock.patch.object(core, "log_error"), \
+                    mock.patch("os.replace", side_effect=RuntimeError("boom")):
+                core.recording_save(123, wav)
+            leftovers = [n for n in os.listdir(recs) if n.endswith(".tmp")]
+            self.assertEqual(leftovers, [], "الـ.tmp لسه موجود بعد فشل الـreplace")
+
+    def test_prune_deletes_stray_tmp(self):
+        with tempfile.TemporaryDirectory() as d:
+            recs = os.path.join(d, "recs")
+            os.makedirs(recs)
+            stray = os.path.join(recs, "999.mp3.tmp")
+            with open(stray, "wb") as f:
+                f.write(b"leftover")
+            with mock.patch.object(core, "RECORDINGS_DIR", recs), \
+                    mock.patch.object(core, "HISTORY_PATH", os.path.join(d, "history.json")), \
+                    mock.patch.object(core, "log_error"):
+                core.recordings_prune()
+            self.assertFalse(os.path.exists(stray))
 
 
 if __name__ == "__main__":

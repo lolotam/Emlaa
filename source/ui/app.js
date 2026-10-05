@@ -725,7 +725,11 @@ $("#styleList").addEventListener("click", e => {
   const b = e.target.closest(".style-del");
   if (!b) return;
   b.closest(".style-row").remove();
-  if (!$("#styleList .style-row")) renderStyleRows();
+  // آخر صف اتشال: اعرض placeholder فاضي من غير ما تعيد البناء من S.boot.cfg —
+  // (renderStyleRows كانت هترجّع الاستثناء المحذوف تاني، فما كنش ممكن يتشال)
+  if (!$("#styleList .style-row")) {
+    $("#styleList").innerHTML = `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
+  }
 });
 $("#saveBtn").addEventListener("click", async () => {
   const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value];

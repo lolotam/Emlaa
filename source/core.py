@@ -270,12 +270,36 @@ def recording_save(rid, wav):
         data = enc.encode(pcm) + enc.flush()
         os.makedirs(RECORDINGS_DIR, exist_ok=True)
         tmp = recording_path(rid) + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, recording_path(rid))
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, recording_path(rid))
+        except Exception:
+            # الملف المؤقت فيه صوت المستخدم — لو فشلنا نكتبه أو نبدّله لازم يتمسح
+            # مش يفضل معلق (الـprune كان بيتجاهله خالص)
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
     except Exception as e:
         log_error(e, "recordings/save")
     recordings_prune()
+
+
+def _remove_stray_tmp():
+    """بيمسح ملفات .mp3.tmp اللي فضلت من كتابة فاشلة (بيبقى فيها صوت مسجّل)."""
+    try:
+        for n in os.listdir(RECORDINGS_DIR):
+            if n.endswith(".mp3.tmp"):
+                try:
+                    os.remove(os.path.join(RECORDINGS_DIR, n))
+                except Exception as e:
+                    log_error(e, "recordings/prune")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log_error(e, "recordings/prune")
 
 
 def recordings_prune():
@@ -284,6 +308,7 @@ def recordings_prune():
     أو تسجيله اتمسح من السجل، بيتمسح (الـid = وقت التسجيل، فالأكبر = الأحدث).
     """
     with _store_lock:
+        _remove_stray_tmp()
         items, ok = _read_list(HISTORY_PATH)
         if not ok:                     # السجل بايظ = مانعرفش مين عايش — مانمسحش صوت حد
             return
@@ -822,10 +847,12 @@ def _copy_to_clipboard(text):
 def paste_text(text, target=None):
     """
     بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
-      "placed"  = الأحداث اتحقنت كويس
-      "failed"  = نشر الحافظة أو SendInput فشل (مفيش إعادة حقن — R1 #12)
-      "handoff" = ممن متحقن (مفيش خانة كتابة / auto_paste مقفول / متعدد في
-                  ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
+      "placed"      = الأحداث اتحقنت كويس
+      "failed"      = الحقن فشل بس النص على الحافظة (المستخدم يقدر يلزقه)
+      "clip_failed" = مفيش حقن ولا نسخة على الحافظة (نشر الحافظة فشل، أو
+                      الكتابة فشلت والنسخة الاحتياطية فشلت كمان)
+      "handoff"     = ممن متحقن (مفيش خانة كتابة / auto_paste مقفول / متعدد في
+                      ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
     target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
     لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
     """
@@ -846,12 +873,16 @@ def paste_text(text, target=None):
         # خانة آمنة: كتابة بس — الحافظة مش طريقها
         return "placed" if winput.type_text(inj) else "failed"
     if strategy == "type":
-        _copy_to_clipboard(inj)                 # نسخة احتياطية — فشلها مش قاتل للكتابة
-        return "placed" if winput.type_text(inj) else "failed"
+        # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
+        # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
+        backup = _copy_to_clipboard(inj)
+        if winput.type_text(inj):
+            return "placed"
+        return "failed" if backup else "clip_failed"
     if strategy in ("ctrl_v", "shift_insert"):
-        # اللزق هو النص نفسه: فشل نشر الحافظة = فشل، ومفيش كتابة بديل
+        # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
         if not _copy_to_clipboard(inj):
-            return "failed"
+            return "clip_failed"
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
         return "placed" if fn() else "failed"
     return "handoff"
@@ -962,16 +993,27 @@ class App:
             return
         # F1: فتح الميك ممكن ياخد وقت (ريكونكت)، وجوّه الوقت ده end()/cancel()
         # بيقدروا يقفلوا recording ويشيلوا _op. بنفحص تاني جوّه القفل إن الدورة
-        # لسه ملكنا (نفس الـOperation) — غير كده منبدأش تسجيل يتيم (rec.start
-        # + on_state("rec")) من غير عملية تملكه.
+        # لسه ملكنا (نفس الـOperation) — غير كده منبدأش تسجيل يتيم.
         with self._state_lock:
             if not self.recording or self._op is not op:
                 return
-            # start جوّه القفل (بيقلب فلاج بس): لو اتعمل بعد الصفارة (90ms)، cancel في
-            # النص كان بيعمل discard والـstart يرجّع التسجيل يتيم تاني
-            self.rec.start()
+        # الصفارة برّه القفل وقبل الالتقاط: لو سبقت الالتقاط كانت بتتسجّل جوّه
+        # الصوت، ولو جوّه القفل كانت بتقعد فيه ~90ms بتمنع cancel يوصّل.
         beep(880, 90)
+        # فحص تاني بعد الصفارة: cancel ممكن يكون وصل في النص — ومنبدأش التقاط
+        # يتيم من غير عملية تملكه
+        with self._state_lock:
+            if not self.recording or self._op is not op:
+                return
+            self.rec.start()
         self.on_state("rec", mode)
+        # لو cancel وصل بين الالتقاط وإعلان "rec"، رسالة "rec" بتسبق رسالة
+        # الإلغاء وتسيّب الواجهة على "rec" — فننادي "ready" برّه القفل عشان
+        # الواجهة متفضلش واقفة على "rec"
+        with self._state_lock:
+            stale = self._op is not op
+        if stale:
+            self.on_state("ready")
 
     def end(self):
         with self._state_lock:
@@ -1033,13 +1075,13 @@ class App:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
 
-            # F2 (خصوصية): بنجيب معلومات الفوكس مرة واحدة قبل خطوة الإخراج — لو
+            # F2 (خصوصية): بنجيب معلومات الفوكس مرة واحدة قبل أي نداء للموديل — لو
             # الخانة باسورد، نصها عمره ما يوصل للموديل ولا يتعدّل (بيتكتب زي ما
-            # اتفرّغ). التصنيف تحت بيستخدم نفس الـinfo — مفيش نداء تاني.
+            # اتفرّغ). ده استعلام مبكّر للخصوصية بس.
             import winput
             info = winput.focused_info()
             info["exe"] = _foreground_app()
-            secure = info.get("is_password") is True
+            early_secure = info.get("is_password") is True
 
             bypass = False
             if cur_mode == "prompt":
@@ -1048,7 +1090,7 @@ class App:
             elif cur_mode == "translate":
                 self.on_state("translate", "بترجم الكلام…")
                 out = cl.translate(text)
-            elif secure:
+            elif early_secure:
                 # خانة باسورد في الوضع العادي: مفيش لفة LLM ولا تنضيف — النص
                 # بيتكتب زي ما اتفرّغ. (التحويلين فوق المستخدم اختارهم بنفسه.)
                 out = text
@@ -1064,9 +1106,17 @@ class App:
             else:
                 out = text
 
+            # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
+            # قبل تصنيف الهدف. لو أي استعلام (المبكّر أو الأخير) شاف خانة باسورد،
+            # نتعامل معاها آمنة كلها: مفيش سجل/عرض/حافظة/صوت، والكتابة بس.
+            info2 = winput.focused_info()
+            info2["exe"] = _foreground_app()
+            secure = early_secure or (info2.get("is_password") is True)
+            if secure:
+                info2["is_password"] = True
             # F3 (R1 #1): تصنيف الهدف قبل السجل/الحافظة/الصوت — الهدف الآمن:
             # مفيش حاجة من التسجيل ده بتطلع من هنا (لسجل، صوت، نسخ، ولا عرض النص).
-            target = smart.insert_target(info, out, CFG.get("insert_method"))
+            target = smart.insert_target(info2, out, CFG.get("insert_method"))
             # F7: بعد مخرج الوضع العادي (polish أو تخطّي الرد القصير) بنصلّح
             # النص المختلط: الحرف العاري قبل الكلمة اللاتيني على شكله المثالي
             # («للـ branch») والترقيم العربي — بس من غير تطبيقات dev (الكود لازم
@@ -1086,7 +1136,9 @@ class App:
                 self.on_text(out)
             if not secure or CFG.get("auto_paste", True):
                 res = paste_text(out, target)
-                if not secure and res in ("failed", "handoff"):
+                if not secure and res == "clip_failed":
+                    self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+                elif not secure and res in ("failed", "handoff"):
                     self.on_unplaced(out)
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
