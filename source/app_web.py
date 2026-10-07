@@ -650,7 +650,15 @@ class Api:
 
     def clips_clear(self):
         core.clip_clear()
-        return []
+        return core.clip_get()          # المفضلة بتفضل
+
+    def clips_fav(self, cid, fav):
+        """نجمة على نسخة (أو شيلها). المفضلة مش بتتمسح لا بالمسح ولا بالقص التلقائي."""
+        if isinstance(cid, bool) or not isinstance(cid, int):
+            return {"ok": False, "err": "النسخة مش موجودة"}
+        if not core.clip_set_fav(cid, bool(fav)):
+            return {"ok": False, "err": "النسخة مش موجودة"}
+        return {"ok": True, "items": core.clip_get()}
 
     def copy(self, text):
         try:

@@ -37,6 +37,7 @@ const ICON = {
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
   eye: '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
   eyeOff: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
 };
@@ -411,7 +412,11 @@ $("#bulkCancel").addEventListener("click", () => {
 });
 $("#bulkDel").addEventListener("click", async e => {
   const c = bulkCtx(); if (!c || !c.set.size) return;
-  const n = c.set.size;
+  let n = c.set.size;
+  // المفضلة في الحافظة مش بتتمسح — بنعدّ اللي هيتمسح فعلًا بس
+  const favSel = S.page === "clipboard" ? S.clips.filter(x => x.fav && c.set.has(x.id)).length : 0;
+  if (favSel && favSel === n) return toast("المفضلة مش بتتمسح — شيل النجمة الأول");
+  n -= favSel;
   if (!armed(e.currentTarget, `تأكيد مسح ${num(n)}`)) return;
   if (S.page === "history") {
     invalidatePlayback();
@@ -423,7 +428,7 @@ $("#bulkDel").addEventListener("click", async e => {
     S.clipSel.clear();
     fillClipApps(); renderClips();
   }
-  toast(`اتمسح ${num(n)} ${c.unit}`);
+  toast(`اتمسح ${num(n)} ${c.unit}` + (favSel ? ` · ${num(favSel)} مفضّلة فضلت` : ""));
 });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && !$("#bulkbar").hidden) $("#bulkCancel").click();
@@ -453,6 +458,8 @@ function setLabel(btn, text) {
 }
 
 /* ═══════════ الحافظة ═══════════ */
+// قيمة فلتر «المفضلة» في قايمة البرامج — أسماء البرامج (chrome.exe…) عمرها ما فيها ★
+const CLIP_FAV = "★fav";
 async function loadClips() {
   S.clips = await api().clips();
   fillClipApps();
@@ -462,8 +469,11 @@ function fillClipApps() {
   const sel = $("#clipApp");
   const cur = sel.value;
   const apps = [...new Set(S.clips.map(c => c.source).filter(Boolean))].sort();
-  sel.innerHTML = `<option value="">كل البرامج</option>` + apps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
-  if (apps.includes(cur)) sel.value = cur;
+  const favs = S.clips.filter(c => c.fav).length;
+  sel.innerHTML = `<option value="">كل البرامج</option>`
+    + `<option value="${CLIP_FAV}">⭐ المفضلة${favs ? ` (${num(favs)})` : ""}</option>`
+    + apps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
+  if (cur === CLIP_FAV || apps.includes(cur)) sel.value = cur;
   $("#navClipCount").textContent = S.clips.length ? num(S.clips.length) : "";
 }
 function clipVisible() {
@@ -477,7 +487,7 @@ function clipVisible() {
     since = d.getTime();
   }
   return S.clips.filter(c => (!q || c.text.toLowerCase().includes(q))
-    && (!app || c.source === app) && (!since || parseTime(c.time).getTime() >= since));
+    && (!app || (app === CLIP_FAV ? c.fav : c.source === app)) && (!since || parseTime(c.time).getTime() >= since));
 }
 function renderClips() {
   const all = clipVisible();
@@ -488,12 +498,14 @@ function renderClips() {
     const sel = S.clipSel.has(c.id);
     return `<tr data-id="${c.id}" class="${sel ? "selected" : ""}">
       <td><label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label></td>
+      <td class="c-fav"><button class="icon-btn fav${c.fav ? " on" : ""}" data-act="fav" aria-pressed="${c.fav ? "true" : "false"}"
+        title="${c.fav ? "شيل من المفضلة" : "ضيف للمفضلة — مش هتتمسح"}">${ICON.star}</button></td>
       <td><div class="clip-text" title="دوسة تفتح النص كله">${esc(c.text.length > 4000 ? c.text.slice(0, 4000) + "…" : c.text)}</div></td>
       <td>${c.source ? `<span class="app-tag" title="${esc(c.source)}">${esc(c.source)}</span>` : `<span class="muted">—</span>`}</td>
       <td class="t-time">${esc(shortTime(parseTime(c.time)))}</td>
       <td><div class="t-actions">
         <button class="icon-btn" data-act="copy" title="نسخ تاني">${ICON.copy}</button>
-        <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
+        <button class="icon-btn del" data-act="del" ${c.fav ? 'disabled title="المفضلة مش بتتمسح — شيل النجمة الأول"' : 'title="مسح"'}>${ICON.trash}</button>
       </div></td></tr>`;
   }).join("");
   $("#clipEmpty").classList.toggle("show", !items.length);
@@ -526,7 +538,15 @@ $("#clipBody").addEventListener("click", async e => {
   }
   const act = e.target.closest("[data-act]");
   if (act?.dataset.act === "copy") return copyText(clip.text, act);
+  if (act?.dataset.act === "fav") {
+    const r = await api().clips_fav(id, !clip.fav);
+    if (!r || !r.ok) return toast((r && r.err) || "مقدرتش أغيّر المفضلة");
+    S.clips = r.items;
+    fillClipApps(); renderClips();
+    return toast(clip.fav ? "اتشالت من المفضلة" : "اتضافت للمفضلة ⭐");
+  }
   if (act?.dataset.act === "del") {
+    if (clip.fav) return toast("المفضلة مش بتتمسح — شيل النجمة الأول");
     S.clips = await api().clips_delete([id]);
     fillClipApps(); renderClips();
     return toast("اتمسح");

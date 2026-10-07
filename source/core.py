@@ -452,6 +452,22 @@ def _clip_save(items):
         log_error(e, "clipboard/write")
 
 
+CLIP_CAP = 1000   # أقصى عدد نسخ عادية — المفضلة مش بتتحسب ومش بتتشال أبدًا
+
+
+def _clip_cap(items):
+    """بيقص النسخ العادية القديمة لحد CLIP_CAP ويسيب كل المفضلة مكانها بالترتيب."""
+    room = max(0, CLIP_CAP - sum(1 for i in items if i.get("fav")))
+    out = []
+    for i in items:
+        if i.get("fav"):
+            out.append(i)
+        elif room:
+            out.append(i)
+            room -= 1
+    return out
+
+
 def clip_add(text, source=""):
     import datetime
     text = (text or "")
@@ -460,25 +476,48 @@ def clip_add(text, source=""):
     text = text[:20000]
     with _clip_lock:
         items = _load_for_write(CLIP_PATH, "clipboard/read")
-        # نفس النص اتنسخ تاني → نطلّعه فوق بدل ما يتكرر
+        # نفس النص اتنسخ تاني → نطلّعه فوق بدل ما يتكرر (ولو كان مفضّل يفضل مفضّل)
+        fav = any(i.get("fav") for i in items if i.get("text") == text)
         items = [i for i in items if i.get("text") != text]
         now = datetime.datetime.now()
         entry = {"id": int(now.timestamp() * 1000), "time": now.strftime("%Y-%m-%d %H:%M:%S"),
                  "text": text, "source": source or ""}
+        if fav:
+            entry["fav"] = True
         items.insert(0, entry)
-        _clip_save(items[:1000])
+        _clip_save(_clip_cap(items))
     return entry
 
 
+def clip_set_fav(cid, fav):
+    """بيعلّم نسخة كمفضّلة أو يشيل العلامة. بيرجّع True لو النسخة موجودة."""
+    with _clip_lock:
+        items = _load_for_write(CLIP_PATH, "clipboard/read")
+        found = False
+        for i in items:
+            if i.get("id") == cid:
+                found = True
+                if fav:
+                    i["fav"] = True
+                else:
+                    i.pop("fav", None)
+        if found:
+            _clip_save(_clip_cap(items))
+        return found
+
+
 def clip_delete(ids):
+    """بيمسح النسخ دي — إلا المفضلة: مش بتتمسح أبدًا لحد ما المستخدم يشيل النجمة."""
     ids = set(ids or [])
     with _clip_lock:
-        _clip_save([i for i in _load_for_write(CLIP_PATH, "clipboard/read") if i.get("id") not in ids])
+        _clip_save([i for i in _load_for_write(CLIP_PATH, "clipboard/read")
+                    if i.get("fav") or i.get("id") not in ids])
 
 
 def clip_clear():
+    """بيمسح كل النسخ العادية ويسيب المفضلة."""
     with _clip_lock:
-        _clip_save([])
+        _clip_save([i for i in _load_for_write(CLIP_PATH, "clipboard/read") if i.get("fav")])
 
 
 # ── أرقام تسلسل الحافظة «بتاعتنا» ────────────────────────────────────────────
