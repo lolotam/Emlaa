@@ -82,16 +82,19 @@ class TestClipFavorites(_Base):
                 core.clip_add(t)
                 time.sleep(0.002)
             texts = self._texts()
-        # المفضلة القديمة فضلت، والعادية اتقصّت لـ CLIP_CAP - عدد المفضلة
-        self.assertIn("old-fav", texts)
-        self.assertEqual(texts, ["n5", "n4", "old-fav"])
+        # المفضلة القديمة فضلت، والعادية اتقصّت لـ CLIP_CAP (المفضلة مش بتتحسب)
+        self.assertEqual(texts, ["n5", "n4", "n3", "old-fav"])
 
-    def test_cap_with_more_favorites_than_cap_keeps_all_favorites(self):
+    def test_cap_with_more_favorites_than_cap_still_keeps_new_copies(self):
+        # مفضلة أكتر من الحد: كلها بتفضل، والنسخة الجديدة العادية مابتتشالش على طول
         for i in self._seed("f1", "f2"):
             core.clip_set_fav(i, True)
         with mock.patch.object(core, "CLIP_CAP", 1):
             core.clip_add("n1")
-            self.assertEqual(sorted(self._texts()), ["f1", "f2"])
+            time.sleep(0.002)
+            self.assertEqual(self._texts(), ["n1", "f1", "f2"])
+            core.clip_add("n2")
+            self.assertEqual(self._texts(), ["n2", "f1", "f2"])
 
 
 class TestClipFavApi(_Base):
