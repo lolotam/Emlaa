@@ -24,7 +24,7 @@ import offline
 import providers
 import winput
 
-APP_VERSION = "1.15"
+APP_VERSION = "1.16"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
