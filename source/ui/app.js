@@ -893,7 +893,7 @@ function renderKeyPool() {
     return;
   }
   box.innerHTML = keys.map(k => `
-    <div class="key-item" data-i="${k.index}">
+    <div class="key-item" data-i="${k.index}" data-id="${esc(k.id)}">
       <span class="key-val" data-masked="${esc(k.masked)}">${esc(k.masked)}</span>
       ${keyBadgeHTML(k.status, k.retryIn)}
       <span class="key-acts">
@@ -921,7 +921,7 @@ function softKeyPool(r) {
   const keys = (r && r.keys) || [];
   const rows = $$("#keyList .key-item");
   const same = rows.length === keys.length &&
-    keys.every((k, i) => rows[i].querySelector(".key-val").dataset.masked === k.masked);
+    keys.every((k, i) => rows[i].dataset.id === k.id);
   if (!same) { applyKeyPool(r); return; }
   S.keyPool.keys = keys;
   keys.forEach((k, i) => { rows[i].querySelector(".key-badge").outerHTML = keyBadgeHTML(k.status, k.retryIn); });
@@ -966,8 +966,10 @@ $("#keyAddGo").addEventListener("click", async () => {
   btn.disabled = true;
   btn.textContent = "بيتأكد…";
   errEl.hidden = true;
+  // المزوّد وقت الطلب: لو المستخدم غيّره والتحقق شغّال، الرد ده مش بتاع القايمة اللي ظاهرة
+  const pid = S.keyPool.pid;
   let r;
-  try { r = await api().key_add(S.keyPool.pid, key); }
+  try { r = await api().key_add(pid, key); }
   catch (e) { r = { ok: false, err: "مقدرتش أضيف المفتاح" }; }
   btn.disabled = false;
   btn.textContent = "تحقق وأضف";
@@ -977,7 +979,7 @@ $("#keyAddGo").addEventListener("click", async () => {
     return;
   }
   collapseKeyAdd();
-  applyKeyPool(r);
+  if (S.provider === pid) applyKeyPool(r); else refreshKeyPool();
   refreshBoot().then(renderKeyHint);
   toast("اتضاف المفتاح ✓");
 });
@@ -986,6 +988,8 @@ $("#keyPool").addEventListener("click", async e => {
   const item = e.target.closest(".key-item");
   if (!act || !item) return;
   const i = Number(item.dataset.i);
+  // بصمة المفتاح اللي في الصف: السيرفر بيرفض لو الفهرس بقى بيشاور على مفتاح تاني
+  const id = item.dataset.id;
   if (act.dataset.act === "reveal") {
     const val = item.querySelector(".key-val");
     if (val.dataset.revealed === "1") {
@@ -995,8 +999,8 @@ $("#keyPool").addEventListener("click", async e => {
       act.title = "إظهار المفتاح";
       return;
     }
-    const r = await api().key_reveal(S.keyPool.pid, i);
-    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أعرض المفتاح"); return; }
+    const r = await api().key_reveal(S.keyPool.pid, i, id);
+    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أعرض المفتاح"); refreshKeyPool(); return; }
     val.textContent = r.key;
     val.dataset.revealed = "1";
     act.innerHTML = ICON.eyeOff;
@@ -1014,9 +1018,7 @@ $("#keyPool").addEventListener("click", async e => {
       return;
     }
     keyTrashDisarm(act);
-    // المفتاح المقنّع معاه: لو القايمة اتغيّرت من ورانا الفهرس ميمسحش مفتاح تاني
-    const masked = item.querySelector(".key-val").dataset.masked;
-    const r = await api().key_remove(S.keyPool.pid, i, masked);
+    const r = await api().key_remove(S.keyPool.pid, i, id);
     if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أمسح المفتاح"); refreshKeyPool(); return; }
     applyKeyPool(r);
     refreshBoot().then(renderKeyHint);

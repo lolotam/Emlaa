@@ -433,6 +433,11 @@ def mask_key(key):
     return _mask_key(key)
 
 
+def key_id(key):
+    """بصمة قصيرة للمفتاح للواجهة — تميّز مفتاحين ليهم نفس الشكل المقنّع من غير ما تكشف المفتاح."""
+    return _key_fingerprint(key)
+
+
 def _clamp_cooldown(v):
     """يحصر مهلة التبريد بين ثانية و٢٤ ساعة — «340ms» مايبقاش ٥ ساعات ولا يبقى صفر."""
     return max(_COOLDOWN_MIN, min(_COOLDOWN_MAX, v))
@@ -1410,25 +1415,38 @@ def _set_pool(env_path, var, keys):
     """
     يكتب مجمّعة المفاتيح في سطر واحد ويحافظ على باقي أسطر .env ويحدّث os.environ.
     keys فاضية = السطر بيتمسح (المجمّعة اتشالت خالص).
+    الكتابة ذرّية: ملف مؤقت جنبه + fsync + os.replace — لو البرنامج وقع في النص
+    الملف القديم بيفضل سليم. ولو قراية الملف فشلت مبنكتبش حاجة خالص (عشان منمسحش
+    مفاتيح باقي المزوّدين) والخطأ بيطلع للي نادى.
     """
     lines, found = [], False
     if os.path.exists(env_path):
-        try:
-            with open(env_path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip().startswith(var + "="):
-                        found = True
-                        if keys:
-                            lines.append(f"{var}={','.join(keys)}\n")
-                        # فاضية → منكتبش السطر (بيعمله شيل)
-                    else:
-                        lines.append(line)
-        except Exception:
-            lines = []
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith(var + "="):
+                    found = True
+                    if keys:
+                        lines.append(f"{var}={','.join(keys)}\n")
+                    # فاضية → منكتبش السطر (بيعمله شيل)
+                else:
+                    lines.append(line)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
     if not found and keys:
         lines.append(f"{var}={','.join(keys)}\n")
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+    tmp = f"{env_path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, env_path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     if keys:
         os.environ[var] = ",".join(keys)
     else:

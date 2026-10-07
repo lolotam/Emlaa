@@ -19,6 +19,8 @@ import smart
 import offline
 
 UI_DIR = "ui"
+KEY_WRITE_ERR = "معرفتش أحفظ ملف المفاتيح — المفاتيح القديمة زي ما هي، جرّب تاني"
+KEY_STALE_ERR = "قايمة المفاتيح اتغيّرت — جرّب تاني"
 
 OPEN_HOTKEYS = [
     ("<ctrl>+<alt>+n",       "Ctrl + Alt + N"),
@@ -720,7 +722,10 @@ class Api:
             if not ok:
                 return {"ok": False, "err": err}
             with self._key_lock:
-                providers.write_key(core.ENV_PATH, pid, new_key)
+                try:
+                    providers.write_key(core.ENV_PATH, pid, new_key)
+                except OSError:
+                    return {"ok": False, "err": KEY_WRITE_ERR}
         elif not keys.get(pid) and not offline_ok:
             return {"ok": False, "err": "محتاج مفتاح للمزوّد ده — الصقه في الخانة"}
 
@@ -811,14 +816,17 @@ class Api:
         for i, k in enumerate(pool):
             st = providers.key_status(pid, k)
             keys.append({"index": i,
+                         "id": providers.key_id(k),
                          "masked": providers.mask_key(k),
                          "status": st["status"],
                          "retryIn": st["retry_in"]})
         return {"ok": True, "keys": keys}
 
-    def key_reveal(self, pid, index):
+    def key_reveal(self, pid, index, key_id=None):
         """
         الـAPI الوحيد اللي بيرجّع مفتاح كامل — لمفتاح واحد بس (مفحوص الحدود).
+        key_id (بصمة المفتاح اللي الواجهة شايفاه): لو مش هو اللي في الفهرس دلوقتي
+        مبنرجّعش حاجة — عشان منعرضش مفتاح تاني تحت شكل مقنّع مش بتاعه.
         منسجّلش المفتاح ولا نطبعه في أي حاجة.
         """
         if pid not in providers.PROVIDERS:
@@ -826,31 +834,40 @@ class Api:
         pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
         if isinstance(index, bool) or not isinstance(index, int) or not (0 <= index < len(pool)):
             return {"ok": False, "err": "المفتاح مش موجود"}
+        if key_id is not None and providers.key_id(pool[index]) != key_id:
+            return {"ok": False, "err": KEY_STALE_ERR}
         return {"ok": True, "key": pool[index]}
 
     def key_add(self, pid, key):
         """
         يتحقق من مفتاح جديد (verify) وبعدين يضيفه آخر المجمّعة. التحقق فشل = مبيتكتبش
         حاجة. المفتاح موجود بالفعل = مبيرحلش verify خالص.
+        verify (نداء شبكة) برّه القفل عشان ميحبسش باقي عمليات المفاتيح؛ وبعده بنعيد
+        فحص التكرار جوّه القفل قبل الكتابة (إضافتين متزامنتين لنفس المفتاح).
         """
         key = (key or "").strip()
         if not key:
             return {"ok": False, "err": "الصق المفتاح الأول"}
         if pid not in providers.PROVIDERS:
             return {"ok": False, "err": "مزوّد مش معروف"}
+        dup = {"ok": False, "err": "المفتاح ده موجود بالفعل"}
+        if key in providers.read_key_pools(core.ENV_PATH).get(pid, []):
+            return dup
+        ok, err = providers.verify(pid, key)
+        if not ok:
+            return {"ok": False, "err": err}
         with self._key_lock:
-            pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
-            if key in pool:
-                return {"ok": False, "err": "المفتاح ده موجود بالفعل"}
-            ok, err = providers.verify(pid, key)
-            if not ok:
-                return {"ok": False, "err": err}
-            providers.add_provider_key(core.ENV_PATH, pid, key)
+            if key in providers.read_key_pools(core.ENV_PATH).get(pid, []):
+                return dup
+            try:
+                providers.add_provider_key(core.ENV_PATH, pid, key)
+            except OSError:
+                return {"ok": False, "err": KEY_WRITE_ERR}
             return {"ok": True, **self.key_pool(pid)}
 
-    def key_remove(self, pid, index, masked=None):
+    def key_remove(self, pid, index, key_id=None):
         """
-        يشيل مفتاح بفهرسه. بيمنع شيل آخر مفتاح للمزوّد المختار — إلا لو وضع offline
+        يشيل مفتاح بفهرسه. key_id = بصمة المفتاح اللي الواجهة شايفاه في الفهرس ده. بيمنع شيل آخر مفتاح للمزوّد المختار — إلا لو وضع offline
         "always" والموديل مثبّت (فالمفتاح مش ضروري للاشتغال).
         """
         if pid not in providers.PROVIDERS:
@@ -861,15 +878,18 @@ class Api:
             pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
             if not (0 <= index < len(pool)):
                 return {"ok": False, "err": "المفتاح مش موجود"}
-            # الواجهة بتبعت المقنّع اللي شايفاه: لو .env اتغيّر من ورا القايمة (الفهرس
-            # بقى بيشاور على مفتاح تاني) منمسحش حاجة
-            if masked is not None and providers.mask_key(pool[index]) != masked:
-                return {"ok": False, "err": "قايمة المفاتيح اتغيّرت — جرّب تاني"}
+            # لو .env اتغيّر من ورا القايمة (الفهرس بقى بيشاور على مفتاح تاني) منمسحش حاجة.
+            # البصمة مش الشكل المقنّع: مفتاحين ممكن يبقوا بنفس البداية والنهاية
+            if key_id is not None and providers.key_id(pool[index]) != key_id:
+                return {"ok": False, "err": KEY_STALE_ERR}
             selected = core.CFG.get("provider", providers.DEFAULT) == pid
             offline_ok = (core.CFG.get("offline_mode") == "always" and bool(offline.installed()))
             if selected and len(pool) == 1 and not offline_ok:
                 return {"ok": False, "err": "ده آخر مفتاح للمزوّد المختار — ضيف مفتاح تاني الأول أو غيّر المزوّد"}
-            providers.remove_provider_key(core.ENV_PATH, pid, index)
+            try:
+                providers.remove_provider_key(core.ENV_PATH, pid, index)
+            except OSError:
+                return {"ok": False, "err": KEY_WRITE_ERR}
             return {"ok": True, **self.key_pool(pid)}
 
     # ── التفريغ من غير إنترنت (F9) ──

@@ -148,6 +148,48 @@ class TestKeyStorage(_Base):
         self.assertNotIn("GROQ_API_KEY=", content)
         self.assertIn("GEMINI_API_KEY=ai-1", content)
 
+    def _env_text(self):
+        with open(self.path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_failed_replace_keeps_old_env_and_leaves_no_temp(self):
+        # الكتابة ذرّية: لو الاستبدال فشل الملف القديم بيفضل زي ما هو بكل مفاتيحه
+        self._write("GROQ_API_KEY=k1\nGEMINI_API_KEY=ai-1\n")
+        with mock.patch.object(providers.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                providers.add_provider_key(self.path, "groq", "k2")
+        self.assertEqual(self._env_text(), "GROQ_API_KEY=k1\nGEMINI_API_KEY=ai-1\n")
+        self.assertEqual(os.listdir(self.tmp.name), [".env"])
+        self.assertNotEqual(os.environ.get("GROQ_API_KEY"), "k1,k2")
+
+    def test_failed_read_writes_nothing(self):
+        # قراية .env فشلت → منكتبش ملف فاضي يمسح مفاتيح باقي المزوّدين
+        self._write("GROQ_API_KEY=k1\nGEMINI_API_KEY=ai-1\n")
+        real_open = open
+
+        def flaky_open(path, mode="r", *a, **kw):
+            if path == self.path and "r" in mode:
+                raise OSError("locked")
+            return real_open(path, mode, *a, **kw)
+
+        with mock.patch("builtins.open", side_effect=flaky_open):
+            with self.assertRaises(OSError):
+                providers._set_pool(self.path, "GROQ_API_KEY", ["k1", "k2"])
+        self.assertEqual(self._env_text(), "GROQ_API_KEY=k1\nGEMINI_API_KEY=ai-1\n")
+
+    def test_append_after_last_line_without_newline(self):
+        # آخر سطر من غير \n: المفتاح الجديد ميلزقش فيه
+        self._write("GEMINI_API_KEY=ai-1")
+        providers.add_provider_key(self.path, "groq", "k1")
+        self.assertEqual(providers.read_key_pools(self.path),
+                         {"gemini": ["ai-1"], "groq": ["k1"]})
+
+    def test_key_id_is_stable_and_distinguishes_same_mask(self):
+        a, b = "gsk_aaaa_one_1234", "gsk_bbbb_two_1234"
+        self.assertEqual(providers.mask_key(a), providers.mask_key(b))
+        self.assertNotEqual(providers.key_id(a), providers.key_id(b))
+        self.assertEqual(providers.key_id(a), providers.key_id(a))
+
 
 class TestKeyErrorKind(_Base):
     """تصنيف خطأ المفتاح: الحالة الـHTTP الأول، والحد بيتفحص قبل الباطل."""

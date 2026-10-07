@@ -165,13 +165,80 @@ class TestKeyPoolApi(unittest.TestCase):
         self._write("GROQ_API_KEY=gsk_other_key_9999,gsk_first_key_1111\n")
         api = self._api()
         with mock.patch.object(core, "CFG", _cfg()):
-            r = api.key_remove("groq", 0, providers.mask_key("gsk_first_key_1111"))
+            r = api.key_remove("groq", 0, providers.key_id("gsk_first_key_1111"))
         self.assertFalse(r["ok"])
         self.assertEqual(len(providers.read_key_pools(self.env_path)["groq"]), 2)
         with mock.patch.object(core, "CFG", _cfg()):
-            r = api.key_remove("groq", 1, providers.mask_key("gsk_first_key_1111"))
+            r = api.key_remove("groq", 1, providers.key_id("gsk_first_key_1111"))
         self.assertTrue(r["ok"])
         self.assertEqual(providers.read_key_pools(self.env_path)["groq"], ["gsk_other_key_9999"])
+
+    def test_key_remove_tells_apart_keys_with_the_same_mask(self):
+        # نفس البداية ونفس آخر 4 حروف = نفس الشكل المقنّع؛ البصمة هي اللي بتفرق
+        a, b = "gsk_aaaa_one_1234", "gsk_bbbb_two_1234"
+        self.assertEqual(providers.mask_key(a), providers.mask_key(b))
+        self._write(f"GROQ_API_KEY={b},{a}\n")
+        api = self._api()
+        with mock.patch.object(core, "CFG", _cfg()):
+            r = api.key_remove("groq", 0, providers.key_id(a))
+        self.assertFalse(r["ok"])
+        self.assertEqual(providers.read_key_pools(self.env_path)["groq"], [b, a])
+
+    def test_key_pool_ids_match_key_id(self):
+        self._write("GROQ_API_KEY=gsk_aaaa1111,gsk_bbbb2222\n")
+        r = self._api().key_pool("groq")
+        self.assertEqual([k["id"] for k in r["keys"]],
+                         [providers.key_id("gsk_aaaa1111"), providers.key_id("gsk_bbbb2222")])
+
+    def test_key_reveal_refuses_stale_id(self):
+        # الواجهة شايفة مفتاح تاني في الفهرس ده (مزوّد اتغيّر أو .env اتغيّر) → منعرضش حاجة
+        self._write("GROQ_API_KEY=gsk_aaaa1111,gsk_bbbb2222\n")
+        api = self._api()
+        r = api.key_reveal("groq", 0, providers.key_id("gsk_bbbb2222"))
+        self.assertFalse(r["ok"])
+        self.assertNotIn("key", r)
+        r = api.key_reveal("groq", 1, providers.key_id("gsk_bbbb2222"))
+        self.assertEqual(r, {"ok": True, "key": "gsk_bbbb2222"})
+
+    def test_key_add_verifies_outside_the_lock(self):
+        # verify (نداء شبكة) مايحبسش _key_lock — باقي عمليات المفاتيح تفضل شغّالة
+        self._write("GROQ_API_KEY=k1\n")
+        api = self._api()
+        held = []
+
+        def verify(pid, key):
+            held.append(api._key_lock.locked())
+            return True, ""
+
+        with mock.patch.object(providers, "verify", side_effect=verify):
+            r = api.key_add("groq", "k2")
+        self.assertTrue(r["ok"])
+        self.assertEqual(held, [False])
+
+    def test_key_add_rechecks_duplicate_after_verify(self):
+        # إضافة تانية لنفس المفتاح خلصت والتحقق شغّال → منكتبهوش مرتين
+        self._write("GROQ_API_KEY=k1\n")
+        api = self._api()
+
+        def verify(pid, key):
+            providers.add_provider_key(self.env_path, "groq", "k2")
+            return True, ""
+
+        with mock.patch.object(providers, "verify", side_effect=verify):
+            r = api.key_add("groq", "k2")
+        self.assertFalse(r["ok"])
+        self.assertIn("موجود بالفعل", r["err"])
+        self.assertEqual(providers.read_key_pools(self.env_path)["groq"], ["k1", "k2"])
+
+    def test_key_add_write_failure_returns_error(self):
+        self._write("GROQ_API_KEY=k1\n")
+        api = self._api()
+        with mock.patch.object(providers, "verify", return_value=(True, "")), \
+                mock.patch.object(providers.os, "replace", side_effect=OSError("disk full")):
+            r = api.key_add("groq", "k2")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["err"], app_web.KEY_WRITE_ERR)
+        self.assertEqual(providers.read_key_pools(self.env_path)["groq"], ["k1"])
 
     def test_key_remove_refuses_last_key_of_selected_provider(self):
         self._write("GROQ_API_KEY=k1\n")
