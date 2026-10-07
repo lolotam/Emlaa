@@ -219,6 +219,61 @@ class TestAutoRepeatHasNoMask(unittest.TestCase):
         self.assertEqual(lg.press("alt_r", 0.03, False, False), [])
 
 
+class TestEscCancel(unittest.TestCase):
+    """Esc كمفتاح إلغاء (Task 27): بيلغي التسجيل في الوضعين، وno-op وقت الخمول
+    من غير ما يلمس الحالة، ولو اتعيّن زرار تسجيل بيفضل زرار تسجيل."""
+
+    def make(self, mode, key_map=None, cancel=("esc",)):
+        return smart.HotkeyLogic(key_map or {"ctrl_r": "normal", "alt_r": "prompt"}, mode,
+                                 cancel_keys=cancel)
+
+    def test_esc_cancels_while_recording_toggle(self):
+        lg = self.make("toggle")
+        self.assertEqual(lg.press("esc", 0.0, True, False), ["cancel"])
+
+    def test_esc_cancels_while_recording_hold(self):
+        lg = self.make("hold")
+        lg.press("ctrl_r", 0.0, False, False)   # يبدأ التسجيل
+        self.assertEqual(lg.press("esc", 0.1, True, False), ["cancel"])
+
+    def test_esc_idle_toggle_does_not_spoil_held_hotkey(self):
+        # Esc وقت الخمول no-op: منيفسدش hotkey متعقدة ولا يلغى حاجة
+        lg = self.make("toggle")
+        lg.press("ctrl_r", 0.0, False, False)   # دوسة نضيفة متعقدة
+        self.assertEqual(lg.press("esc", 0.05, False, False), [])
+        self.assertEqual(lg.release("ctrl_r", 0.1, False, False), ["begin:normal"])
+
+    def test_esc_idle_hold_is_noop(self):
+        lg = self.make("hold")
+        self.assertEqual(lg.press("esc", 0.0, False, False), [])
+        self.assertEqual(lg.release("esc", 0.1, False, False), [])
+
+    def test_hold_hotkey_release_after_esc_cancel_still_ends(self):
+        # التسيب بعد الإلغاء بيرجّع "end" — والـcore بيطنّشه لأن recording بقت False
+        lg = self.make("hold")
+        lg.press("ctrl_r", 0.0, False, False)
+        self.assertEqual(lg.press("esc", 0.1, True, False), ["cancel"])
+        self.assertEqual(lg.release("ctrl_r", 0.3, True, False), ["end"])
+
+    def test_esc_configured_as_hotkey_keeps_hotkey_role_toggle(self):
+        lg = smart.HotkeyLogic({"esc": "normal"}, "toggle", cancel_keys={"esc"})
+        self.assertEqual(lg.press("esc", 0.0, False, False), [])
+        self.assertEqual(lg.release("esc", 0.1, False, False), ["begin:normal"])
+
+    def test_esc_configured_as_hotkey_keeps_hotkey_role_hold(self):
+        lg = smart.HotkeyLogic({"esc": "normal"}, "hold", cancel_keys={"esc"})
+        self.assertEqual(lg.press("esc", 0.0, False, False), ["begin:normal"])
+        self.assertEqual(lg.release("esc", 0.3, True, False), ["end"])
+
+    def test_esc_cancel_spoils_physically_held_hotkey(self):
+        # recording شغّال والمستخدم ماسك زرار التسجيل، داس Esc (cancel) وسابه:
+        # التسيب ده مينفعش يبدأ تسجيل جديد (recording بقت False).
+        lg = self.make("toggle")
+        lg.press("ctrl_r", 0.0, True, False)   # ماسك الزرار وهو بيسجّل
+        self.assertEqual(lg.press("esc", 0.1, True, False), ["cancel"])
+        self.assertEqual(lg.release("ctrl_r", 0.2, False, False), [])
+
+
 @unittest.skipUnless(os.name == "nt", "start_hotkey بيستورد winput (ويندوز)")
 class TestStartHotkeyWiring(unittest.TestCase):
     """التوصيل الحقيقي في core.start_hotkey بـListener مزيّف — مفيش hook ولا SendInput حقيقي."""
@@ -280,4 +335,31 @@ class TestStartHotkeyWiring(unittest.TestCase):
             cb["press"](kb.Key.scroll_lock)
         cb["release"](kb.Key.scroll_lock)
         self.assertEqual(sent, [0x91])          # دوسة استرجاع واحدة بس
+        app.begin.assert_called_once_with(mode="normal")
+
+    def test_esc_cancels_when_recording_toggle(self):
+        app, cb, sent, kb = self.wire("toggle", hotkey="ctrl_r")
+        app.recording = True
+        cb["press"](kb.Key.esc)
+        app.cancel.assert_called_once()
+
+    def test_esc_cancels_when_recording_hold(self):
+        app, cb, sent, kb = self.wire("hold", hotkey="ctrl_r")
+        cb["press"](kb.Key.ctrl_r)
+        app.recording = True
+        cb["press"](kb.Key.esc)
+        app.cancel.assert_called_once()
+
+    def test_esc_idle_does_nothing(self):
+        app, cb, sent, kb = self.wire("toggle", hotkey="ctrl_r")
+        cb["press"](kb.Key.esc)
+        app.begin.assert_not_called()
+        app.end.assert_not_called()
+        app.cancel.assert_not_called()
+
+    def test_esc_as_hotkey_still_begins(self):
+        app, cb, sent, kb = self.wire("toggle", hotkey="esc")
+        cb["press"](kb.Key.esc)
+        cb["release"](kb.Key.esc)
+        app.cancel.assert_not_called()
         app.begin.assert_called_once_with(mode="normal")

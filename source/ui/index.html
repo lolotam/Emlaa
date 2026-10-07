@@ -278,6 +278,18 @@
             <input class="input" id="setKey" type="password" placeholder="سيبها فاضية لو مش عايز تغيّر المفتاح المحفوظ" autocomplete="off" spellcheck="false">
             <button class="ghost-btn" id="getKey" type="button">هات مفتاح ↗</button>
           </div>
+          <div class="key-pool" id="keyPool">
+            <div class="key-list" id="keyList"></div>
+            <button class="ghost-btn key-add" id="keyAdd" type="button">+ إضافة مفتاح إضافي</button>
+            <div class="key-add-row" id="keyAddRow" hidden>
+              <div class="key-add-line">
+                <input class="input" id="keyAddInput" type="password" placeholder="الصق المفتاح الإضافي هنا" autocomplete="off" spellcheck="false">
+                <button class="cta cta-sm" id="keyAddGo" type="button">تحقق وأضف</button>
+                <button class="ghost-btn" id="keyAddCancel" type="button">إلغاء</button>
+              </div>
+              <div class="key-add-err" id="keyAddErr" hidden></div>
+            </div>
+          </div>
           <details class="guide" id="setGuide"></details>
         </div>
         <div class="srow srow-model"><span class="srow-text"><b>موديل التفريغ</b><small id="modelSrc"></small></span>

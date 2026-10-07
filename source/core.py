@@ -1137,17 +1137,20 @@ class App:
     # ── العميل بيتبني حسب المزوّد المختار، وبيتعاد بناؤه لو اتغيّر ──
     def client(self):
         pid = CFG.get("provider", providers.DEFAULT)
+        pools = providers.read_key_pools(ENV_PATH)
         keys = providers.read_keys(ENV_PATH)
+        pool = pools.get(pid, [])
         key = keys.get(pid, "")
         model = (CFG.get("models") or {}).get(pid)
         # المزوّد اللي بيفرّغ بس (Deepgram) بيستعين بأول مزوّد تاني ليه مفتاح للتنظيف والترجمة
         hid = None
         if not providers.meta(pid).get("chat"):
-            hid = next((h for h in providers.CHAT_HELPERS if keys.get(h)), None)
-        sig = (pid, key, model, hid, keys.get(hid) if hid else None)
+            hid = next((h for h in providers.CHAT_HELPERS if pools.get(h)), None)
+        # الكاش بيشمل المجمّعات كلها — لو اتغيّر أي مفتاح بيتعاد بناء العميل
+        sig = (pid, tuple(pool), model, hid, tuple(pools.get(hid) or []) if hid else None)
         if self._client is None or self._client_sig != sig:
-            helper = providers.Client(hid, keys[hid]) if hid else None
-            self._client = providers.Client(pid, key, model=model, helper=helper)
+            helper = providers.Client(hid, keys.get(hid), keys=pools.get(hid)) if hid else None
+            self._client = providers.Client(pid, key, model=model, keys=pool, helper=helper)
             self._client_sig = sig
         return self._client
 
@@ -1711,7 +1714,8 @@ class App:
         # القرار نفسه (toggle: دوسة نضيفة / hold: دوسة-تسيب + أي زرار تاني
         # وقت التسجيل = cancel) بقى جوّه smart.HotkeyLogic — مبسوط هنا
         # عشان الاختبار من غير pynput ولا ويندوز.
-        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys)
+        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys,
+                                  cancel_keys={keyboard.Key.esc})
         # مفاتيح قفل اتداست ولسه ماتسابتش. كل دوسة حقيقية على Caps/Scroll Lock بتقلب
         # الحالة مرة واحدة بالظبط (التكرار التلقائي مابيقلبهاش)، فعند التسيب بنرجّعها
         # بدوسة واحدة. مش بنقارن GetKeyState قبل وبعد: من ثريد الـhook الحالة بتبان
@@ -1835,6 +1839,10 @@ def friendly_error(e):
 
     if "مفيش مفتاح" in str(e):
         return "محطّتش مفتاح للمزوّد ده — افتح الإعدادات وحطّه"
+    # T23: كل المفاتيح وصلت للحد مؤقتًا — رسالة واضحة للمستخدم (مش خطأ شبكة،
+    # فمش بتودّي للـoffline fallback) بتوصل زي ما هي من غير ما تلبس «مش متوقّعة»
+    if "كل المفاتيح" in str(e):
+        return str(e).strip()
     # T20: رسالة الموديل المحلي البايظ بتوصل للمستخدم زي ما هي — فيها توجيه
     # واضح (شيله ونزّله تاني) فممن تلبس زي «مشكلة مش متوقّعة»
     if "الموديل المحلي بايظ" in str(e):
