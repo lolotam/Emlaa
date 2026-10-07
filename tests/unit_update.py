@@ -33,6 +33,27 @@ class TestIndependentEnv(unittest.TestCase):
         self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
         self.assertEqual(env["EMLAA_KEEP"], "yes")
 
+    def test_drops_cert_paths_inside_the_old_bundle(self):
+        # core بيحط SSL_CERT_FILE على certifi جوّه _MEI — الفولدر ده بيتمسح بعد ما القديمة تقفل
+        with tempfile.TemporaryDirectory() as mei:
+            cert = os.path.join(mei, "certifi", "cacert.pem")
+            with mock.patch.object(sys, "_MEIPASS", mei, create=True), \
+                    mock.patch.dict(os.environ, {"SSL_CERT_FILE": cert, "REQUESTS_CA_BUNDLE": cert}):
+                env = core.independent_env()
+        self.assertNotIn("SSL_CERT_FILE", env)
+        self.assertNotIn("REQUESTS_CA_BUNDLE", env)
+
+    def test_keeps_user_cert_paths_outside_the_bundle(self):
+        with tempfile.TemporaryDirectory() as mei, tempfile.TemporaryDirectory() as other:
+            user = os.path.join(other, "corp-ca.pem")
+            # فولدر اسمه بيبدأ بنفس اسم _MEI مش جوّاه
+            sibling = mei + "x" + os.sep + "cacert.pem"
+            with mock.patch.object(sys, "_MEIPASS", mei, create=True), \
+                    mock.patch.dict(os.environ, {"SSL_CERT_FILE": user, "REQUESTS_CA_BUNDLE": sibling}):
+                env = core.independent_env()
+        self.assertEqual(env["SSL_CERT_FILE"], user)
+        self.assertEqual(env["REQUESTS_CA_BUNDLE"], sibling)
+
     def test_does_not_touch_the_current_process_env(self):
         with mock.patch.dict(os.environ, _PYI):
             core.independent_env()

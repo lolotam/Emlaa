@@ -795,9 +795,19 @@ def independent_env():
     جوّه البرنامج «عملية فرعية» وبيحمّل python312.dll من فولدر _MEI بتاع الأب — والفولدر
     ده بيتمسح لما النسخة القديمة تقفل، فالجديدة بتقع بـ «Failed to load Python DLL».
     PYINSTALLER_RESET_ENVIRONMENT=1 + شيل متغيّرات _PYI_* = نسخة جديدة بتفك ملفاتها لنفسها.
+    ومسارات الشهادات اللي حطّيناها جوّه _MEI (SSL_CERT_FILE/REQUESTS_CA_BUNDLE فوق) بتتشال
+    كمان — وإلا الجديدة هتورثها (setdefault) وتشاور على ملف اتمسح فالـHTTPS يقع. لو المستخدم
+    حاطط مسار شهادات بتاعه برّه الـexe بيفضل زي ما هو.
     """
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith("_PYI_") and k.upper() != "_MEIPASS2"}
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        root = os.path.normcase(os.path.abspath(bundle)) + os.sep
+        for var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+            val = env.get(var)
+            if val and os.path.normcase(os.path.abspath(val)).startswith(root):
+                env.pop(var)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
 
