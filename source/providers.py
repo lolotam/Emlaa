@@ -773,8 +773,26 @@ class Client:
         # التعرّف التلقائي ساعات بيغلط في المقاطع القصيرة ويطلّع العامية فارسي أو أوردو…
         # إحنا بنترجم بين عربي وإنجليزي بس، فأي لغة تانية = نعيد التفريغ كعربي.
         if language is None and smart.foreign_script(text):
-            return self.transcribe(wav_path, "ar")
+            return self._retry_as_arabic(wav_path, text)
         return text
+
+    def _retry_as_arabic(self, wav_path, first):
+        """إعادة التفريغ كعربي. لو فشلت (حد/مفتاح/نت) أو رجعت فاضي، التفريغ الأول أحسن
+        من إن الكلام يضيع — وموديله هو اللي يتسجّل."""
+        first_model = self.last_stt_model
+        try:
+            retry = self.transcribe(wav_path, "ar")
+        except Exception as e:      # أي فشل من المزوّد — التفريغ الأول لسه في إيدينا
+            try:
+                import core
+                core.log_error(e, "stt/retry as Arabic (رجّعنا التفريغ الأول)")
+            except Exception:
+                pass
+            retry = ""
+        if retry:
+            return retry
+        self.last_stt_model = first_model
+        return first
 
     def _deepgram_transcribe(self, wav_path, language):
         if not language:

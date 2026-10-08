@@ -22,6 +22,8 @@ class TestForeignScript(unittest.TestCase):
     def test_persian_and_urdu_letters_are_foreign(self):
         self.assertTrue(smart.foreign_script("سلام چطوری"))
         self.assertTrue(smart.foreign_script("یہ ٹھیک ہے"))
+        # PR #13 (CodeRabbit): ہ (U+06C1, HEH GOAL) لوحده كان بيعدّي
+        self.assertTrue(smart.foreign_script("سلام ہ"))
 
     def test_arabic_english_and_empty_are_not_foreign(self):
         for text in ("عايز أرفع الـ API على Docker", "How are you doing today?", "", None):
@@ -78,15 +80,46 @@ class TestPolishLanguage(unittest.TestCase):
             self.assertEqual(self._polish(raw, reply=fixed), fixed)
 
 
+class TestArabicRetryFallback(unittest.TestCase):
+    """PR #13 (CodeRabbit): إعادة التفريغ كعربي لو فشلت أو رجعت فاضي، التفريغ الأول
+    أحسن من إن الكلام يضيع — وموديل التفريغ اللي بيتسجّل يفضل بتاع التفريغ الأول."""
+
+    def _transcribe(self, *results):
+        cl = providers.Client("groq", "test-key")
+        calls = iter(results)
+
+        def fake_run(fn):
+            out = next(calls)
+            if isinstance(out, Exception):
+                raise out
+            cl.last_stt_model = "model-for-" + out
+            return out
+
+        with mock.patch.object(cl, "_run", side_effect=fake_run), mock.patch("core.log_error"):
+            return cl.transcribe("w.wav", None), cl.last_stt_model
+
+    def test_successful_retry_wins(self):
+        self.assertEqual(self._transcribe("سلام چطوری", "سلام عامل ايه"),
+                         ("سلام عامل ايه", "model-for-سلام عامل ايه"))
+
+    def test_failed_or_empty_retry_keeps_first_transcript(self):
+        for retry in (RuntimeError("HTTP 429: rate limit"), ""):
+            self.assertEqual(self._transcribe("سلام چطوری", retry),
+                             ("سلام چطوری", "model-for-سلام چطوری"), repr(retry))
+
+
 class TestOfflineAutoLanguage(_BaseCase):
     def _fake_run(self, outputs):
         langs = []
 
         def _run(cmd, timeout=None):
             langs.append(cmd[cmd.index("-l") + 1])
+            text = outputs[len(langs) - 1]
+            if text is None:
+                return mock.Mock(returncode=1)
             out_base = cmd[cmd.index("-of") + 1]
             with open(out_base + ".txt", "w", encoding="utf-8") as f:
-                f.write(outputs[len(langs) - 1])
+                f.write(text)
             return mock.Mock(returncode=0)
 
         return _run, langs
@@ -98,6 +131,15 @@ class TestOfflineAutoLanguage(_BaseCase):
             text = offline.transcribe("w.wav", None)
         self.assertEqual(langs, ["auto", "ar"])
         self.assertEqual(text, "سلام عامل ايه")
+
+    def test_failed_or_empty_retry_keeps_first_transcript(self):
+        # None = whisper-cli فشل في الإعادة · "[BLANK_AUDIO]" = الإعادة مطلعش منها كلام
+        self._install("base")
+        for second in ("[BLANK_AUDIO]", None):
+            fake_run, langs = self._fake_run(["سلام چطوری", second])
+            with mock.patch.object(offline, "_run", fake_run):
+                self.assertEqual(offline.transcribe("w.wav", None), "سلام چطوری", repr(second))
+            self.assertEqual(langs, ["auto", "ar"])
 
     def test_english_on_auto_runs_once(self):
         self._install("base")

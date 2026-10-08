@@ -571,11 +571,15 @@ def _strip_markers(text):
 def transcribe(wav, language):
     """
     بيفرّغ wav بالموديل المثبّت ويرجّع النص. language=None = تعرّف تلقائي على اللغة،
-    ولو طلّع لغة غير عربي/إنجليزي بنعيد كعربي (زي Client.transcribe).
+    ولو طلّع لغة غير عربي/إنجليزي بنعيد كعربي (زي Client.transcribe). لو الإعادة فشلت
+    أو مطلعش منها كلام، التفريغ الأول أحسن من إن الكلام يضيع.
     """
     text = _transcribe_once(wav, language)
     if language is None and smart.foreign_script(text):
-        return _transcribe_once(wav, "ar")
+        try:
+            return _transcribe_once(wav, "ar") or text
+        except RuntimeError:
+            return text
     return text
 
 

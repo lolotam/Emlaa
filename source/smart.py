@@ -649,7 +649,7 @@ def has_arabic(text):
 _FOREIGN_SCRIPT = re.compile(
     "[Ͱ-ϿЀ-ӿ֐-׿ऀ-෿฀-๿"
     "぀-ヿ㐀-鿿가-힯"
-    "پچژکگیےٹڈڑںھ]")
+    "پچژکگیےٹڈڑںھہ]")
 
 
 def foreign_script(text):
