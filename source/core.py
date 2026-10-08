@@ -1026,12 +1026,14 @@ def has_text_focus():
     return winput.focused_info()["editable"]
 
 
-def _copy_to_clipboard(text):
-    """بيرجّع True/False هل نشري النص للحافظة نجح — مش بيقطع الشغل لو فشل."""
+def _copy_to_clipboard(text, expect_seq=None):
+    """
+    بيرجّع True/False هل نشري النص للحافظة نجح — مش بيقطع الشغل لو فشل.
+    expect_seq: منكتبش لو رقم الحافظة اتغيّر (الفحص والكتابة ذرّيين — winput).
+    """
+    import winput
     try:
-        import pyperclip
-        pyperclip.copy(text)
-        return True
+        return winput.write_clipboard_text(text, expect_seq)
     except Exception as e:
         log_error(e, "clipboard/copy")
         return False
@@ -1047,9 +1049,7 @@ def _copy_owned(text, expect_seq=None):
     """
     import winput
     suppress_clip_watch(1.0)
-    if expect_seq is not None and winput._clipboard_sequence() != expect_seq:
-        return None
-    if not _copy_to_clipboard(text):
+    if not _copy_to_clipboard(text, expect_seq):
         return None
     seq = winput._clipboard_sequence()
     now = winput._read_clipboard_text()
@@ -1064,9 +1064,13 @@ def _copy_owned(text, expect_seq=None):
 
 
 # البرنامج التاني بيقرا الحافظة لما يعالج Ctrl+V — بعد ما SendInput يرجع، ومفيش حدث
-# نستناه. رجوع الحافظة بدري = اللزق يكتب النص القديم بدل الإملاء، وده أوحش بكتير من
-# ثانية تأخير (العملية لسه busy، فمفيش تسجيل تاني يلحق يقرا حافظة نص راجعة).
-PASTE_SETTLE_SECONDS = 1.0
+# نستناه. رجوع الحافظة بدري = اللزق يكتب النص القديم (ممكن يبقى حاجة حسّاسة) بدل الإملاء.
+# فبنستنى البرنامج يرد على رسالة فاضية (مش مهنّج) لحد PASTE_RESPONSIVE_MS، وبعدها
+# PASTE_SETTLE_SECONDS للبرامج اللي بتقرا من عملية تانية (المتصفحات). لو ما ردّش
+# منرجّعش خالص: الإملاء يفضل على الحافظة أهون من لزق نسخة المستخدم القديمة.
+# (العملية لسه busy طول الانتظار، فمفيش تسجيل تاني يلحق يقرا حافظة نص راجعة.)
+PASTE_RESPONSIVE_MS = 5000
+PASTE_SETTLE_SECONDS = 1.5
 
 
 def _paste_via_clipboard(text, strategy, still_target, restore):
@@ -1092,8 +1096,13 @@ def _paste_via_clipboard(text, strategy, still_target, restore):
         if not still_target() or winput._clipboard_sequence() != ours:
             return "handoff"
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
+        target_hwnd = winput.foreground_hwnd()
         pasted = fn()
-        time.sleep(PASTE_SETTLE_SECONDS)
+        if old is not None:
+            if winput.wait_responsive(target_hwnd, PASTE_RESPONSIVE_MS):
+                time.sleep(PASTE_SETTLE_SECONDS)
+            else:
+                old = None                              # مهنّج: ممكن لسه ما قراش — مفيش رجوع
         return "placed" if pasted else "failed"
     finally:
         # الرجوع بنفس الطريق: كبس المراقب قبله (كبسة النشر الأولى خلصت وقت الانتظار)

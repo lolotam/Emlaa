@@ -146,7 +146,8 @@ class TestAlwaysOffline(unittest.TestCase):
                 mock.patch("winput._clipboard_sequence", return_value=1), \
                 mock.patch("winput._read_clipboard_text", return_value="طلب محلي"):
             app.process("WAV", core.Operation(mode="prompt"))
-        m["clip"].assert_called_once_with("طلب محلي")
+        m["clip"].assert_called_once()
+        self.assertEqual(m["clip"].call_args.args[0], "طلب محلي")
         self.assertEqual(app.unplaced, ["طلب محلي"])
 
     def test_translate_shows_raw_text_and_keeps_raw_history(self):

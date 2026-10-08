@@ -150,12 +150,13 @@ class TestPasteShortcuts(unittest.TestCase):
 
 # ── core.paste_text: الإملاء مبيتنسخش للحافظة (غير لما الكتابة التلقائية مقفولة) ──
 class _Clipboard:
-    """حافظة وهمية على حدود Win32 (winput) و pyperclip: بتسجّل الكتابة وبتزوّد رقم التسلسل."""
+    """حافظة وهمية على حدود Win32 (winput): بتسجّل الكتابة وبتزوّد رقم التسلسل."""
 
     def __init__(self, text="OLD", safe=True, fail_copy=False):
         self.text, self.safe, self.fail_copy = text, safe, fail_copy
         self.seq, self.writes = 1, []
         self.read_fails = False
+        self.responsive = True          # البرنامج اللي بنلزق فيه بيرد (مش مهنّج)
 
     def read(self):
         return None if self.read_fails else self.text
@@ -166,11 +167,21 @@ class _Clipboard:
 
     def copy(self, text):
         if self.fail_copy:
-            raise RuntimeError("no clip")
+            raise OSError("no clip")
         self.write(text)
 
+    def write_if(self, text, expect_seq=None):
+        """winput.write_clipboard_text: الفحص والكتابة ذرّيين (الحافظة مفتوحة طولهم)."""
+        if expect_seq is not None and self.seq != expect_seq:
+            return False
+        self.copy(text)
+        return True
+
     def patches(self):
-        return [mock.patch("pyperclip.copy", side_effect=lambda t: self.copy(t)),
+        return [mock.patch("winput.write_clipboard_text",
+                           side_effect=lambda t, s=None: self.write_if(t, s)),
+                mock.patch("winput.foreground_hwnd", return_value=42),
+                mock.patch("winput.wait_responsive", side_effect=lambda h, ms: self.responsive),
                 mock.patch("winput._clipboard_safe_for_text", side_effect=lambda: self.safe),
                 mock.patch("winput._read_clipboard_text", side_effect=lambda: self.read()),
                 mock.patch("winput._clipboard_sequence", side_effect=lambda: self.seq),
@@ -225,6 +236,15 @@ class TestPasteText(unittest.TestCase):
         self.run_paste(("gui", "ctrl_v", "hello"), on_paste=lambda: order.append("paste") or True)
         self.assertEqual(order[order.index("paste"):],
                          ["paste", ("sleep", core.PASTE_SETTLE_SECONDS), ("copy", "OLD")])
+
+    def test_hung_target_keeps_dictation_instead_of_restoring(self):
+        # PR #14 (Codex P1): البرنامج مهنّج وممكن لسه ما قراش الحافظة — الرجوع كان
+        # هيخلّيه يلزق نسخة المستخدم القديمة (ممكن تبقى حاجة حسّاسة) بدل الإملاء
+        self.clip.responsive = False
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "placed")
+        self.assertEqual(self.clip.text, "hello")
+        self.assertEqual(self.clip.writes, ["hello"])
+        self.sleep.assert_called_once_with(0.12)     # انتظار الفوكس بس — مفيش انتظار رجوع
 
     def test_user_copy_during_paste_is_not_overwritten(self):
         # المستخدم نسخ حاجة في النص (رقم التسلسل اتغيّر) — نسخته الأحدث تفضل
