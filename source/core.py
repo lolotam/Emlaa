@@ -692,14 +692,65 @@ def asset(name):
 # ── الإعدادات ────────────────────────────────────────────────────────────────
 def load_config():
     cfg = dict(DEFAULTS)
+    raw = {}
     if os.path.exists(CFG_PATH):
         try:
-            cfg.update(json.load(open(CFG_PATH, encoding="utf-8")))
+            loaded = json.load(open(CFG_PATH, encoding="utf-8"))
+            raw = loaded if isinstance(loaded, dict) else {}
         except Exception:
             pass
-    if not cfg.get("hotkey_normal") and cfg.get("hotkey"):
-        cfg["hotkey_normal"] = cfg["hotkey"]
+    cfg.update(raw)
+    # الملف القديم جدًا فيه "hotkey" بس: الافتراضي (ctrl_r) مايغطّيش على زرار المستخدم
+    if raw.get("hotkey") and not raw.get("hotkey_normal"):
+        cfg["hotkey_normal"] = raw["hotkey"]
+    if not isinstance(cfg.get("features"), dict):
+        # الترحيل بيتحسب بس — عمره ما بيتكتب هنا: ملف اتقرا غلط ميتكتبش فوقه، واستيراد
+        # core (في الاختبارات) ميلمسش الملف. أول «حفظ» من الإعدادات هو اللي بيحفظه.
+        cfg["features"] = _migrated_features(cfg)
+        cfg["features_custom"] = False
     return cfg
+
+
+def _migrated_features(cfg):
+    try:
+        pools = providers.read_key_pools(ENV_PATH)
+    except Exception:
+        pools = {}
+    try:
+        local = offline.installed()
+    except Exception:
+        local = None
+    models = cfg.get("models") or {}
+    return smart.default_features(
+        cfg, pools, local,
+        {p: providers.stt_order(p, models.get(p)) for p in providers.ORDER},
+        {p: providers.chat_models(p) for p in providers.ORDER})
+
+
+def feature(mode):
+    """إعدادات ميزة (زرارها وقايمة التفريغ وقايمة المعالجة) من CFG الحالي."""
+    return CFG["features"][mode]
+
+
+_UNSET = object()
+
+
+def can_run(cfg=None, pools=None, local=_UNSET):
+    """
+    البرنامج يقدر يفرّغ؟ — فيه ميزة عندها عنصر تفريغ ينفع دلوقتي: مزوّد ليه مفتاح،
+    أو الموديل المحلي متثبّت. ده اللي بيقرر تشغيل المحرك والحفظ ومسح آخر مفتاح.
+    """
+    cfg = CFG if cfg is None else cfg
+    if pools is None:
+        pools = providers.read_key_pools(ENV_PATH)
+    if local is _UNSET:
+        local = offline.installed()
+    for f in (cfg.get("features") or {}).values():
+        for item in f.get("stt") or []:
+            pid = item.get("provider")
+            if (pid == smart.LOCAL and local) or (pid != smart.LOCAL and pools.get(pid)):
+                return True
+    return False
 
 
 

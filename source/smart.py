@@ -524,6 +524,86 @@ class CaptureSession:
             self.error = "الزرار ده مينفعش يبقى زرار تسجيل"
 
 
+# ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
+FEATURES = ("normal", "prompt", "translate", "edit")
+LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
+STT_ONLY = ("deepgram", LOCAL)        # بيفرّغوا بس — ممنوعين في قايمة المعالجة
+KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram")
+_CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
+
+
+def default_features(cfg, pools, local_model, stt_orders, chat_orders):
+    """
+    ترحيل الإعدادات القديمة (مزوّد واحد لكل حاجة) لقوايم الميزات من غير تغيير في التصرف:
+    البدائل اللي كانت مخبّية جوّه المزوّد (stt_alt / chat_alt) بتبقى عناصر ظاهرة بنفس
+    الترتيب. cfg = الملف القديم؛ stt_orders/chat_orders = ترتيب النهارده لكل مزوّد.
+    """
+    names = {"normal": cfg.get("hotkey_normal") or cfg.get("hotkey"),
+             "prompt": cfg.get("hotkey_prompt"), "translate": cfg.get("hotkey_translate"),
+             "edit": cfg.get("hotkey_edit")}
+    pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS else "groq"
+    local = {"provider": LOCAL, "model": ""}
+
+    if cfg.get("offline_mode") == "always":
+        stt = [local]
+    else:
+        stt = [{"provider": pid, "model": m} for m in stt_orders.get(pid) or []]
+        if local_model and cfg.get("offline_mode", "fallback") == "fallback":
+            stt.append(local)
+        stt = stt or [local]
+
+    candidates = [pid] + [p for p in _CHAT_FALLBACK_ORDER if p != pid]
+    chat_capable = [p for p in candidates if chat_orders.get(p)]
+    keyed = [p for p in chat_capable if pools.get(p)]
+    ai_pid = keyed[0] if keyed else (chat_capable[0] if chat_capable else None)
+    ai = [{"provider": ai_pid, "model": m} for m in chat_orders.get(ai_pid) or []]
+
+    out = {}
+    for mode in FEATURES:
+        vk = LEGACY_HOTKEY_VKS.get(str(names[mode] or "").strip().lower())
+        out[mode] = {
+            "hotkey": [vk] if vk else [],
+            "stt": [dict(i) for i in stt],
+            # من غير ولا مفتاح شات: العادي بيفضل خام زي النهارده؛ الباقي محتاج معالجة
+            # فبياخد أول مزوّد شات — التشغيل هيقول إن المفتاح ناقص بدل ما الحفظ يترفض
+            "ai": [dict(i) for i in ai] if (keyed or mode != "normal") else [],
+        }
+    return out
+
+
+def validate_features(features, known=KNOWN_PROVIDERS):
+    """قبل الحفظ بس: رسالة الغلط بالعربي، أو None لو الإعدادات سليمة."""
+    if not isinstance(features, dict) or any(not isinstance(features.get(m), dict) for m in FEATURES):
+        return "إعدادات الميزات ناقصة"
+    seen = {}
+    for mode in FEATURES:
+        f = features[mode]
+        stt, ai, hk = f.get("stt"), f.get("ai"), f.get("hotkey")
+        if not isinstance(stt, list) or not stt:
+            return "لازم يبقى فيه مزوّد تفريغ واحد على الأقل في كل ميزة"
+        if not isinstance(ai, list) or (not ai and mode != "normal"):
+            return "لازم يبقى فيه موديل معالجة واحد على الأقل (غير التسجيل العادي)"
+        for item in stt:
+            if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,):
+                return "مزوّد تفريغ مش معروف"
+        for item in ai:
+            if not isinstance(item, dict) or item.get("provider") not in known \
+                    or item.get("provider") in STT_ONLY or not item.get("model"):
+                return "المعالجة محتاجة مزوّد بيعرف يكتب (مش Deepgram ولا الموديل المحلي)"
+        if not isinstance(hk, list) or not all(isinstance(v, int) for v in hk) or not hotkey_shape_ok(hk):
+            return "زرار التسجيل مش مظبوط — زرار واحد، أو Ctrl/Alt/Shift/Win مع زرار"
+        if hk:
+            if tuple(hk) in seen:
+                return "كل ميزة لازم يبقى ليها زرار مختلف"
+            seen[tuple(hk)] = mode
+    # Ctrl اليمين لوحده زرار ميزة، وCtrl اليمين + F8 زرار ميزة تانية: دوسة Ctrl هتبدأ
+    # الأولى وF8 هيلغيها — فبنرفض التركيبة دي من الأول
+    singles = {k[0] for k in seen if len(k) == 1}
+    if any(len(k) == 2 and k[0] in singles for k in seen):
+        return "زرار لوحده مينفعش يبقى أول زرار في تركيبة ميزة تانية"
+    return None
+
+
 # ── F3: الحقن الهجين — تصنيف الهدف واستراتيجية الحقن ───────────────────────────
 # قرار «الهدف ده نوعه إيه، ونكتب فيه إزاي؟» هنا بس — winput (ويندوز) و core
 # (الحافظة ودورة التسجيل) بينفّذوا النتيجة.
