@@ -1055,9 +1055,13 @@ def _copy_owned(text, expect_seq=None):
     now = winput._read_clipboard_text()
     if winput._clipboard_sequence() != seq:
         return None
-    # القراية فشلت (None) والرقم ثابت = مفيش حد كتب بعدنا: النسخة بتاعتنا. لو اعتبرناها
-    # مش بتاعتنا، اللزق كان هيسيب الإملاء على الحافظة ونسخة المستخدم متترجعش
-    if now is not None and now.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+    # القراية فشلت (None) والرقم ثابت والحافظة نص بس = مفيش حد كتب بعدنا: النسخة بتاعتنا.
+    # لو اعتبرناها مش بتاعتنا، اللزق كان هيسيب الإملاء ونسخة المستخدم متترجعش. صيغة غير
+    # نصية (صورة/ملفات) = برنامج تاني كتب بعدنا على طول، ورقمه مش بتاعنا
+    if now is None:
+        if not winput._clipboard_safe_for_text():
+            return None
+    elif now.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
         return None
     mark_clip_owned(seq)
     return seq

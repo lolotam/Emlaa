@@ -341,6 +341,19 @@ class TestPasteText(unittest.TestCase):
         self.cv.assert_called_once_with()
         self.assertEqual(self.clip.text, "OLD")
 
+    def test_non_text_written_after_ours_is_not_taken_as_ours(self):
+        # PR #14 (Codex P2): برنامج حط صورة بعد نسختنا على طول — القراية بترجع None والرقم
+        # ثابت، بس الصيغ مش نص بس: النسخة مش بتاعتنا، فمنلزقش ولا نرجّع فوقها
+        def ours_then_image(t):
+            self.clip.write(t)
+            self.clip.write("<image>")
+            self.clip.safe, self.clip.read_fails = False, True
+
+        self.clip.copy = ours_then_image
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "line1\nline2")), "handoff")
+        self.cv.assert_not_called()
+        self.assertEqual(self.clip.text, "<image>")
+
     def test_copy_between_snapshot_and_write_is_kept(self):
         # PR #14 (Codex P2): المستخدم نسخ بعد ما قرينا الحافظة وقبل ما نكتب — منكتبش فوقه
         def snapshot_then_user_copies():
