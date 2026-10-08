@@ -1034,7 +1034,7 @@ class Client:
             if profile in STYLE_RULES:
                 system += "\n\n" + STYLE_RULES[profile]
         out = self._chat(self._with_vocab(system), text, temperature=0.1)
-        if english and out != text and not smart.is_english(out):
+        if english and smart.has_arabic(out):
             # الموديل ترجم الإنجليزي لعربي بدل ما ينضّفه — الخام أأمن من كلام ماتقالش
             return self._polish_rejected(text, "التصحيح غيّر لغة الكلام الإنجليزي")
         # التصحيح بيغيّر كلمات، مش بيضيف كلام. لو الرد طلع أطول من الأصل بكتير يبقى

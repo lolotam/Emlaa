@@ -629,7 +629,7 @@ def prompt_language(text):
     # و TypeScript» حروفها اللاتيني أكتر بس هي طلب عربي (كتابة) — لازم توصل للتصنيف.
     # وبنشيل الإيميل/اللينك/@الحساب الأول عشان مايعدّوش كلام.
     bare = _IDENTIFIER_RE.sub(" ", s)
-    if not any(_is_ar_letter(c) for c in bare) and latin_dominant(bare):
+    if not has_arabic(bare) and latin_dominant(bare):
         return "en"
     return None
 
@@ -637,6 +637,11 @@ def prompt_language(text):
 def is_english(text):
     """كلام إنجليزي خالص (مفيش ولا حرف عربي) — بيتنضّف بقواعد إنجليزي. المخلوط عربي."""
     return prompt_language(text) == "en"
+
+
+def has_arabic(text):
+    """فيه حرف عربي فعلًا — مش رقم هندي ولا ، ؛ ؟ من نفس النطاق."""
+    return any(_is_ar_letter(c) for c in str(text or ""))
 
 
 # حروف لغات غير العربي والإنجليزي (سيريلي، عبري، هندي، صيني/ياباني، كوري، تاي، يوناني،

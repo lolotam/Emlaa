@@ -70,6 +70,13 @@ class TestPolishLanguage(unittest.TestCase):
         out = self._polish("how are you", reply="How are you?")
         self.assertEqual(out, "How are you?")
 
+    def test_identifier_only_correction_is_kept(self):
+        # PR #13 (Codex P2): is_english بيشيل الإيميل/اللينك قبل العدّ — رد كله معرّفات
+        # مش «عربي»، فالتصحيح لازم يعدّي
+        for raw, fixed in (("john at example dot com", "john@example.com"),
+                           ("example dot com slash docs", "https://example.com/docs")):
+            self.assertEqual(self._polish(raw, reply=fixed), fixed)
+
 
 class TestOfflineAutoLanguage(_BaseCase):
     def _fake_run(self, outputs):
