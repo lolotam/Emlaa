@@ -455,6 +455,75 @@ class HotkeyFilter:
         return frozenset(self._down)
 
 
+CAPTURE_PAIR_ERR = "لازم زرار منهم يبقى Ctrl أو Alt أو Shift أو Win"
+
+
+class CaptureSession:
+    """
+    تسجيل زرار التسجيل من الكيبورد (count = ١ أو ٢). بيسجّل الزراير اللي اتداست جوّه
+    الجلسة بس: الزراير الماسكة من قبلها (initially_down) — حتى تكرارها التلقائي — مش
+    بتاعتنا لحد ما تتساب، فتعدّي للبرنامج زي ما هي ومايفضلش فيه زرار «متعلّق».
+    decided = النتيجة (أو الغلط أو الإلغاء) اتعرفت؛ finished = decided وكل زرار
+    سجّلناه اتساب — المستمع لازم يفضل يمنع لحد finished، غير كده البرنامج التاني
+    يستلم تسيب زرار ما استلمش دوسته.
+    """
+
+    def __init__(self, count, initially_down=frozenset()):
+        self._count = count
+        self._foreign = set(initially_down)
+        self._down = []             # زرايرنا الماسكة دلوقتي بترتيب الدوس
+        self._pair = None           # count=2: أول زرارين اتمسكوا مع بعض
+        self.decided = False
+        self.cancelled = False
+        self.error = None
+        self.result = None
+
+    @property
+    def finished(self):
+        return self.decided and not self._down
+
+    def event(self, vk, is_press, fake_altgr_ctrl):
+        """True = الحدث ده بتاعنا (لازم يتمنع عن البرامج التانية)."""
+        if fake_altgr_ctrl:
+            return False
+        if vk in self._foreign:
+            if not is_press:
+                self._foreign.discard(vk)
+            return False
+        if is_press:
+            if vk in self._down:
+                return True                         # تكرار تلقائي لزرار بتاعنا
+            if self.decided:
+                return False                        # زرار جديد بعد ما خلصنا — مش بتاعنا
+            self._down.append(vk)
+            if vk == VK_ESCAPE and len(self._down) == 1:
+                self.cancelled = self.decided = True
+            elif self._count == 2 and self._pair is None and len(self._down) >= 2:
+                self._pair = self._down[:2]
+            return True
+        if vk not in self._down:
+            return False
+        self._down.remove(vk)
+        if not self.decided:
+            if self._count == 1:
+                self._decide([vk])
+            elif self._pair is not None:
+                mods = [k for k in self._pair if k in MODIFIER_VKS]
+                keys = [k for k in self._pair if k not in MODIFIER_VKS]
+                if len(mods) == 1 and len(keys) == 1:
+                    self._decide([mods[0], keys[0]])
+                else:
+                    self.error, self.decided = CAPTURE_PAIR_ERR, True
+        return True
+
+    def _decide(self, vks):
+        self.decided = True
+        if hotkey_shape_ok(vks):
+            self.result = vks
+        else:
+            self.error = "الزرار ده مينفعش يبقى زرار تسجيل"
+
+
 # ── F3: الحقن الهجين — تصنيف الهدف واستراتيجية الحقن ───────────────────────────
 # قرار «الهدف ده نوعه إيه، ونكتب فيه إزاي؟» هنا بس — winput (ويندوز) و core
 # (الحافظة ودورة التسجيل) بينفّذوا النتيجة.

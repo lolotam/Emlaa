@@ -147,10 +147,82 @@ class TestComboLogic(unittest.TestCase):
         self.assertEqual(lg.press(F7, 0.0, False, False, held=frozenset({LCTRL})), ["begin:prompt"])
         self.assertEqual(lg.release(F7, 0.4, True, False), ["end"])
 
+    def test_legacy_key_map_still_accepted(self):
+        lg = smart.HotkeyLogic({F7: "normal"}, "hold")
+        self.assertEqual(lg.press(F7, 0.0, False, False), ["begin:normal"])
+
     def test_alt_trigger_still_masked(self):
         lg = smart.HotkeyLogic(smart.HotkeyMatcher({"prompt": smart.Hotkey(frozenset(), RALT)}),
                                "toggle", alt_keys={RALT})
         self.assertEqual(lg.press(RALT, 0.0, False, False), ["mask"])
+
+
+class TestCapture(unittest.TestCase):
+    """تسجيل الزرار من الكيبورد: بيسجّل اللي اتداس جوّه الجلسة بس، وبيستنى التسيب."""
+
+    def feed(self, s, events):
+        return [s.event(vk, down, fake) for vk, down, fake in events]
+
+    def test_altgr_records_right_alt_not_fake_ctrl(self):
+        s = smart.CaptureSession(1)
+        self.feed(s, [(LCTRL, True, True), (RALT, True, False), (LCTRL, False, True), (RALT, False, False)])
+        self.assertEqual((s.finished, s.result), (True, [RALT]))
+
+    def test_single_key_ignores_auto_repeat(self):
+        s = smart.CaptureSession(1)
+        self.assertEqual(self.feed(s, [(F7, True, False), (F7, True, False)]), [True, True])
+        self.assertFalse(s.decided)
+        s.event(F7, False, False)
+        self.assertEqual(s.result, [F7])
+
+    def test_key_held_before_session_passes_through_including_repeats(self):
+        s = smart.CaptureSession(1, initially_down=frozenset({LCTRL}))
+        self.assertEqual(self.feed(s, [(LCTRL, True, False), (LCTRL, False, False)]), [False, False])
+        self.assertFalse(s.decided)
+        # بعد ما اتساب، دوسة جديدة عليه بتاعتنا
+        self.assertTrue(s.event(LCTRL, True, False))
+
+    def test_release_of_unknown_key_passes_through(self):
+        s = smart.CaptureSession(1)
+        self.assertEqual(self.feed(s, [(LCTRL, False, False)]), [False])
+
+    def test_two_keys_finished_only_after_full_release(self):
+        s = smart.CaptureSession(2)
+        self.feed(s, [(F7, True, False), (LCTRL, True, False), (F7, False, False)])
+        self.assertTrue(s.decided)
+        self.assertFalse(s.finished)
+        self.assertTrue(s.event(LCTRL, False, False))     # لسه بتاعنا: متمنوع
+        self.assertTrue(s.finished)
+        self.assertEqual(s.result, [LCTRL, F7])
+
+    def test_two_keys_needs_both_down_together(self):
+        s = smart.CaptureSession(2)
+        self.feed(s, [(F7, True, False), (F7, False, False)])
+        self.assertFalse(s.decided)
+
+    def test_single_key_waits_for_other_captured_keys(self):
+        s = smart.CaptureSession(1)
+        self.feed(s, [(F7, True, False), (F8, True, False), (F7, False, False)])
+        self.assertEqual((s.decided, s.finished, s.result), (True, False, [F7]))
+        s.event(F8, False, False)
+        self.assertTrue(s.finished)
+
+    def test_two_non_modifiers_rejected(self):
+        s = smart.CaptureSession(2)
+        self.feed(s, [(0x41, True, False), (0x42, True, False), (0x41, False, False), (0x42, False, False)])
+        self.assertTrue(s.finished)
+        self.assertIsNone(s.result)
+        self.assertIsNotNone(s.error)
+
+    def test_escape_cancels_and_is_suppressed(self):
+        s = smart.CaptureSession(1)
+        self.assertTrue(s.event(0x1B, True, False))
+        self.assertTrue(s.cancelled)
+        self.assertTrue(s.decided)
+        self.assertFalse(s.finished)              # Esc لسه ماتسابش
+        self.assertTrue(s.event(0x1B, False, False))
+        self.assertTrue(s.finished)
+        self.assertIsNone(s.result)
 
 
 if __name__ == "__main__":
