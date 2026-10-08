@@ -18,6 +18,7 @@ import difflib
 import http.client
 import unicodedata
 import urllib.error
+from collections import namedtuple
 
 
 # ── تطبيع النص (مشترك بين تخطّي الردود القصيرة F2 والاختصارات الصوتية F8) ──
@@ -204,6 +205,99 @@ def is_dev_app(exe, cfg):
 # أقصى مدة ل«دوسة نضيفة» في وضع toggle: أطول من كده معناه ماسك الزرار
 # (أو التكرار التلقائي) مش دوسة.
 TAP_MAX = 0.6
+
+# ── الزراير بأرقام ويندوز (vk) ─────────────────────────────────────────────
+# الزرار بيتعرف برقمه مش باسمه في pynput: Alt اليمين في كيبورد عليه عربي ويندوز
+# بيبعته AltGr، وpynput بيفرّق alt_r (extended) عن alt_gr مع إن الاتنين VK_RMENU —
+# فالمقارنة بالاسم كانت بتفشل. والزرار اللي بيتسجّل من الكيبورد بيتحفظ برقمه زي ما هو.
+VK_ESCAPE = 0x1B
+MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C})
+
+# أسماء الإعدادات القديمة (قايمة الزراير الثابتة) ← رقمها — للترحيل بس
+LEGACY_HOTKEY_VKS = {
+    "ctrl_r": 0xA3, "alt_r": 0xA5, "shift_r": 0xA1, "caps_lock": 0x14, "scroll_lock": 0x91,
+    "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+}
+
+Hotkey = namedtuple("Hotkey", "mods trigger")
+
+
+def hotkey_shape_ok(vks):
+    """[] أو [أي زرار] أو [موديفاير، زرار مش موديفاير] — وEsc ممنوع (هو الإلغاء)."""
+    vks = list(vks or [])
+    if VK_ESCAPE in vks or len(vks) > 2:
+        return False
+    if len(vks) == 2:
+        return vks[0] in MODIFIER_VKS and vks[1] not in MODIFIER_VKS
+    return True
+
+
+def hotkey_from_vks(vks):
+    """[] = مفيش زرار (None)؛ [t] = زرار لوحده؛ [m, t] = موديفاير + الزرار اللي بيشغّل."""
+    vks = list(vks or [])
+    if not vks:
+        return None
+    return Hotkey(frozenset(vks[:-1]), vks[-1])
+
+
+class HotkeyMatcher:
+    """
+    المطابقة الوحيدة: المنع (HotkeyFilter) والتشغيل (HotkeyLogic) بيسألوها هي، عشان
+    مفيش زرار يتمنع ومايشتغلش. F7 وCtrl+F7 ممكن يبقوا وضعين مختلفين: التطابق على
+    الموديفايرز الماسكة بالظبط — زيادة موديفاير (Shift+F7) مش بتطابق حاجة.
+    """
+
+    def __init__(self, hotkeys):
+        self._by_trigger = {}
+        for mode, hk in hotkeys.items():
+            if hk is not None:
+                self._by_trigger.setdefault(hk.trigger, []).append((hk.mods, mode))
+
+    def match(self, trigger, held):
+        held_mods = (frozenset(held) & MODIFIER_VKS) - {trigger}
+        for mods, mode in self._by_trigger.get(trigger, ()):
+            if mods == held_mods:
+                return mode
+        return None
+
+    def triggers(self):
+        return set(self._by_trigger)
+
+
+_VK_NAMES = {
+    0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x13: "Pause", 0x14: "Caps Lock",
+    0x20: "Space", 0x21: "Page Up", 0x22: "Page Down", 0x23: "End", 0x24: "Home",
+    0x25: "Left", 0x26: "Up", 0x27: "Right", 0x28: "Down", 0x2C: "Print Screen",
+    0x2D: "Insert", 0x2E: "Delete", 0x90: "Num Lock", 0x91: "Scroll Lock",
+    0xA6: "Browser Back", 0xA7: "Browser Forward", 0xA8: "Browser Refresh", 0xA9: "Browser Stop",
+    0xAA: "Browser Search", 0xAB: "Browser Favorites", 0xAC: "Browser Home",
+    0xAD: "Mute", 0xAE: "Volume Down", 0xAF: "Volume Up", 0xB0: "Media Next",
+    0xB1: "Media Prev", 0xB2: "Media Stop", 0xB3: "Media Play/Pause", 0xB4: "Mail",
+    0xB5: "Media Select",
+}
+# الموديفايرز بس اللي ليها اسم عربي (يمين/شمال) — الباقي نفس الكتابة في اللغتين
+_MOD_NAMES = {
+    0x10: ("Shift", "Shift"), 0x11: ("Ctrl", "Ctrl"), 0x12: ("Alt", "Alt"),
+    0xA0: ("Shift الشمال", "Left Shift"), 0xA1: ("Shift اليمين", "Right Shift"),
+    0xA2: ("Ctrl الشمال", "Left Ctrl"), 0xA3: ("Ctrl اليمين", "Right Ctrl"),
+    0xA4: ("Alt الشمال", "Left Alt"), 0xA5: ("Alt اليمين", "Right Alt"),
+    0x5B: ("Win الشمال", "Left Win"), 0x5C: ("Win اليمين", "Right Win"),
+}
+
+
+def vk_label(vk, lang="ar"):
+    if vk in _MOD_NAMES:
+        ar, en = _MOD_NAMES[vk]
+        return en if lang == "en" else ar
+    if 0x70 <= vk <= 0x87:
+        return "F%d" % (vk - 0x6F)
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    return _VK_NAMES.get(vk, "Key 0x%02X" % vk)
+
+
+def hotkey_label(vks, lang="ar"):
+    return " + ".join(vk_label(v, lang) for v in (vks or []))
 
 
 class HotkeyLogic:
