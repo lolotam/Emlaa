@@ -239,6 +239,8 @@ class TestProcessEdit(unittest.TestCase):
     def test_success_pastes_and_records_without_selection(self):
         op = core.Operation(mode="edit", selection="نص محدد أصلي")
         app, fake, hist, rsave, paste_fn, _ = self._run(op)
+        # التعليمات بتتعرّف على لغتها: نص إنجليزي جوّه التعليمات ميتترجمش قبل ما يتحط
+        self.assertEqual(fake.calls[0], ("transcribe", None))
         # النتيجة اتحقنت
         paste_fn.assert_called_once()
         self.assertEqual(paste_fn.call_args[0][0], "النص المعدل")

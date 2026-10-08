@@ -518,7 +518,7 @@ class TestProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="prompt"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("prompt",)])
         self.assertEqual(app.texts, ["P:مرحبا بالعالم"])
         paste.assert_called_once_with("P:مرحبا بالعالم", ("gui", "type", "P:مرحبا بالعالم"))
         hist.assert_called_once_with("prompt", "مرحبا بالعالم", "P:مرحبا بالعالم",
@@ -586,7 +586,7 @@ class TestProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)])
         hist.assert_called_once()
         self.assertEqual(hist.call_args[0][0], "normal")
         rsave.assert_called_once_with(7, "WAV")
@@ -700,7 +700,7 @@ class TestProcessDoneState(unittest.TestCase):
 def _cfg(**over):
     """إعدادات وهمية لوحدات F2 — عشان الاختبار ميعتمدش على config.json الحقيقي."""
     base = {"polish": True, "bypass_short": True, "bypass_max_words": 3,
-            "language": "ar", "dictionary": [], "history_keep_last10": True}
+            "dictionary": [], "history_keep_last10": True}
     base.update(over)
     return base
 
@@ -720,7 +720,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertIsNone(fake.last_chat, "مفيش chat = مفيش موديل شات شغل")
         self.assertEqual(app.texts, ["تمام"])
         paste.assert_called_once_with("تمام", ("gui", "type", "تمام"))
@@ -757,7 +757,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)])
         self.assertEqual(app.texts, ["p:تمام شكرا يا رب"])
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
@@ -774,7 +774,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)])
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
     def test_prompt_mode_unaffected_by_bypass(self):
@@ -791,7 +791,7 @@ class TestBypassProcess(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True):
             app.process("WAV", core.Operation(mode="prompt"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("prompt",)])
         self.assertEqual(app.texts, ["P:تمام"])
         self.assertEqual(hist.call_args.kwargs.get("bypass"), False)
 
@@ -832,7 +832,7 @@ class TestSecurePrivacy(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value=True) as paste:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar")],
+        self.assertEqual(fake.calls, [("transcribe", None)],
                          "الباسورد ممن يوصل polish/light_clean")
         self.assertEqual(app.texts, [])
         paste.assert_called_once_with("s3cret!", ("secure", "type", "s3cret!"))
@@ -862,7 +862,7 @@ class TestSecurePrivacy(unittest.TestCase):
                            side_effect=lambda t: log.append("type") or True), \
                 mock.patch.object(core.time, "sleep"):
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)],
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)],
                          "الموديل اشتغل لأن الاستعلام المبكّر شافه خانة عادية")
         self.assertEqual(log, ["type"], "النتيجة اتعاملت آمنة بعد الاستعلام الأخير")
         self.assertEqual(app.texts, [])
@@ -906,7 +906,7 @@ class TestSecurePrivacy(unittest.TestCase):
                 mock.patch.object(core, "paste_text") as paste, \
                 mock.patch("pyperclip.copy") as clip:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للباسورد")
+        self.assertEqual(fake.calls, [("transcribe", None)], "مفيش polish للباسورد")
         hist.assert_not_called()
         rsave.assert_not_called()
         paste.assert_not_called()
@@ -936,7 +936,7 @@ class TestSecurePrivacy(unittest.TestCase):
             "prompt",
             {"is_password": True, "class": "Edit", "editable": True},
             {"is_password": True, "class": "Edit", "editable": True})
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertNotIn(("prompt",), fake.calls)
         hist.assert_not_called()
         rsave.assert_not_called()
@@ -960,7 +960,7 @@ class TestSecurePrivacy(unittest.TestCase):
             "normal",
             {"is_password": True, "class": "Edit", "editable": True},
             {"is_password": True, "class": "Edit", "editable": True})
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertFalse(any(c[0] == "polish" for c in fake.calls))
         hist.assert_not_called()
         rsave.assert_not_called()
@@ -1041,7 +1041,7 @@ class TestProbePrivacy(unittest.TestCase):
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text") as paste:
             app.process("WAV", op)
-        self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للباسورد")
+        self.assertEqual(fake.calls, [("transcribe", None)], "مفيش polish للباسورد")
         hist.assert_not_called()
         rsave.assert_not_called()
         paste.assert_not_called()
@@ -1065,7 +1065,7 @@ class TestProbePrivacy(unittest.TestCase):
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "paste_text") as paste:
             app.process("WAV", op)
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(fake.calls, [("transcribe", None)])
         hist.assert_not_called()
         rsave.assert_not_called()
         paste.assert_not_called()
@@ -1213,14 +1213,14 @@ class TestFixMixedProcess(unittest.TestCase):
     def test_normal_mode_gets_fixed(self):
         # الطريق العادي: بعد polish المخرج بيتصلّح ويُحقن كده
         app, fake, paste = self._run()
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)])
         self.assertEqual(app.texts, [MIXED_FIXED])
         paste.assert_called_once_with(MIXED_FIXED, ("gui", "type", MIXED_FIXED))
 
     def test_raw_mode_stays_byte_identical(self):
         # الوضع الخام: المخرج = التفريغ حرفي — من غير أي تصحيح
-        app, fake, _ = self._run(cfg={"polish": False, "language": "ar", "dictionary": []})
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        app, fake, _ = self._run(cfg={"polish": False, "dictionary": []})
+        self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertEqual(app.texts, [MIXED_RAW])
 
     def test_dev_profile_skips_fix(self):
@@ -1234,7 +1234,7 @@ class TestFixMixedProcess(unittest.TestCase):
         cfg = dict(core.DEFAULTS)
         cfg["context_styles"] = False
         app, fake, _ = self._run(target_app="code", cfg=cfg)
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("polish", None)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("polish", None)])
         self.assertEqual(app.texts, [MIXED_RAW])
 
     def test_terminal_target_skips_fix(self):
@@ -1246,7 +1246,7 @@ class TestFixMixedProcess(unittest.TestCase):
     def test_prompt_mode_untouched(self):
         # البرومبت مبيروح fix_mixed خالص — الموديل هو اللي بيشكّله
         app, fake, _ = self._run(mode="prompt")
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("prompt",)])
         self.assertEqual(app.texts, [MIXED_RAW])
 
     def test_translate_mode_untouched(self):
@@ -1266,7 +1266,7 @@ class TestFixMixedProcess(unittest.TestCase):
     def test_bypass_short_reply_also_fixed(self):
         # الرد القصير المتخطّي (light_clean) برضه مخرج وضع عادي
         app, fake, _ = self._run(text="تمام, شكرا")
-        self.assertEqual(fake.calls, [("transcribe", "ar")])
+        self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertEqual(app.texts, ["تمام، شكرا"])
 
 
