@@ -260,41 +260,45 @@ class TestProcessEdit(unittest.TestCase):
         self.assertEqual(app.events[-1], ("err", "معرفتش أعدّل النص — جرّب تاني"))
         self.assertFalse(app.busy)
 
-    def _run_real_paste(self, op, same=True, copy_ok=True, focus=None, fake=None):
+    def _run_real_paste(self, op, same=True, copy_ok=True, focus=None, fake=None, auto_paste=True):
         """يشغّل _process_edit بـpaste_text الحقيقي (مش mock) عشان نختبر guard/copy."""
         app = make_app()
+        cfg = dict(core.DEFAULTS, auto_paste=auto_paste)
         fake = fake or FakeEditClient()
         app.client = lambda: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
-                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch.object(core, "CFG", cfg), \
                 mock.patch("winput.same_target", return_value=same), \
                 mock.patch("winput.focused_info", return_value=focus or GUI_FOCUS), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=7) as hist, \
                 mock.patch.object(core, "recording_save") as rsave, \
                 mock.patch.object(core, "_copy_to_clipboard", return_value=copy_ok) as clip, \
+                mock.patch.object(core, "mark_clip_owned"), \
+                mock.patch.object(core, "suppress_clip_watch"), \
+                mock.patch("winput._clipboard_sequence", return_value=1), \
                 mock.patch("winput.type_text", return_value=True) as ttype, \
                 mock.patch.object(core.time, "sleep"):
             app.process("WAV", op)
         return app, fake, hist, rsave, clip, ttype
 
     def test_same_target_false_does_not_type_and_unplaces(self):
-        # M6: الهدف اتغيّر بعد الانتظار → paste_text يسلم (نسخ + handoff) من غير حقن
+        # M6: الهدف اتغيّر بعد الانتظار → paste_text يسلم (رسالة بزرار نسخ) من غير حقن ولا نسخ
         app, fake, hist, rsave, clip, ttype = self._run_real_paste(
             core.Operation(mode="edit", selection="نص"), same=False)
         self.assertFalse(ttype.called, "الهدف اتغيّر = مفيش حقن")
-        clip.assert_called_once_with("النص المعدل")
+        clip.assert_not_called()
         self.assertEqual(app.unplaced, ["النص المعدل"])
         hist.assert_called_once()
         rsave.assert_called_once()
         self.assertEqual(app.events[-1], ("done", "edit"))
         self.assertFalse(app.busy)
 
-    def test_target_changed_and_copy_fails_reports_err(self):
-        # M7: الهدف اتغيّر والنسخة فشلت → خطأ بدل on_unplaced + "done"
+    def test_auto_paste_off_and_copy_fails_reports_err(self):
+        # M7: الكتابة التلقائية مقفولة والنسخة فشلت → مفيش حاجة وصلت: خطأ بدل on_unplaced + "done"
         app, fake, hist, rsave, clip, ttype = self._run_real_paste(
-            core.Operation(mode="edit", selection="نص"), same=False, copy_ok=False)
+            core.Operation(mode="edit", selection="نص"), copy_ok=False, auto_paste=False)
         self.assertFalse(ttype.called)
         self.assertEqual(app.unplaced, [])
         hist.assert_not_called()

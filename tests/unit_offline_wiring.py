@@ -114,7 +114,6 @@ class TestAlwaysOffline(unittest.TestCase):
         app.process("WAV", core.Operation(mode="normal"))
         app.client.assert_not_called()
         self.assertEqual(m["paste"].call_args.args[0], "١٢ شارع النيل")
-        self.assertTrue(m["paste"].call_args.kwargs.get("from_snippet"))
         self.assertEqual(m["history"].call_args.args[2], "[اختصار] العنوان بتاعي")
 
     def test_snippet_not_expanded_into_password_field_offline(self):
@@ -126,19 +125,30 @@ class TestAlwaysOffline(unittest.TestCase):
         for call in m["paste"].call_args_list:
             self.assertNotIn("١٢ شارع النيل", call.args[0])
 
-    def test_prompt_copies_not_inserts(self):
+    def test_prompt_shows_raw_text_without_inserting_or_copying(self):
         app = make_app()
         app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
         m = _wire(self, offline_mode="always", offline_text="طلب محلي")
         app.process("WAV", core.Operation(mode="prompt"))
         app.client.assert_not_called()
         m["paste"].assert_not_called()
-        m["clip"].assert_called_once_with("طلب محلي")
+        m["clip"].assert_not_called()
         self.assertEqual(app.unplaced, ["طلب محلي"])
         self.assertEqual(app.events[-1], ("done", "اتفرّغ بس — التحويل محتاج إنترنت"))
         self.assertEqual(m["history"].call_args.args[2], "طلب محلي")
 
-    def test_translate_copies_and_keeps_raw_history(self):
+    def test_auto_paste_off_copies_raw_text(self):
+        # الكتابة التلقائية مقفولة = المستخدم عايز النص على الحافظة
+        app = make_app()
+        m = _wire(self, offline_mode="always", offline_text="طلب محلي")
+        core.CFG["auto_paste"] = False
+        with mock.patch.object(core, "mark_clip_owned"), \
+                mock.patch("winput._clipboard_sequence", return_value=1):
+            app.process("WAV", core.Operation(mode="prompt"))
+        m["clip"].assert_called_once_with("طلب محلي")
+        self.assertEqual(app.unplaced, ["طلب محلي"])
+
+    def test_translate_shows_raw_text_and_keeps_raw_history(self):
         app = make_app()
         app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
         m = _wire(self, offline_mode="always", offline_text="نص عربي")

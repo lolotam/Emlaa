@@ -1037,34 +1037,65 @@ def _copy_to_clipboard(text):
         return False
 
 
-def _mark_owned_if_snippet(from_snippet):
-    """لو النص اللي اننسخ جاي من اختصار صوتي، نعلّم رقم تغييره إنه بتاعنا."""
-    if from_snippet:
-        import winput
-        mark_clip_owned(winput._clipboard_sequence())
-
-
-def _pre_copy_suppress(from_snippet):
-    """كبس المراقب قبل نشر نص اختصار (M4) — عشان مايتسجلش كنسخة حقيقية."""
-    if from_snippet:
-        suppress_clip_watch(1.0)
-
-
-def paste_text(text, target=None, from_snippet=False, guard=None):
+def _copy_owned(text):
     """
-    بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3):
+    نشر نص بتاعنا للحافظة: المراقب مكبوس قبل النشر والرقم الجديد متعلّم «بتاعنا» بعده،
+    فصفحة الحافظة متسجّلش الإملاء (اتسجّل بالفعل في السجل). True لو النشر نجح.
+    """
+    import winput
+    suppress_clip_watch(1.0)
+    if not _copy_to_clipboard(text):
+        return False
+    mark_clip_owned(winput._clipboard_sequence())
+    return True
+
+
+# البرنامج التاني بيقرا الحافظة لما يعالج Ctrl+V — بعد ما SendInput يرجع، ومفيش حدث
+# نستناه. رجوع الحافظة بدري = اللزق يكتب النص القديم بدل الإملاء، وده أوحش بكتير من
+# ثانية تأخير (العملية لسه busy، فمفيش تسجيل تاني يلحق يقرا حافظة نص راجعة).
+PASTE_SETTLE_SECONDS = 1.0
+
+
+def _paste_via_clipboard(text, strategy, still_target, restore):
+    """
+    اللزق محتاج الحافظة: بنحط الإملاء، نلزق، ونرجّع النص اللي كان عليها — بس لو لسه
+    بتاعتنا (المستخدم ما نسخش حاجة في النص). restore=False (RDP/VM): مزامنة الحافظة
+    للجهاز التاني متأخرة، والرجوع ممكن يخلّيه يلزق القديم. محتوى غير نصي (صورة/ملفات)
+    منقدرش نرجّعه — paste_text بيكتب السطر الواحد بدل اللزق عشان مايضيعش.
+    """
+    import winput
+    old = winput._read_clipboard_text() if restore and winput._clipboard_safe_for_text() else None
+    if not _copy_owned(text):
+        return "failed"
+    ours = winput._clipboard_sequence()
+    try:
+        if not still_target():
+            return "handoff"
+        fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
+        pasted = fn()
+        time.sleep(PASTE_SETTLE_SECONDS)
+        return "placed" if pasted else "failed"
+    finally:
+        # الرجوع بنفس الطريق: كبس المراقب قبله (كبسة النشر الأولى خلصت وقت الانتظار)
+        # عشان صفحة الحافظة متسجّلش نص المستخدم القديم كنسخة جديدة
+        if old is not None and winput._clipboard_sequence() == ours:
+            _copy_owned(old)
+
+
+def paste_text(text, target=None, guard=None):
+    """
+    بيحقن النتيجة مكان المؤشر حسب تصنيف الهدف (smart.insert_target — F3). الإملاء
+    مبيفضلش على الحافظة: الكتابة مبتلمسهاش، واللزق بيرجّع اللي كان عليها.
       "placed"      = الأحداث اتحقنت كويس
-      "failed"      = الحقن فشل بس النص على الحافظة (المستخدم يقدر يلزقه)
-      "clip_failed" = مفيش حقن ولا نسخة على الحافظة (نشر الحافظة فشل، أو
-                      الكتابة فشلت والنسخة الاحتياطية فشلت كمان)
-      "handoff"     = ممن متحقن (مفيش خانة كتابة / auto_paste مقفول / متعدد في
-                      ترمنال…) — النص بيتنسخ (غير الخانات الآمنة) والواجهة بتعرضه
+      "failed"      = الحقن فشل — الواجهة بتعرض النص بزرار نسخ
+      "handoff"     = ممن متحقن (مفيش خانة كتابة / الهدف اتغيّر / متعدد في ترمنال /
+                      auto_paste مقفول) — الواجهة بتعرض النص بزرار نسخ
+      "clip_failed" = auto_paste مقفول ونسخه للحافظة فشل — مفيش حاجة وصلت للمستخدم
+    auto_paste مقفول = المستخدم اختار ياخد النص من الحافظة: بيتنسخ (غير الخانة الآمنة).
     target = نتيجة insert_target اللي جات من process() (تصنيف مرة واحدة
     لكل نتيجة)؛ لو ماسكة، بيتحسب هنا عشان العقد القديم بيرحم.
-    from_snippet = النص جاي من اختصار صوتي — أي نسخة للحافظة بتتعلم إنها بتاعتنا
-    عشان مراقب الحافظة مايسجلهاش (نص الاختصار اتسجّل بالفعل كإملاء).
     guard = دالة فحص قبل الحقن مباشرة (M6): بتتندّى بعد sleep الفوكس، ولو رجّعت
-    False منحقنش ونسلّم النص زي مسار الـhandoff (نسخ غير الخانات الآمنة).
+    False منحقنش ونسلّم النص زي مسار الـhandoff.
     """
     import winput
     if target is None:
@@ -1072,48 +1103,26 @@ def paste_text(text, target=None, from_snippet=False, guard=None):
         info["exe"] = _foreground_app()
         target = smart.insert_target(info, text, CFG.get("insert_method"))
     cls, strategy, inj = target
-    if strategy == "handoff" or not CFG.get("auto_paste", True):
-        # مفيش حقن: ننسخ للمستخدم والواجهة تعرضه — غير الخانة الآمنة:
-        # دي عمرها ماتوصل للحافظة
-        if cls != "secure":
-            # L3: لو نشر الحافظة فشل مفيش حاجة وصلت للمستخدم — منرجعش "handoff"
-            # (كانت بتتسجّل "done" فوقها)؛ نرجّع "clip_failed" والـcaller ينشر خطأ.
-            _pre_copy_suppress(from_snippet)
-            if not _copy_to_clipboard(inj):
-                return "clip_failed"
-            _mark_owned_if_snippet(from_snippet)
+    if not CFG.get("auto_paste", True):
+        # الخانة الآمنة عمرها ماتوصل للحافظة
+        if cls != "secure" and not _copy_owned(inj):
+            return "clip_failed"
+        return "handoff"
+    if strategy == "handoff":
         return "handoff"
     time.sleep(0.12)                            # نفوز الفوكس يثبت قبل ما نحقن
     # الفحص الأخير لازم يبقى قبل الحقن على طول (بعد تجهيز الحافظة اللي ممكن تاخد وقت):
     # فحص قبلها بكتير كان بيسيب فرصة إن الفوكس يتنقل والنتيجة تتكتب في مكان تاني
     still_target = (lambda: True) if guard is None else guard
-    if cls == "secure":
-        # خانة آمنة: كتابة بس — الحافظة مش طريقها
+    if strategy == "ctrl_v" and "\n" not in inj and not winput._clipboard_safe_for_text():
+        strategy = "type"                       # صورة/ملفات على الحافظة — الكتابة مبتلمسهاش
+    if cls == "secure" or strategy == "type":
+        # الخانة الآمنة: كتابة بس — الحافظة مش طريقها
         if not still_target():
             return "handoff"
         return "placed" if winput.type_text(inj) else "failed"
-    if strategy == "type":
-        # نسخة احتياطية على الحافظة: لو الكتابة فشلت والنص وصل الحافظة = "failed"
-        # (المستخدم يقدر يلزقه بنفسه)، ولو الاتنين فشلوا = "clip_failed" (ولا حاجة)
-        _pre_copy_suppress(from_snippet)
-        backup = _copy_to_clipboard(inj)
-        if backup:
-            _mark_owned_if_snippet(from_snippet)
-        if not still_target():
-            return "handoff" if backup else "clip_failed"
-        if winput.type_text(inj):
-            return "placed"
-        return "failed" if backup else "clip_failed"
     if strategy in ("ctrl_v", "shift_insert"):
-        # اللزق هو النص نفسه: فشل نشر الحافظة = مفيش حاجة اتحقنت ولا اتنسخت
-        _pre_copy_suppress(from_snippet)
-        if not _copy_to_clipboard(inj):
-            return "clip_failed"
-        _mark_owned_if_snippet(from_snippet)
-        if not still_target():
-            return "handoff"                    # النص على الحافظة بالفعل — المستخدم يلزقه
-        fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
-        return "placed" if fn() else "failed"
+        return _paste_via_clipboard(inj, strategy, still_target, restore=cls != "remote")
     return "handoff"
 
 
@@ -1596,10 +1605,7 @@ class App:
                 self.on_text(out)
             res = None
             if not secure or CFG.get("auto_paste", True):
-                if snippet is not None:
-                    res = paste_text(out, target, from_snippet=True)
-                else:
-                    res = paste_text(out, target)
+                res = paste_text(out, target)
                 if not secure and res == "clip_failed":
                     self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
                 elif not secure and res in ("failed", "handoff"):
@@ -1630,8 +1636,9 @@ class App:
 
     def _offline_handoff(self, wav, op, text, dur, offline_model, early_secure):
         """
-        F9: برومبت/ترجمة بعد تفريغ offline — التحويل نفسه محتاج نت، فالنص الخام بيتنسخ
-        وبيتعرض بدل ما يتكتب. من غير خانات الباسورد: نصها عمره ما يروح للحافظة ولا السجل.
+        F9: برومبت/ترجمة بعد تفريغ offline — التحويل نفسه محتاج نت، فالنص الخام بيتعرض
+        بزرار نسخ بدل ما يتكتب (وبيتنسخ لو auto_paste مقفول، زي paste_text). من غير خانات
+        الباسورد: نصها عمره ما يروح للحافظة ولا السجل.
         """
         if early_secure:
             self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
@@ -1644,11 +1651,10 @@ class App:
             return
         engine = {"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
         cur_mode = op.mode
-        if _copy_to_clipboard(text):
-            self.on_unplaced(text)
-        else:
+        if not CFG.get("auto_paste", True) and not _copy_owned(text):
             self.on_state("err", "مقدرتش أنسخ النص — جرّب تاني")
             return
+        self.on_unplaced(text)
         history_add(cur_mode, text, text, dur, engine=engine, app=op.target_app)
         self.on_state("done", "اتفرّغ بس — التحويل محتاج إنترنت")
 
@@ -1708,9 +1714,9 @@ class App:
             self.on_state("err", "مكتبتش التعديل — الهدف بقى خانة باسورد")
             return
         # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،
-        # paste_text بيتسلّم (نسخ) بدل ما يكتب فوق حاجة تانية.
+        # paste_text بيتسلّم (رسالة بزرار نسخ) بدل ما يكتب فوق حاجة تانية.
         res = paste_text(result, target, guard=lambda: winput.same_target(op))
-        # M7: الهدف اتغيّر والنسخة فشلت كمان → خطأ بدل on_unplaced + "done"
+        # M7: auto_paste مقفول والنسخة فشلت → مفيش حاجة وصلت: خطأ بدل on_unplaced + "done"
         if res == "clip_failed":
             self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
             return
