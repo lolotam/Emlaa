@@ -6,7 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('source/emlaa.ico', '.'), ('source/emlaa.png', '.'), ('source/ui', 'ui')],
-    hiddenimports=['pystray._win32', 'app_web', 'webview', 'clr',
+    hiddenimports=['pystray._win32', 'app_web', 'chains', 'webview', 'clr',
                    'comtypes.gen.UIAutomationClient', 'comtypes.gen.stdole',
                    'comtypes.gen._944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0',
                    'comtypes.gen._00020430_0000_0000_C000_000000000046_0_2_0'],
