@@ -1040,14 +1040,21 @@ def _copy_to_clipboard(text):
 def _copy_owned(text):
     """
     نشر نص بتاعنا للحافظة: المراقب مكبوس قبل النشر والرقم الجديد متعلّم «بتاعنا» بعده،
-    فصفحة الحافظة متسجّلش الإملاء (اتسجّل بالفعل في السجل). True لو النشر نجح.
+    فصفحة الحافظة متسجّلش الإملاء (اتسجّل بالفعل في السجل). بيرجّع رقم تسلسل النسخة،
+    أو None لو النشر فشل أو برنامج تاني كتب بعدنا على طول — رقمه هو ميتعلّمش «بتاعنا»
+    (نفس فحص winput._selection_via_clipboard: قراية بين قرايتين لنفس الرقم).
     """
     import winput
     suppress_clip_watch(1.0)
     if not _copy_to_clipboard(text):
-        return False
-    mark_clip_owned(winput._clipboard_sequence())
-    return True
+        return None
+    seq = winput._clipboard_sequence()
+    now = winput._read_clipboard_text()
+    if now is None or now.replace("\r\n", "\n") != text.replace("\r\n", "\n") \
+            or winput._clipboard_sequence() != seq:
+        return None
+    mark_clip_owned(seq)
+    return seq
 
 
 # البرنامج التاني بيقرا الحافظة لما يعالج Ctrl+V — بعد ما SendInput يرجع، ومفيش حدث
@@ -1060,16 +1067,22 @@ def _paste_via_clipboard(text, strategy, still_target, restore):
     """
     اللزق محتاج الحافظة: بنحط الإملاء، نلزق، ونرجّع النص اللي كان عليها — بس لو لسه
     بتاعتنا (المستخدم ما نسخش حاجة في النص). restore=False (RDP/VM): مزامنة الحافظة
-    للجهاز التاني متأخرة، والرجوع ممكن يخلّيه يلزق القديم. محتوى غير نصي (صورة/ملفات)
-    منقدرش نرجّعه — paste_text بيكتب السطر الواحد بدل اللزق عشان مايضيعش.
+    للجهاز التاني متأخرة، والرجوع ممكن يخلّيه يلزق القديم.
+    لو مفيش نسخة نرجّع بيها (صورة/ملفات/تنسيق، أو القراية فشلت) منلمسش الحافظة خالص
+    ونسلّم النص — اللزق كان هيمسح محتوى المستخدم من غير رجوع.
     """
     import winput
-    old = winput._read_clipboard_text() if restore and winput._clipboard_safe_for_text() else None
-    if not _copy_owned(text):
-        return "failed"
-    ours = winput._clipboard_sequence()
+    old = None
+    if restore:
+        old = winput._read_clipboard_text() if winput._clipboard_safe_for_text() else None
+        if old is None:
+            return "handoff"
+    ours = _copy_owned(text)
+    if ours is None:
+        return "handoff"
     try:
-        if not still_target():
+        # الفحص الأخير + الحافظة لسه نسختنا: حد كتب فيها وقت الانتظار = منلزقش حاجة مش بتاعتنا
+        if not still_target() or winput._clipboard_sequence() != ours:
             return "handoff"
         fn = winput.paste_ctrl_v if strategy == "ctrl_v" else winput.paste_shift_insert
         pasted = fn()
@@ -1105,7 +1118,7 @@ def paste_text(text, target=None, guard=None):
     cls, strategy, inj = target
     if not CFG.get("auto_paste", True):
         # الخانة الآمنة عمرها ماتوصل للحافظة
-        if cls != "secure" and not _copy_owned(inj):
+        if cls != "secure" and _copy_owned(inj) is None:
             return "clip_failed"
         return "handoff"
     if strategy == "handoff":
@@ -1651,7 +1664,7 @@ class App:
             return
         engine = {"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
         cur_mode = op.mode
-        if not CFG.get("auto_paste", True) and not _copy_owned(text):
+        if not CFG.get("auto_paste", True) and _copy_owned(text) is None:
             self.on_state("err", "مقدرتش أنسخ النص — جرّب تاني")
             return
         self.on_unplaced(text)

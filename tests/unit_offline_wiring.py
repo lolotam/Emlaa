@@ -143,7 +143,8 @@ class TestAlwaysOffline(unittest.TestCase):
         m = _wire(self, offline_mode="always", offline_text="طلب محلي")
         core.CFG["auto_paste"] = False
         with mock.patch.object(core, "mark_clip_owned"), \
-                mock.patch("winput._clipboard_sequence", return_value=1):
+                mock.patch("winput._clipboard_sequence", return_value=1), \
+                mock.patch("winput._read_clipboard_text", return_value="طلب محلي"):
             app.process("WAV", core.Operation(mode="prompt"))
         m["clip"].assert_called_once_with("طلب محلي")
         self.assertEqual(app.unplaced, ["طلب محلي"])

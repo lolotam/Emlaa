@@ -278,6 +278,7 @@ class TestProcessEdit(unittest.TestCase):
                 mock.patch.object(core, "mark_clip_owned"), \
                 mock.patch.object(core, "suppress_clip_watch"), \
                 mock.patch("winput._clipboard_sequence", return_value=1), \
+                mock.patch("winput._read_clipboard_text", return_value="النص المعدل"), \
                 mock.patch("winput.type_text", return_value=True) as ttype, \
                 mock.patch.object(core.time, "sleep"):
             app.process("WAV", op)

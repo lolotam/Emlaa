@@ -155,6 +155,10 @@ class _Clipboard:
     def __init__(self, text="OLD", safe=True, fail_copy=False):
         self.text, self.safe, self.fail_copy = text, safe, fail_copy
         self.seq, self.writes = 1, []
+        self.read_fails = False
+
+    def read(self):
+        return None if self.read_fails else self.text
 
     def write(self, text):
         self.text, self.seq = text, self.seq + 1
@@ -168,7 +172,7 @@ class _Clipboard:
     def patches(self):
         return [mock.patch("pyperclip.copy", side_effect=lambda t: self.copy(t)),
                 mock.patch("winput._clipboard_safe_for_text", side_effect=lambda: self.safe),
-                mock.patch("winput._read_clipboard_text", side_effect=lambda: self.text),
+                mock.patch("winput._read_clipboard_text", side_effect=lambda: self.read()),
                 mock.patch("winput._clipboard_sequence", side_effect=lambda: self.seq),
                 mock.patch.object(core, "mark_clip_owned"),
                 mock.patch.object(core, "suppress_clip_watch"),
@@ -253,10 +257,51 @@ class TestPasteText(unittest.TestCase):
         self.run_paste(("remote", "ctrl_v", "line1\nline2"))
         self.assertEqual(self.clip.writes, ["line1\nline2"])
 
-    def test_paste_clipboard_failure_is_failed_without_inject(self):
-        self.clip.fail_copy = True
-        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "failed")
+    def test_no_restorable_snapshot_hands_off_without_touching_clipboard(self):
+        # PR #14 (Codex P1 / CodeRabbit): صورة/ملفات (متعدد أو ترمنال) أو قراية فاشلة =
+        # مفيش نسخة نرجّع بيها — اللزق كان هيمسح محتوى المستخدم، فالرسالة بزرار نسخ أأمن
+        cases = [(dict(safe=False), ("gui", "ctrl_v", "line1\nline2")),
+                 (dict(safe=False), ("terminal", "shift_insert", "echo hi")),
+                 (dict(read_fails=True), ("gui", "ctrl_v", "line1\nline2"))]
+        for state, target in cases:
+            self.clip = _Clipboard()
+            for k, v in state.items():
+                setattr(self.clip, k, v)
+            self.assertEqual(self.run_paste(target), "handoff", (state, target))
+            self.assertEqual(self.clip.writes, [], (state, target))
+            self.cv.assert_not_called()
+            self.si.assert_not_called()
+
+    def test_external_write_right_after_ours_is_not_pasted(self):
+        # PR #14 (Codex P2): برنامج تاني كتب بعد نسختنا على طول — رقمه ميتعلّمش «بتاعنا»،
+        # ومنلزقش محتواه ولا نرجّع القديم فوقه
+        def ours_then_external(t):
+            self.clip.write(t)
+            self.clip.write("EXT")
+
+        self.clip.copy = ours_then_external
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "handoff")
         self.cv.assert_not_called()
+        self.assertEqual(self.clip.text, "EXT")
+        core.mark_clip_owned.assert_not_called()
+
+    def test_external_write_before_paste_is_not_pasted(self):
+        # حد كتب في الحافظة بين نسختنا والضغطة (وقت الفحص) — منلزقش حاجة مش بتاعتنا
+        def guard_while_external_writes():
+            self.clip.write("EXT")
+            return True
+
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello"),
+                                        guard=guard_while_external_writes), "handoff")
+        self.cv.assert_not_called()
+        self.assertEqual(self.clip.text, "EXT")
+
+    def test_paste_clipboard_failure_hands_off_without_inject(self):
+        # نسخة الإملاء منزلتش على الحافظة = ولا حاجة نلزقها: الرسالة بزرار نسخ
+        self.clip.fail_copy = True
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "handoff")
+        self.cv.assert_not_called()
+        self.assertEqual(self.clip.text, "OLD")
 
     def test_paste_sendinput_failure_is_failed_and_restores(self):
         self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello"), inject=False), "failed")
