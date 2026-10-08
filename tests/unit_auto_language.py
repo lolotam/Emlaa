@@ -107,6 +107,12 @@ class TestArabicRetryFallback(unittest.TestCase):
             self.assertEqual(self._transcribe("سلام چطوری", retry),
                              ("سلام چطوری", "model-for-سلام چطوری"), repr(retry))
 
+    def test_network_error_on_retry_propagates_for_offline_fallback(self):
+        # PR #13 (Codex P2): App.process محتاج يشوف خطأ النت عشان يفرّغ offline —
+        # التفريغ الأول (حروف أجنبية) هو اللي حكمنا إنه غلط
+        with self.assertRaises(providers.NetworkError):
+            self._transcribe("سلام چطوری", providers.NetworkError("connection reset"))
+
 
 class TestOfflineAutoLanguage(_BaseCase):
     def _fake_run(self, outputs):

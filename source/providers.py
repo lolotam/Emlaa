@@ -777,12 +777,15 @@ class Client:
         return text
 
     def _retry_as_arabic(self, wav_path, first):
-        """إعادة التفريغ كعربي. لو فشلت (حد/مفتاح/نت) أو رجعت فاضي، التفريغ الأول أحسن
-        من إن الكلام يضيع — وموديله هو اللي يتسجّل."""
+        """إعادة التفريغ كعربي. لو فشلت (حد/مفتاح) أو رجعت فاضي، التفريغ الأول أحسن
+        من إن الكلام يضيع — وموديله هو اللي يتسجّل. خطأ النت بيطلع زي ما هو:
+        App.process بيفرّغ offline لو الموديل المحلي مثبّت."""
         first_model = self.last_stt_model
         try:
             retry = self.transcribe(wav_path, "ar")
         except Exception as e:      # أي فشل من المزوّد — التفريغ الأول لسه في إيدينا
+            if smart.is_network_error(e):
+                raise
             try:
                 import core
                 core.log_error(e, "stt/retry as Arabic (رجّعنا التفريغ الأول)")
