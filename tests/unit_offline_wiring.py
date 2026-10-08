@@ -100,7 +100,7 @@ class TestAlwaysOffline(unittest.TestCase):
         m = _wire(self, offline_mode="always", offline_text="كلام محلي")
         app.process("WAV", core.Operation(mode="normal"))
         app.client.assert_not_called()
-        m["transcribe"].assert_called_once_with("WAV", "ar")
+        m["transcribe"].assert_called_once_with("WAV", None)
         m["paste"].assert_called_once_with("كلام محلي", ("gui", "type", "كلام محلي"))
         self.assertEqual(app.texts, ["كلام محلي"])
         self.assertEqual(app.events[-1], ("done", "اتفرّغ من غير إنترنت (من غير تحسين)"))
@@ -202,7 +202,7 @@ class TestFallbackOffline(unittest.TestCase):
         app.client = lambda: NetworkFailingClient()
         m = _wire(self, offline_mode="fallback", offline_text="اتفرّغ محليًا")
         app.process("WAV", core.Operation(mode="normal"))
-        m["transcribe"].assert_called_once_with("WAV", "ar")
+        m["transcribe"].assert_called_once_with("WAV", None)
         m["paste"].assert_called_once_with("اتفرّغ محليًا", ("gui", "type", "اتفرّغ محليًا"))
         self.assertEqual(app.events[-1], ("done", "اتفرّغ من غير إنترنت (من غير تحسين)"))
 

@@ -171,7 +171,6 @@ DEFAULTS = {
     "overlay_y":         None,
     "mode":              "toggle",  # ضغطة تبدأ وضغطة توقف (hold = امسك واتكلم)
     "mic":               "",
-    "language":          "ar",
     "offline_mode":      "fallback",  # F9: "fallback" = لما النت يقطع بس · "always" = دايمًا من غير شبكة
     "offline_model":     "",          # آخر موديل offline اختاره المستخدم في الإعدادات
     "polish":            True,
@@ -1472,9 +1471,10 @@ class App:
                     dur = w.getnframes() / float(w.getframerate())
             except Exception:
                 dur = None
-            # الترجمة في الاتجاهين: المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ على العربي
-            # (كان بيكتب الإنجليزي بحروف عربي، والترجمة تطلع عربي ← إنجليزي بس)
-            lang = None if cur_mode == "translate" else CFG.get("language", "ar")
+            # كل الأوضاع هنا (عادي/برومبت/ترجمة): المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ
+            # على العربي — Whisper المجبر على "ar" بيترجم الكلام الإنجليزي («How are you» ←
+            # «كيف تتعرّف؟»)، والبرومبت كان عمره ما بيوصله طلب إنجليزي. التعديل بالصوت ليه مساره.
+            lang = None
             # F9: مسار offline — "always" بيفرّغ من غير ما نبني Client خالص (من غير مفتاح)،
             # و"fallback" بيرجع للموديل المحلي بس لو النت وقع والموديل مثبّت.
             # N1: "always" = وضع خصوصية — الصوت عمره ما يروح لأي مزوّد. لو الموديل
@@ -1682,7 +1682,8 @@ class App:
         except Exception:
             dur = None
         try:
-            instruction = cl.transcribe(wav, CFG.get("language", "ar"))
+            # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه
+            instruction = cl.transcribe(wav, None)
         except Exception as e:
             # F9: النت وقع والموديل المحلي موجود — التفريغ ممكن يتعمل، بس التعديل
             # نفسه محتاج الموديل، فنرفض من غير ما نلمس التحديد ولا نحقن حاجة.
@@ -1885,9 +1886,7 @@ def log_error(e, where=""):
         with open(ERR_LOG, "a", encoding="utf-8") as f:
             f.write(chr(10) + "=" * 60 + chr(10))
             f.write(str(datetime.datetime.now()) + "  |  " + str(where) + chr(10))
-            f.write("المزوّد: " + str(CFG.get("provider")) +
-                    "  |  اللغة: " + str(CFG.get("language")) +
-                    chr(10))
+            f.write("المزوّد: " + str(CFG.get("provider")) + chr(10))
             f.write("".join(traceback.format_exception(type(e), e, e.__traceback__)))
     except Exception:
         pass

@@ -104,7 +104,7 @@ class TestSnippetExpansion(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="normal"))
-        self.assertEqual(fake.calls, [("transcribe", "ar")], "مفيش polish للاختصار")
+        self.assertEqual(fake.calls, [("transcribe", None)], "مفيش polish للاختصار")
         paste.assert_called_once_with("waleed@example.com",
                                       ("gui", "type", "waleed@example.com"), from_snippet=True)
         self.assertEqual(hist.call_args[0][2], "[اختصار] إيميلي الشخصي",
@@ -181,7 +181,7 @@ class TestSnippetPrivacy(unittest.TestCase):
                 mock.patch.object(core, "recording_save"), \
                 mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="prompt"))
-        self.assertEqual(fake.calls, [("transcribe", "ar"), ("prompt",)])
+        self.assertEqual(fake.calls, [("transcribe", None), ("prompt",)])
         paste.assert_called_once_with("P:إيميلي الشخصي", ("gui", "type", "P:إيميلي الشخصي"))
 
 

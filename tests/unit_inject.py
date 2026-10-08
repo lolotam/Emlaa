@@ -420,7 +420,7 @@ class FakeClient:
 
 def _cfg(**over):
     base = {"polish": True, "bypass_short": False, "bypass_max_words": 3,
-            "language": "ar", "dictionary": [], "insert_method": "auto",
+            "dictionary": [], "insert_method": "auto",
             "auto_paste": True, "history_keep_last10": True}
     base.update(over)
     return base

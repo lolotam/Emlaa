@@ -23,6 +23,8 @@ import tempfile
 import threading
 import urllib.request
 
+import smart
+
 # ── القيم المثبّتة (متفق عليها مسبقًا — مينفعش تتغيّر) ───────────────────────
 WHISPER_CPP_VERSION = "v1.9.2"
 WHISPER_CPP_URL     = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip"
@@ -568,9 +570,19 @@ def _strip_markers(text):
 
 def transcribe(wav, language):
     """
-    بيفرّغ wav بالموديل المثبّت ويرجّع النص. الملف المؤقت في temp وبيمسح دايمًا
-    (حتى لو فشل). الفشل بيرمي RuntimeError — مفيش حالة بنرجّع فيها نص فاضي
-    وندّعي إنه تفريغ.
+    بيفرّغ wav بالموديل المثبّت ويرجّع النص. language=None = تعرّف تلقائي على اللغة،
+    ولو طلّع لغة غير عربي/إنجليزي بنعيد كعربي (زي Client.transcribe).
+    """
+    text = _transcribe_once(wav, language)
+    if language is None and smart.foreign_script(text):
+        return _transcribe_once(wav, "ar")
+    return text
+
+
+def _transcribe_once(wav, language):
+    """
+    الملف المؤقت في temp وبيمسح دايمًا (حتى لو فشل). الفشل بيرمي RuntimeError —
+    مفيش حالة بنرجّع فيها نص فاضي وندّعي إنه تفريغ.
     """
     out_base = os.path.join(tempfile.gettempdir(),
                             "emlaa_offline_%d" % int(time.time() * 1000))
