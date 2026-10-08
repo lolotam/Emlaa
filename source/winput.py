@@ -523,6 +523,8 @@ def write_clipboard_text(text, expect_seq=None):
     صاحبها NULL و SetClipboardData ممكن يفشل.
     """
     u, k = _clipboard32(), _kernel32()
+    # الذاكرة بتتحجز وتتملي قبل ما نفتح الحافظة: فشلها (ذاكرة خلصانة) ميمسحش حافظة المستخدم
+    handle = _unicode_block(k, text) if text else None
     hwnd = u.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, None, None, None, None)
     try:
         for _ in range(_OPEN_TRIES):
@@ -536,17 +538,21 @@ def write_clipboard_text(text, expect_seq=None):
                 return False
             if not u.EmptyClipboard():
                 raise OSError("EmptyClipboard فشل")
-            if text:
-                _set_unicode_text(u, k, text)
+            if handle is not None:
+                if not u.SetClipboardData(CF_UNICODETEXT, handle):
+                    raise OSError("SetClipboardData فشل")
+                handle = None                   # ويندوز بقى مالكها — منحرّرهاش
             return True
         finally:
             u.CloseClipboard()
     finally:
         u.DestroyWindow(hwnd)
+        if handle is not None:
+            k.GlobalFree(handle)
 
 
-def _set_unicode_text(u, k, text):
-    """الحافظة مفتوحة وفاضية: بنحط النص في ذاكرة Global — بعد SetClipboardData ويندوز بيملكها."""
+def _unicode_block(k, text):
+    """ذاكرة Global (GMEM_MOVEABLE) فيها النص UTF-16 + NUL — جاهزة لـSetClipboardData."""
     data = text.encode("utf-16-le") + b"\x00\x00"
     handle = k.GlobalAlloc(_GMEM_MOVEABLE, len(data))
     if not handle:
@@ -557,9 +563,7 @@ def _set_unicode_text(u, k, text):
         raise OSError("GlobalLock فشل")
     ctypes.memmove(ptr, data, len(data))
     k.GlobalUnlock(handle)
-    if not u.SetClipboardData(CF_UNICODETEXT, handle):
-        k.GlobalFree(handle)
-        raise OSError("SetClipboardData فشل")
+    return handle
 
 
 _WM_NULL = 0x0000

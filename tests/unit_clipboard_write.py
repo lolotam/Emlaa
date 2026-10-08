@@ -57,10 +57,12 @@ class FakeUser32:
 class FakeKernel32:
     """GlobalAlloc حقيقي على buffer من ctypes — عشان نقرا النص اللي اتكتب."""
 
-    def __init__(self):
-        self.buffers = {}
+    def __init__(self, alloc_ok=True):
+        self.buffers, self.alloc_ok = {}, alloc_ok
 
     def GlobalAlloc(self, flags, size):
+        if not self.alloc_ok:
+            return None
         h = len(self.buffers) + 1
         self.buffers[h] = ctypes.create_string_buffer(size)
         return h
@@ -80,8 +82,8 @@ class FakeKernel32:
 
 
 class TestWriteClipboardText(unittest.TestCase):
-    def write(self, text, expect_seq=None, **u32):
-        self.u, self.k = FakeUser32(**u32), FakeKernel32()
+    def write(self, text, expect_seq=None, alloc_ok=True, **u32):
+        self.u, self.k = FakeUser32(**u32), FakeKernel32(alloc_ok)
         with mock.patch.object(winput, "_clipboard32", return_value=self.u), \
                 mock.patch.object(winput, "_kernel32", return_value=self.k), \
                 mock.patch.object(winput.time, "sleep"):
@@ -99,6 +101,17 @@ class TestWriteClipboardText(unittest.TestCase):
         self.assertNotIn("empty", self.u.calls)
         self.assertIsNone(self.u.data)
         self.assertEqual(self.u.calls[-2:], ["close", "destroy"])
+
+    def test_allocation_failure_leaves_clipboard_untouched(self):
+        # PR #14 (Codex P2): الذاكرة بتتحجز قبل EmptyClipboard — فشلها ميمسحش حافظة المستخدم
+        with self.assertRaises(OSError):
+            self.write("نص", alloc_ok=False)
+        self.assertNotIn("empty", self.u.calls)
+        self.assertNotIn(("open", 99), self.u.calls)
+
+    def test_sequence_changed_frees_the_unused_block(self):
+        self.write("نص", expect_seq=6, seq=7)
+        self.assertEqual(self.k.buffers, {})
 
     def test_matching_sequence_writes(self):
         self.assertTrue(self.write("نص", expect_seq=7, seq=7))
