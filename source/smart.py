@@ -314,31 +314,39 @@ class HotkeyLogic:
     أو مسكة أطول من TAP_MAX مهمل.
     hold: الدوسة تبدأ وتسيب نفس الزرار يوقف، وأي زرار تاني اتداس
     والتسجيل شغال = cancel (الكلام اللي اتسجل بيرمي بهدوء).
+
+    «هل الدوسة دي زرار تسجيل؟» بيتقرر من HotkeyMatcher بالموديفايرز الماسكة (held):
+    نفس المطابقة اللي بتقرر المنع، فمفيش زرار يتمنع ومايشتغلش. قاموس {زرار: وضع}
+    القديم لسه مقبول (زراير لوحدها من غير موديفايرز).
     """
 
-    def __init__(self, key_map, mode_type, tap_max=TAP_MAX, alt_keys=(), cancel_keys=()):
-        self._key_map = dict(key_map)
+    def __init__(self, matcher, mode_type, tap_max=TAP_MAX, alt_keys=(), cancel_keys=()):
+        if not isinstance(matcher, HotkeyMatcher):
+            matcher = HotkeyMatcher({mode: Hotkey(frozenset(), key) for key, mode in dict(matcher).items()})
+        self._matcher = matcher
+        self._triggers = matcher.triggers()
         self._hold = mode_type == "hold"
         self._tap_max = tap_max
         self._alt = set(alt_keys)   # المفاتيح اللي في نفس الوقت زراير Alt — "mask" ليهم
         self._cancel = set(cancel_keys)   # مفاتيح الإلغاء (Esc) — بس لو مش زراير تسجيل
-        self._held = {}             # toggle: مفتاح → وقت الدوسة
+        self._held = {}             # toggle: مفتاح → (وقت الدوسة، الوضع اللي طابقه)
         self._spoiled = set()       # toggle: مفاتيح اتداست في كورد
         self._active = None         # hold: مفتاح التسجيل اللي ماسكه دلوقتي
 
-    def press(self, key, now, recording, busy):
+    def press(self, key, now, recording, busy, held=frozenset()):
         # مفتاح إلغاء (مش زرار تسجيل): بيطلّع "cancel" وقت التسجيل في الوضعين،
         # وno-op وقت الخمول من غير ما يلمس الحالة (منيفسدش hotkey متعقدة).
-        if key in self._cancel and key not in self._key_map:
+        if key in self._cancel and key not in self._triggers:
             if recording:
                 # F6: لو زرار تسجيل متعقد اتساس دلوقتي والتسجيل هيتلغى، بنففسد كل
                 # المتعقدين — عشان تسيب الزرار بعد الإلغاء ميشغّلش تسجيل جديد.
                 self._spoiled.update(self._held)
                 return ["cancel"]
             return []
+        mode = self._matcher.match(key, held)
         if self._hold:
-            return self._press_hold(key, now, recording, busy)
-        return self._press_toggle(key, now)
+            return self._press_hold(key, mode, recording, busy)
+        return self._press_toggle(key, now, mode)
 
     def release(self, key, now, recording, busy):
         if self._hold:
@@ -349,13 +357,13 @@ class HotkeyLogic:
         # أول دوسة على زرار Alt (لو هو زرار تسجيل) بتطلّع "mask" قبل أي إجراء —
         # حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt مايفتحش قايمة البرنامج.
         # التكرار التلقائي وهو ماسك ملوش mask (المتصل بيتأكد قبل ما ينادي).
-        if key in self._key_map and key in self._alt:
+        if key in self._triggers and key in self._alt:
             return ["mask"]
         return []
 
     # ── hold ──
 
-    def _press_hold(self, key, now, recording, busy):
+    def _press_hold(self, key, mode, recording, busy):
         if self._active is not None and key == self._active:
             return []                  # تكرار تلقائي — مفيش mask ولا إجراء
         acts = self._mask(key)
@@ -368,9 +376,9 @@ class HotkeyLogic:
             if recording:
                 acts.append("cancel")
             return acts
-        if key in self._key_map and not recording and not busy:
+        if mode is not None and not recording and not busy:
             self._active = key
-            acts.append("begin:" + self._key_map[key])
+            acts.append("begin:" + mode)
         return acts
 
     def _release_hold(self, key, now):
@@ -384,17 +392,16 @@ class HotkeyLogic:
 
     # ── toggle ──
 
-    def _press_toggle(self, key, now):
+    def _press_toggle(self, key, now, mode):
         if key in self._held:
             return []                  # تكرار تلقائي وهو ماسك — مفيش mask ولا إجراء
         acts = self._mask(key)
         for k in self._held:
             if k != key:
                 self._spoiled.add(k)
-        if key in self._key_map:
-            if key in self._held:      # تكرار تلقائي وهو ماسك
-                return acts
-            self._held[key] = now
+        if mode is not None:
+            # الوضع بيتثبّت وقت الدوسة: Ctrl لو اتساب قبل الزرار مايغيّرش الوضع
+            self._held[key] = (now, mode)
             if len(self._held) > 1:
                 self._spoiled.add(key)
         else:
@@ -402,16 +409,50 @@ class HotkeyLogic:
         return acts
 
     def _release_toggle(self, key, now, recording, busy):
-        t0 = self._held.pop(key, None)
+        entry = self._held.pop(key, None)
         clean = key not in self._spoiled
         self._spoiled.discard(key)
-        if key not in self._key_map or t0 is None or not clean or now - t0 > self._tap_max:
+        if entry is None or not clean or now - entry[0] > self._tap_max:
             return []
         if recording:
             return ["end"]
         elif not busy:
-            return ["begin:" + self._key_map[key]]
+            return ["begin:" + entry[1]]
         return []
+
+
+class HotkeyFilter:
+    """
+    قرار «نمنع الحدث ده عن البرامج التانية؟» — بيتحسب جوّه الـhook نفسه (لازم يبقى سريع).
+    المنع بنفس HotkeyMatcher اللي بيشغّل التسجيل. القرار بيتثبّت لكل دوسة حقيقية لحد
+    التسيب: التكرار التلقائي والتسيب بياخدوا قرار أول دوسة، حتى لو Ctrl اتداس أو اتساب
+    في النص (غير كده البرنامج كان ممكن يستلم تسيب من غير دوسة أو العكس).
+    الموديفاير لوحده (Ctrl/Alt/Shift/Win) عمره ما بيتمنع — Ctrl+C وأخواتها تفضل شغّالة.
+    initially_down: الزراير الماسكة وقت ما المستمع بدأ (من ويندوز) — عشان Ctrl الماسك
+    من قبل يتحسب.
+    """
+
+    def __init__(self, matcher, initially_down=frozenset()):
+        self._matcher = matcher
+        self._down = set(initially_down)
+        self._latched = {}
+
+    def event(self, vk, is_press, injected, fake_altgr_ctrl):
+        """بيرجّع (dispatch, suppress): نبعته لمنطق الزراير؟ ونمنعه عن البرامج التانية؟"""
+        if injected or fake_altgr_ctrl:
+            return False, False
+        if is_press:
+            if vk not in self._down:
+                matched = self._matcher.match(vk, frozenset(self._down)) is not None
+                self._latched[vk] = matched and vk not in MODIFIER_VKS
+                self._down.add(vk)
+            return True, self._latched.get(vk, False)
+        suppress = self._latched.pop(vk, False)
+        self._down.discard(vk)
+        return True, suppress
+
+    def held(self):
+        return frozenset(self._down)
 
 
 # ── F3: الحقن الهجين — تصنيف الهدف واستراتيجية الحقن ───────────────────────────

@@ -70,5 +70,88 @@ class TestMatcher(unittest.TestCase):
         self.assertEqual(self.m.triggers(), {F7, RCTRL})
 
 
+class TestFilter(unittest.TestCase):
+    """قرار المنع: بيستخدم نفس المطابقة، ومتثبّت لكل دوسة حقيقية لحد ما الزرار يتساب."""
+
+    def matcher(self):
+        return smart.HotkeyMatcher({"normal": smart.Hotkey(frozenset(), F7),
+                                    "prompt": smart.Hotkey(frozenset({LCTRL}), F8),
+                                    "translate": smart.Hotkey(frozenset(), RALT)})
+
+    def make(self, initially_down=frozenset()):
+        return smart.HotkeyFilter(self.matcher(), initially_down=initially_down)
+
+    def test_single_trigger_suppressed_press_and_release(self):
+        f = self.make()
+        self.assertEqual(f.event(F7, True, False, False), (True, True))
+        self.assertEqual(f.event(F7, False, False, False), (True, True))
+
+    def test_unmatched_modifier_combination_is_not_suppressed(self):
+        # F7 لوحده زرار التسجيل — Ctrl+F7 لسه بتاع البرنامج اللي قدامك
+        f = self.make()
+        f.event(LCTRL, True, False, False)
+        self.assertEqual(f.event(F7, True, False, False), (True, False))
+
+    def test_combo_release_suppressed_after_modifier_released_first(self):
+        f = self.make()
+        f.event(LCTRL, True, False, False)
+        self.assertEqual(f.event(F8, True, False, False), (True, True))
+        f.event(LCTRL, False, False, False)
+        self.assertEqual(f.event(F8, False, False, False), (True, True))
+
+    def test_bare_modifier_trigger_never_suppressed(self):
+        self.assertEqual(self.make().event(RALT, True, False, False), (True, False))
+
+    def test_injected_and_fake_ctrl_ignored(self):
+        f = self.make()
+        self.assertEqual(f.event(F7, True, True, False), (False, False))
+        self.assertEqual(f.event(LCTRL, True, False, True), (False, False))
+        self.assertEqual(f.held(), frozenset())
+
+    def test_decision_latched_across_repeats(self):
+        # Ctrl اتداس والـF7 ماسك: التكرار والتسيب بياخدوا قرار أول دوسة
+        f = self.make()
+        self.assertEqual(f.event(F7, True, False, False), (True, True))
+        f.event(LCTRL, True, False, False)
+        self.assertEqual(f.event(F7, True, False, False), (True, True))
+        self.assertEqual(f.event(F7, False, False, False), (True, True))
+
+    def test_initially_held_ctrl_is_known(self):
+        f = self.make(initially_down=frozenset({LCTRL}))
+        self.assertEqual(f.event(F7, True, False, False), (True, False))   # Ctrl+F7، مش F7
+
+
+class TestComboLogic(unittest.TestCase):
+    def matcher(self):
+        return smart.HotkeyMatcher({"normal": smart.Hotkey(frozenset(), F7),
+                                    "prompt": smart.Hotkey(frozenset({LCTRL}), F7)})
+
+    def test_toggle_same_trigger_two_modes(self):
+        lg = smart.HotkeyLogic(self.matcher(), "toggle")
+        lg.press(F7, 0.0, False, False, held=frozenset())
+        self.assertEqual(lg.release(F7, 0.1, False, False), ["begin:normal"])
+        lg.press(F7, 1.0, False, False, held=frozenset({LCTRL}))
+        self.assertEqual(lg.release(F7, 1.1, False, False), ["begin:prompt"])
+
+    def test_toggle_extra_modifier_does_nothing(self):
+        lg = smart.HotkeyLogic(self.matcher(), "toggle")
+        lg.press(F7, 0.0, False, False, held=frozenset({LSHIFT}))
+        self.assertEqual(lg.release(F7, 0.1, False, False), [])
+
+    def test_hold_extra_modifier_does_not_begin(self):
+        lg = smart.HotkeyLogic(self.matcher(), "hold")
+        self.assertEqual(lg.press(F7, 0.0, False, False, held=frozenset({LSHIFT})), [])
+
+    def test_hold_combo_begin_end(self):
+        lg = smart.HotkeyLogic(self.matcher(), "hold")
+        self.assertEqual(lg.press(F7, 0.0, False, False, held=frozenset({LCTRL})), ["begin:prompt"])
+        self.assertEqual(lg.release(F7, 0.4, True, False), ["end"])
+
+    def test_alt_trigger_still_masked(self):
+        lg = smart.HotkeyLogic(smart.HotkeyMatcher({"prompt": smart.Hotkey(frozenset(), RALT)}),
+                               "toggle", alt_keys={RALT})
+        self.assertEqual(lg.press(RALT, 0.0, False, False), ["mask"])
+
+
 if __name__ == "__main__":
     unittest.main()
