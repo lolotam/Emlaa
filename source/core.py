@@ -1098,8 +1098,8 @@ def _paste_via_clipboard(text, strategy, still_target, restore):
     finally:
         # الرجوع بنفس الطريق: كبس المراقب قبله (كبسة النشر الأولى خلصت وقت الانتظار)
         # عشان صفحة الحافظة متسجّلش نص المستخدم القديم كنسخة جديدة
-        if old is not None and winput._clipboard_sequence() == ours:
-            _copy_owned(old)
+        if old is not None:
+            _copy_owned(old, expect_seq=ours)         # الفحص جوّه قبل الكتابة مباشرة
 
 
 def paste_text(text, target=None, guard=None):
