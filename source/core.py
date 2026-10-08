@@ -1082,9 +1082,10 @@ def _paste_via_clipboard(text, strategy, still_target, restore):
     ونسلّم النص — اللزق كان هيمسح محتوى المستخدم من غير رجوع.
     """
     import winput
-    old = snapshot_seq = None
+    old = None
+    # الرقم قبل أي قراية — حتى من غير رجوع (RDP/VM): أي نسخة بعده بتغيّره ومنكتبش فوقها
+    snapshot_seq = winput._clipboard_sequence()
     if restore:
-        snapshot_seq = winput._clipboard_sequence()      # قبل القراية: أي نسخة بعدها بتغيّره
         old = winput._read_clipboard_text() if winput._clipboard_safe_for_text() else None
         if old is None:
             return "handoff"

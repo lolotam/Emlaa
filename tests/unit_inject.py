@@ -161,6 +161,9 @@ class _Clipboard:
     def read(self):
         return None if self.read_fails else self.text
 
+    def sequence(self):
+        return self.seq
+
     def write(self, text):
         self.text, self.seq = text, self.seq + 1
         self.writes.append(text)
@@ -184,7 +187,7 @@ class _Clipboard:
                 mock.patch("winput.wait_responsive", side_effect=lambda h, ms: self.responsive),
                 mock.patch("winput._clipboard_safe_for_text", side_effect=lambda: self.safe),
                 mock.patch("winput._read_clipboard_text", side_effect=lambda: self.read()),
-                mock.patch("winput._clipboard_sequence", side_effect=lambda: self.seq),
+                mock.patch("winput._clipboard_sequence", side_effect=lambda: self.sequence()),
                 mock.patch.object(core, "mark_clip_owned"),
                 mock.patch.object(core, "suppress_clip_watch"),
                 mock.patch.object(core, "log_error")]
@@ -276,6 +279,21 @@ class TestPasteText(unittest.TestCase):
         # RDP/VM: مزامنة الحافظة متأخرة — الرجوع ممكن يخلّي الجهاز التاني يلزق القديم
         self.run_paste(("remote", "ctrl_v", "line1\nline2"))
         self.assertEqual(self.clip.writes, ["line1\nline2"])
+
+    def test_remote_paste_does_not_write_over_a_newer_copy(self):
+        # PR #14 (Codex P2): RDP/VM من غير رجوع — بس برضه منكتبش فوق نسخة جت بعد ما بدأنا
+        reads = []
+
+        def sequence():
+            reads.append(self.clip.seq)
+            if len(reads) == 1:
+                self.clip.write("SYNC")         # المزامنة كتبت بعد أول قراية للرقم
+            return reads[-1]
+
+        self.clip.sequence = sequence
+        self.assertEqual(self.run_paste(("remote", "ctrl_v", "line1\nline2")), "handoff")
+        self.assertEqual(self.clip.writes, ["SYNC"], "الإملاء ميتكتبش فوق النسخة الأحدث")
+        self.cv.assert_not_called()
 
     def test_no_restorable_snapshot_hands_off_without_touching_clipboard(self):
         # PR #14 (Codex P1 / CodeRabbit): صورة/ملفات (متعدد أو ترمنال) أو قراية فاشلة =

@@ -523,10 +523,13 @@ def write_clipboard_text(text, expect_seq=None):
     صاحبها NULL و SetClipboardData ممكن يفشل.
     """
     u, k = _clipboard32(), _kernel32()
-    # الذاكرة بتتحجز وتتملي قبل ما نفتح الحافظة: فشلها (ذاكرة خلصانة) ميمسحش حافظة المستخدم
-    handle = _unicode_block(k, text) if text else None
     hwnd = u.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, None, None, None, None)
+    if not hwnd:
+        raise OSError("مقدرتش أعمل نافذة للحافظة")
+    handle = None
     try:
+        # الذاكرة بتتحجز وتتملي قبل ما نفتح الحافظة: فشلها (ذاكرة خلصانة) ميمسحش حافظة المستخدم
+        handle = _unicode_block(k, text) if text else None
         for _ in range(_OPEN_TRIES):
             if u.OpenClipboard(hwnd):
                 break

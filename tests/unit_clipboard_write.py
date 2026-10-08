@@ -17,13 +17,14 @@ import winput  # noqa: E402
 
 
 class FakeUser32:
-    def __init__(self, seq=7, open_ok=True, responsive=True):
+    def __init__(self, seq=7, open_ok=True, responsive=True, window_ok=True):
         self.seq, self.open_ok, self.responsive = seq, open_ok, responsive
+        self.window_ok = window_ok
         self.calls, self.data = [], None
 
     def CreateWindowExW(self, *args):
         self.calls.append("create")
-        return 99
+        return 99 if self.window_ok else None
 
     def DestroyWindow(self, hwnd):
         self.calls.append("destroy")
@@ -108,6 +109,14 @@ class TestWriteClipboardText(unittest.TestCase):
             self.write("نص", alloc_ok=False)
         self.assertNotIn("empty", self.u.calls)
         self.assertNotIn(("open", 99), self.u.calls)
+
+    def test_no_owner_window_never_opens_clipboard(self):
+        # PR #14 (Codex P2): من غير نافذة صاحبة، SetClipboardData ممكن يفشل بعد ما
+        # EmptyClipboard مسح حافظة المستخدم — فبنوقف قبل ما نفتحها
+        with self.assertRaises(OSError):
+            self.write("نص", window_ok=False)
+        self.assertEqual(self.u.calls, ["create"])
+        self.assertEqual(self.k.buffers, {})
 
     def test_sequence_changed_frees_the_unused_block(self):
         self.write("نص", expect_seq=6, seq=7)
