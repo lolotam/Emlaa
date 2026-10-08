@@ -106,7 +106,7 @@ class TestSnippetExpansion(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertEqual(fake.calls, [("transcribe", None)], "مفيش polish للاختصار")
         paste.assert_called_once_with("waleed@example.com",
-                                      ("gui", "type", "waleed@example.com"), from_snippet=True)
+                                      ("gui", "type", "waleed@example.com"))
         self.assertEqual(hist.call_args[0][2], "[اختصار] إيميلي الشخصي",
                          "السجل بيحفظ المفتاح مش نص الاختصار الكامل")
         self.assertEqual(app.texts, ["waleed@example.com"])
@@ -129,7 +129,7 @@ class TestSnippetExpansion(unittest.TestCase):
                 mock.patch.object(core, "paste_text", return_value="placed") as paste:
             app.process("WAV", core.Operation(mode="normal"))
         paste.assert_called_once_with("الAPI KW123",
-                                      ("gui", "type", "الAPI KW123"), from_snippet=True)
+                                      ("gui", "type", "الAPI KW123"))
 
     def test_sets_vocab_extra_on_client(self):
         app = make_app()
@@ -186,28 +186,7 @@ class TestSnippetPrivacy(unittest.TestCase):
 
 
 class TestClipboardOwned(unittest.TestCase):
-    """F8: نسخة الحافظة اللي جاية من اختصار بتتعلم إنها بتاعتنا عشان المراقب مايسجلهاش."""
-
-    def test_paste_marks_owned_for_snippet(self):
-        with mock.patch.object(core, "_copy_to_clipboard", return_value=True), \
-                mock.patch("winput._clipboard_sequence", return_value=123) as seq, \
-                mock.patch.object(core, "mark_clip_owned") as mark, \
-                mock.patch("winput.paste_ctrl_v", return_value=True), \
-                mock.patch.object(core.time, "sleep"):
-            r = core.paste_text("KW123", ("gui", "ctrl_v", "KW123"), from_snippet=True)
-        self.assertEqual(r, "placed")
-        seq.assert_called_once()
-        mark.assert_called_once_with(123)
-
-    def test_paste_does_not_mark_owned_for_normal(self):
-        with mock.patch.object(core, "_copy_to_clipboard", return_value=True), \
-                mock.patch("winput._clipboard_sequence") as seq, \
-                mock.patch.object(core, "mark_clip_owned") as mark, \
-                mock.patch("winput.paste_ctrl_v", return_value=True), \
-                mock.patch.object(core.time, "sleep"):
-            core.paste_text("KW123", ("gui", "ctrl_v", "KW123"))
-        mark.assert_not_called()
-        seq.assert_not_called()
+    """أي إملاء بيعدّي على الحافظة (لزق أو نسخ) بيتعلم «بتاعنا» — اختباره في unit_inject."""
 
     def test_mark_clip_owned_stores_seq(self):
         core.mark_clip_owned(42)

@@ -486,11 +486,12 @@ class WaveOverlay(tk.Toplevel):
 
 class ResultToast(tk.Toplevel):
     """
-    لما التفريغ يخلص ومفيش خانة كتابة متعلّم عليها، النص بيظهر هنا فوق الموجة:
-    اتنسخ للحافظة بالفعل، فالمستخدم يقدر يلزقه بـ Ctrl+V في أي مكان.
-    بيختفي لوحده بعد ١٥ ثانية (إلا لو الماوس عليه)، ودوسة على النص بتنسخه تاني.
+    لما التفريغ يخلص والنص ما اتكتبش (مفيش خانة كتابة / الكتابة فشلت)، النص بيظهر هنا
+    فوق الموجة. الإملاء مبيتنسخش لوحده: زرار «نسخ» (أو دوسة على النص) بينسخه.
+    بيختفي لوحده بعد ٣ ثواني (إلا لو الماوس عليه) — والنص محفوظ في السجل.
     """
     BG, BORDER = "#17171c", "#2b2b32"
+    SHOW_MS = 3000
     _current = None
 
     @classmethod
@@ -520,25 +521,27 @@ class ResultToast(tk.Toplevel):
         x = tk.Label(head, text="✕", bg=self.BG, fg=MUTED, font=(FONT, 10), cursor="hand2")
         x.pack(side="left"); x.bind("<Button-1>", lambda e: self.destroy())
         # عربي وإنجليزي في نفس الـLabel بيتلخبط ترتيبهم في Tk — فكل واحد في Label لوحده
-        self.note = tk.Label(head, text=self._t("✓ اتنسخ للحافظة", "✓ Copied to clipboard"), bg=self.BG, fg=GREEN,
-                             font=(FONT, 9, "bold"))
-        self.note.pack(side="right")
-        tk.Label(head, text="Ctrl+V", bg="#232329", fg=FG, font=(MONO, 8, "bold"),
-                 padx=6).pack(side="right", padx=(0, 8))
+        tk.Label(head, text=self._t("النص ما اتكتبش", "Not typed"), bg=self.BG, fg=MUTED,
+                 font=(FONT, 9, "bold")).pack(side="right")
+        # Label مش Button: الدوسة عليه زي الدوسة على النص — من غير زرار Tk بفوكس وحدود
+        self.copy_btn = tk.Label(head, text=self._t("نسخ", "Copy"), bg="#232329", fg=FG,
+                                 font=(FONT, 9, "bold"), padx=8, cursor="hand2")
+        self.copy_btn.pack(side="right", padx=(0, 8))
+        self.copy_btn.bind("<Button-1>", lambda e: self._copy())
 
         shown = text if len(text) <= 600 else text[:600] + "…"
         body = tk.Label(box, text=R(shown), bg=self.BG, fg=FG, font=(FONT, 11),
                         wraplength=360, justify="right", anchor="e", cursor="hand2")
         body.pack(fill="x", pady=(8, 2))
         body.bind("<Button-1>", lambda e: self._copy())
-        tk.Label(box, text=self._t("اتنسخ — الصقه بنفسك · اتحفظ في السجل كمان", "Copied — paste it yourself · also saved to History"), bg=self.BG,
+        tk.Label(box, text=self._t("اتحفظ في السجل", "Saved to History"), bg=self.BG,
                  fg=DIM, font=(FONT, 8)).pack(anchor="e")
 
-        for w in (self, box, body):
+        for w in (self, box, body, self.copy_btn):
             w.bind("<Enter>", lambda e: setattr(self, "_hover", True))
             w.bind("<Leave>", lambda e: setattr(self, "_hover", False))
         self._place()
-        self.after(15000, self._expire)
+        self.after(self.SHOW_MS, self._expire)
 
     @staticmethod
     def _t(ar, en):
@@ -560,8 +563,7 @@ class ResultToast(tk.Toplevel):
     def _copy(self):
         try:
             self.clipboard_clear(); self.clipboard_append(self.text); self.update_idletasks()
-            self.note.config(text=self._t("✓ اتنسخ تاني", "✓ Copied again"))
-
+            self.copy_btn.config(text=self._t("✓ اتنسخ", "✓ Copied"), fg=GREEN)
         except Exception:
             pass
 
@@ -569,7 +571,7 @@ class ResultToast(tk.Toplevel):
         if not self.winfo_exists():
             return
         if self._hover:
-            self.after(3000, self._expire)
+            self.after(1000, self._expire)       # بتختفي ثانية بعد ما الماوس يسيبها
         else:
             self.destroy()
 

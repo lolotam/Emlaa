@@ -321,8 +321,43 @@ def _clipboard32():
         u.GetAsyncKeyState.restype = ctypes.c_short
         u.GetForegroundWindow.argtypes = []
         u.GetForegroundWindow.restype = wintypes.HWND
+        u.EmptyClipboard.argtypes = []
+        u.EmptyClipboard.restype = wintypes.BOOL
+        u.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        u.SetClipboardData.restype = wintypes.HANDLE
+        u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                                      wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                      ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+                                      wintypes.HINSTANCE, wintypes.LPVOID]
+        u.CreateWindowExW.restype = wintypes.HWND
+        u.DestroyWindow.argtypes = [wintypes.HWND]
+        u.DestroyWindow.restype = wintypes.BOOL
+        u.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                          wintypes.LPARAM, wintypes.UINT, wintypes.UINT,
+                                          ctypes.POINTER(ctypes.c_size_t)]
+        u.SendMessageTimeoutW.restype = ctypes.c_ssize_t
         _clip32 = u
     return _clip32
+
+
+_k32 = None
+
+
+def _kernel32():
+    """kernel32 بـargtypes/restype لذاكرة الحافظة (GlobalAlloc…) — patchable في الاختبارات."""
+    global _k32
+    if _k32 is None:
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        k.GlobalAlloc.restype = wintypes.HGLOBAL
+        k.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        k.GlobalLock.restype = wintypes.LPVOID
+        k.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        k.GlobalUnlock.restype = wintypes.BOOL
+        k.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        k.GlobalFree.restype = wintypes.HGLOBAL
+        _k32 = k
+    return _k32
 
 
 def foreground_hwnd():
@@ -471,6 +506,85 @@ def _write_clipboard_text(text):
         import pyperclip
         pyperclip.copy(text or "")
         return True
+    except Exception:
+        return False
+
+
+_GMEM_MOVEABLE = 0x0002
+_OPEN_TRIES = 50                    # × ١٠ مللي = نص ثانية لو برنامج تاني ماسك الحافظة
+
+
+def write_clipboard_text(text, expect_seq=None):
+    """
+    بينشر نص (CF_UNICODETEXT) للحافظة. expect_seq: الحافظة بتفضل مفتوحة من الفحص لحد
+    الكتابة — مفيش برنامج تاني يقدر يكتب بينهم — ولو الرقم اتغيّر منكتبش ونرجّع False.
+    نص فاضي = حافظة فاضية. بيرمي OSError لو الحافظة مشغولة أو الكتابة فشلت.
+    نافذة STATIC مؤقتة صاحبة الحافظة زي pyperclip: من غير نافذة، EmptyClipboard بيخلّي
+    صاحبها NULL و SetClipboardData ممكن يفشل.
+    """
+    u, k = _clipboard32(), _kernel32()
+    hwnd = u.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, None, None, None, None)
+    if not hwnd:
+        raise OSError("مقدرتش أعمل نافذة للحافظة")
+    handle = None
+    try:
+        # الذاكرة بتتحجز وتتملي قبل ما نفتح الحافظة: فشلها (ذاكرة خلصانة) ميمسحش حافظة المستخدم
+        handle = _unicode_block(k, text) if text else None
+        for _ in range(_OPEN_TRIES):
+            if u.OpenClipboard(hwnd):
+                break
+            time.sleep(0.01)
+        else:
+            raise OSError("الحافظة مشغولة مع برنامج تاني")
+        try:
+            if expect_seq is not None and int(u.GetClipboardSequenceNumber()) != expect_seq:
+                return False
+            if not u.EmptyClipboard():
+                raise OSError("EmptyClipboard فشل")
+            if handle is not None:
+                if not u.SetClipboardData(CF_UNICODETEXT, handle):
+                    raise OSError("SetClipboardData فشل")
+                handle = None                   # ويندوز بقى مالكها — منحرّرهاش
+            return True
+        finally:
+            u.CloseClipboard()
+    finally:
+        u.DestroyWindow(hwnd)
+        if handle is not None:
+            k.GlobalFree(handle)
+
+
+def _unicode_block(k, text):
+    """ذاكرة Global (GMEM_MOVEABLE) فيها النص UTF-16 + NUL — جاهزة لـSetClipboardData."""
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    handle = k.GlobalAlloc(_GMEM_MOVEABLE, len(data))
+    if not handle:
+        raise OSError("GlobalAlloc فشل")
+    ptr = k.GlobalLock(handle)
+    if not ptr:
+        k.GlobalFree(handle)
+        raise OSError("GlobalLock فشل")
+    ctypes.memmove(ptr, data, len(data))
+    k.GlobalUnlock(handle)
+    return handle
+
+
+_WM_NULL = 0x0000
+_SMTO_ABORTIFHUNG = 0x0002
+
+
+def wait_responsive(hwnd, timeout_ms):
+    """
+    True لو النافذة عالجت رسالة فاضية خلال المهلة — يعني بتاخد رسايل ومش مهنّجة.
+    مش ضمان إنها قرت الحافظة (المتصفحات بتقرا من عملية تانية)، بس البرنامج المهنّج أكيد
+    لسه ما قراش. hwnd=0 (مش عارفين النافذة) = False.
+    """
+    if not hwnd:
+        return False
+    result = ctypes.c_size_t()
+    try:
+        return bool(_clipboard32().SendMessageTimeoutW(
+            hwnd, _WM_NULL, 0, 0, _SMTO_ABORTIFHUNG, timeout_ms, ctypes.byref(result)))
     except Exception:
         return False
 

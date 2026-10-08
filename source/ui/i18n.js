@@ -85,7 +85,7 @@ const EN = {
   "مفيش": "None",
   "الكتابة": "Typing", "تنظيف النص وتصحيحه": "Clean up and correct text", "بيصلّح الترقيم والأخطاء ويحافظ على العامية": "Fixes punctuation and mistakes, keeps your dialect",
   "كتابة النص تلقائيًا مكان المؤشر": "Type text at the cursor automatically",
-  "لو مفيش خانة كتابة، النص بيظهر على الشاشة ويتنسخ": "If there's no text field, the text pops up on screen and is copied",
+  "لو قفلته، النص بيتنسخ للحافظة وتلزقه بنفسك": "If off, the text is copied to the clipboard for you to paste",
   "طريقة الكتابة": "Typing method",
   "«تلقائي»: الطويل والمتعدد بيتلزق، والقصير بيتكتب حرف حرف": "Auto: long or multi-line text is pasted, short text is typed letter by letter",
   "حرف حرف": "Letter by letter", "لزق Ctrl+V (أسرع)": "Paste with Ctrl+V (faster)",
