@@ -1037,21 +1037,27 @@ def _copy_to_clipboard(text):
         return False
 
 
-def _copy_owned(text):
+def _copy_owned(text, expect_seq=None):
     """
     نشر نص بتاعنا للحافظة: المراقب مكبوس قبل النشر والرقم الجديد متعلّم «بتاعنا» بعده،
     فصفحة الحافظة متسجّلش الإملاء (اتسجّل بالفعل في السجل). بيرجّع رقم تسلسل النسخة،
     أو None لو النشر فشل أو برنامج تاني كتب بعدنا على طول — رقمه هو ميتعلّمش «بتاعنا»
     (نفس فحص winput._selection_via_clipboard: قراية بين قرايتين لنفس الرقم).
+    expect_seq = رقم الحافظة وقت ما قرينا نسختها: لو اتغيّر، حد نسخ بعدها — منكتبش فوقه.
     """
     import winput
     suppress_clip_watch(1.0)
+    if expect_seq is not None and winput._clipboard_sequence() != expect_seq:
+        return None
     if not _copy_to_clipboard(text):
         return None
     seq = winput._clipboard_sequence()
     now = winput._read_clipboard_text()
-    if now is None or now.replace("\r\n", "\n") != text.replace("\r\n", "\n") \
-            or winput._clipboard_sequence() != seq:
+    if winput._clipboard_sequence() != seq:
+        return None
+    # القراية فشلت (None) والرقم ثابت = مفيش حد كتب بعدنا: النسخة بتاعتنا. لو اعتبرناها
+    # مش بتاعتنا، اللزق كان هيسيب الإملاء على الحافظة ونسخة المستخدم متترجعش
+    if now is not None and now.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
         return None
     mark_clip_owned(seq)
     return seq
@@ -1072,12 +1078,13 @@ def _paste_via_clipboard(text, strategy, still_target, restore):
     ونسلّم النص — اللزق كان هيمسح محتوى المستخدم من غير رجوع.
     """
     import winput
-    old = None
+    old = snapshot_seq = None
     if restore:
+        snapshot_seq = winput._clipboard_sequence()      # قبل القراية: أي نسخة بعدها بتغيّره
         old = winput._read_clipboard_text() if winput._clipboard_safe_for_text() else None
         if old is None:
             return "handoff"
-    ours = _copy_owned(text)
+    ours = _copy_owned(text, expect_seq=snapshot_seq)
     if ours is None:
         return "handoff"
     try:

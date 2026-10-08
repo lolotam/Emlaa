@@ -285,6 +285,36 @@ class TestPasteText(unittest.TestCase):
         self.assertEqual(self.clip.text, "EXT")
         core.mark_clip_owned.assert_not_called()
 
+    def _reads(self, *results):
+        """قراية الحافظة بالترتيب: نص، أو None (القراية فشلت)، أو دالة بتتنفّذ وترجّع نص."""
+        calls = iter(results)
+
+        def read():
+            r = next(calls, self.clip.text)
+            return r() if callable(r) else r
+
+        self.clip.read = read
+
+    def test_failed_read_back_still_restores_snapshot(self):
+        # PR #14 (Codex P1): القراية بعد نسختنا فشلت والرقم ثابت = مفيش حد كتب بعدنا —
+        # النسخة بتاعتنا: نلزق ونرجّع حافظة المستخدم بدل ما تضيع
+        self._reads("OLD", None)
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "placed")
+        self.cv.assert_called_once_with()
+        self.assertEqual(self.clip.text, "OLD")
+
+    def test_copy_between_snapshot_and_write_is_kept(self):
+        # PR #14 (Codex P2): المستخدم نسخ بعد ما قرينا الحافظة وقبل ما نكتب — منكتبش فوقه
+        def snapshot_then_user_copies():
+            self.clip.write("USER")
+            return "OLD"
+
+        self._reads(snapshot_then_user_copies)
+        self.assertEqual(self.run_paste(("gui", "ctrl_v", "hello")), "handoff")
+        self.cv.assert_not_called()
+        self.assertEqual(self.clip.writes, ["USER"])
+        self.assertEqual(self.clip.text, "USER")
+
     def test_external_write_before_paste_is_not_pasted(self):
         # حد كتب في الحافظة بين نسختنا والضغطة (وقت الفحص) — منلزقش حاجة مش بتاعتنا
         def guard_while_external_writes():
