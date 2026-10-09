@@ -107,6 +107,7 @@ async function setTheme(pref) {
 function go(page) {
   if (!S.boot) return;
   if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
+  if (S.page === "settings" && page !== "settings") leaveSettings();
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.go === page));
@@ -826,6 +827,7 @@ function chainEdit(kind, e) {
     return;
   }
   renderChain(kind);
+  scheduleSave();
 }
 ["stt", "ai"].forEach(kind => {
   const box = $(kind === "stt" ? "#sttList" : "#aiList");
@@ -836,6 +838,7 @@ function chainEdit(kind, e) {
     if (!item) return;
     feat()[kind].push({ ...item });
     renderChain(kind);
+    scheduleSave();
   });
 });
 $("#featTabs").addEventListener("click", e => {
@@ -849,7 +852,6 @@ $("#featTabs").addEventListener("click", e => {
 function setCapturing(on) {
   S.capturing = on;
   $$("#featTabs [data-feat], #hkRec1, #hkRec2").forEach(b => { b.disabled = on; });
-  $("#saveBtn").disabled = on;
   renderFeat();
 }
 async function captureHotkey(count) {
@@ -859,6 +861,7 @@ async function captureHotkey(count) {
   catch (e) { r = { ok: false, err: "مقدرتش أسجّل الزرار — جرّب تاني" }; }
   if (r && r.ok) Object.assign(S.features[r.feature], { hotkey: r.keys, label: r.label });
   setCapturing(false);
+  if (r && r.ok) scheduleSave(0);
   if (!r || !r.ok) toast((r && r.err) || "مقدرتش أسجّل الزرار — جرّب تاني");
 }
 $("#hkRec1").addEventListener("click", () => captureHotkey(1));
@@ -867,6 +870,7 @@ $("#hkClear").innerHTML = ICON.x;
 $("#hkClear").addEventListener("click", () => {
   Object.assign(feat(), { hotkey: [], label: "" });
   renderFeat();
+  scheduleSave();
 });
 
 /* ── أساليب السياق F5: override لكل برنامج (اسم exe بدون امتداد ← dev/chat/formal) ── */
@@ -1156,21 +1160,19 @@ $("#styleList").addEventListener("click", e => {
   const b = e.target.closest(".style-del");
   if (!b) return;
   b.closest(".style-row").remove();
+  scheduleSave();
   // آخر صف اتشال: اعرض placeholder فاضي من غير ما تعيد البناء من S.boot.cfg —
   // (renderStyleRows كانت هترجّع الاستثناء المحذوف تاني، فما كنش ممكن يتشال)
   if (!$("#styleList .style-row")) {
     $("#styleList").innerHTML = `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
   }
 });
-$("#saveBtn").addEventListener("click", async () => {
-  const msg = $("#saveMsg");
-  const btn = $("#saveBtn");
-  btn.disabled = true;
-  msg.className = "save-msg";
-  msg.textContent = "بحفظ…";
-  let r;
-  try {
-    r = await api().save_settings({
+/* ── الحفظ التلقائي: أي تغيير في الإعدادات بيتحفظ لوحده بعد لحظة (من غير زرار) ──
+   حفظ واحد في نفس الوقت؛ تغيير جه وهو شغّال بيعمل حفظة تانية بعده بالقيم الأحدث.
+   الفورم مبيتعادش بناؤه بعد الحفظ — المستخدم ممكن يكون لسه بيعدّل. */
+const SAVE = { timer: null, running: false, again: false, err: null };
+function settingsPayload() {
+  return {
     features: S.features,
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
@@ -1179,21 +1181,50 @@ $("#saveBtn").addEventListener("click", async () => {
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
     offline_model: $("#offlineModel").value,
-    });
-  } catch (e) {
-    r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" };
-  } finally {
-    btn.disabled = false;
+  };
+}
+function scheduleSave(delay = 400) {
+  if (!S.features) return;
+  clearTimeout(SAVE.timer);
+  SAVE.timer = setTimeout(saveSettings, delay);
+}
+async function saveSettings() {
+  SAVE.timer = null;
+  if (SAVE.running) { SAVE.again = true; return; }
+  SAVE.running = true;
+  const msg = $("#saveMsg");
+  msg.className = "save-msg";
+  msg.textContent = "بيتحفظ…";
+  let r;
+  try { r = await api().save_settings(settingsPayload()); }
+  catch (e) { r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" }; }
+  SAVE.running = false;
+  if (r.ok) {
+    SAVE.err = null;
+    S.boot = r.boot;
+    applyBoot();                    // المظهر واللغة والزراير في الرئيسية
+    loadHistory();                  // لو «آخر 10» اتفعّل، القديم اتمسح
+    msg.className = "save-msg ok";
+    msg.textContent = "اتحفظ ✓";
+  } else {
+    // الغلط (زي زرار مكرر) بيفضل ظاهر لحد التعديل الجاي — اللي بيحفظ تاني لوحده
+    SAVE.err = r.err;
+    msg.className = "save-msg err";
+    msg.textContent = r.err;
   }
-  if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
-  S.boot = r.boot;
-  setLang(S.boot.cfg.lang);
-  applyBoot();
-  fillSettings();
-  loadHistory();                                                  // لو «آخر 10» اتفعّل، القديم اتمسح
-  msg.className = "save-msg ok";
-  msg.textContent = "اتحفظ ✓ — التغييرات شغّالة دلوقتي";
-});
+  if (SAVE.again) { SAVE.again = false; saveSettings(); }
+}
+// الخروج من الصفحة: الحفظ اللي لسه مستني يتنفّذ دلوقتي، وغلط ماتصلّحش بيتقال
+function leaveSettings() {
+  if (SAVE.timer) { clearTimeout(SAVE.timer); saveSettings(); }
+  else if (SAVE.err) toast("الإعدادات ماتحفظتش: " + SAVE.err);
+}
+(() => {
+  const page = $('.page[data-page="settings"]');
+  // المفاتيح بتتحفظ من أزرارها (تحقق وأضف) — ومش جزء من الإعدادات دي
+  page.addEventListener("change", e => { if (!e.target.closest("#keysSection")) scheduleSave(); });
+  page.addEventListener("input", e => { if (e.target.matches(".style-exe")) scheduleSave(800); });
+})();
 
 /* ═══════════ أول مرة ═══════════ */
 function fillWelcome() {
