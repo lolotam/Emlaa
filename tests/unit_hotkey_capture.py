@@ -225,5 +225,197 @@ class TestCapture(unittest.TestCase):
         self.assertIsNone(s.result)
 
 
+class _ReplayListener:
+    """Listener مزيّف: start() بيعدّي الأحداث على الفلتر بالترتيب ويسجّل اللي اتمنع."""
+
+    class Suppressed(Exception):
+        pass
+
+    def __init__(self, events, filt):
+        self.events, self.filt, self.suppressed, self.stopped = events, filt, [], False
+
+    def suppress_event(self):
+        raise self.Suppressed()
+
+    def start(self):
+        import types
+        for vk, down, scan in self.events:
+            data = types.SimpleNamespace(vkCode=vk, scanCode=scan, dwExtraInfo=0)
+            try:
+                self.filt(0x100 if down else 0x101, data)
+            except self.Suppressed:
+                self.suppressed.append((vk, down))
+
+    def stop(self):
+        self.stopped = True
+
+
+class TestCaptureBridge(unittest.TestCase):
+    def capture(self, count, events, held=(), timeout=10.0):
+        import core
+        from unittest import mock
+        made = {}
+
+        def factory(filt):
+            made["l"] = _ReplayListener(events, filt)
+            return made["l"]
+
+        clock = {"t": 0.0}
+        with mock.patch("winput.keys_down", return_value=frozenset(held)):
+            r = core.capture_keys(count, timeout=timeout, listener_factory=factory,
+                                  clock=lambda: clock["t"],
+                                  sleep=lambda s: clock.__setitem__("t", clock["t"] + s))
+        return r, made["l"]
+
+    def test_single_key(self):
+        r, lst = self.capture(1, [(F7, True, 0), (F7, False, 0)])
+        self.assertEqual((r["ok"], r["keys"]), (True, [F7]))
+        self.assertEqual(lst.suppressed, [(F7, True), (F7, False)])
+        self.assertTrue(lst.stopped)
+
+    def test_two_keys_after_full_release(self):
+        r, _ = self.capture(2, [(F7, True, 0), (LCTRL, True, 0), (F7, False, 0), (LCTRL, False, 0)])
+        self.assertEqual(r["keys"], [LCTRL, F7])
+        self.assertIn("F7", r["label"])
+
+    def test_pre_held_ctrl_passes_through(self):
+        r, lst = self.capture(1, [(LCTRL, True, 0), (LCTRL, False, 0), (F7, True, 0), (F7, False, 0)],
+                              held=(LCTRL,))
+        self.assertEqual(r["keys"], [F7])
+        self.assertNotIn((LCTRL, False), lst.suppressed)
+        self.assertNotIn((LCTRL, True), lst.suppressed)
+
+    def test_escape_cancels(self):
+        r, _ = self.capture(1, [(0x1B, True, 0), (0x1B, False, 0)])
+        self.assertEqual(r, {"ok": False, "err": "اتلغى"})
+
+    def test_shape_error_reported(self):
+        r, _ = self.capture(2, [(0x41, True, 0), (0x42, True, 0), (0x41, False, 0), (0x42, False, 0)])
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["err"], smart.CAPTURE_PAIR_ERR)
+
+    def test_timeout_waits_and_explains(self):
+        r, lst = self.capture(1, [], timeout=0.2)
+        self.assertFalse(r["ok"])
+        self.assertIn("Fn", r["err"])
+        self.assertTrue(lst.stopped)
+
+
+class _Engine:
+    def __init__(self, can_capture=True):
+        self.can_capture = can_capture
+        self.calls = []
+
+    def try_begin_capture(self):
+        self.calls.append("try")
+        return self.can_capture
+
+    def end_capture(self):
+        self.calls.append("end")
+
+    def pause_hotkey(self):
+        self.calls.append("pause")
+
+    def resume_hotkey(self):
+        self.calls.append("resume")
+
+
+class TestCaptureApi(unittest.TestCase):
+    def api(self, engine):
+        import app_web
+        from unittest import mock
+        ctrl = mock.Mock(engine=engine)
+        return app_web.Api(ctrl)
+
+    def test_result_echoes_feature_and_restores_engine(self):
+        import core
+        from unittest import mock
+        eng = _Engine()
+        with mock.patch.object(core, "capture_keys", return_value={"ok": True, "keys": [F7], "label": "F7"}):
+            r = self.api(eng).capture_hotkey("translate", 1)
+        self.assertEqual(r["feature"], "translate")
+        self.assertEqual(eng.calls, ["try", "pause", "resume", "end"])
+
+    def test_refused_while_recording(self):
+        eng = _Engine(can_capture=False)
+        r = self.api(eng).capture_hotkey("normal", 1)
+        self.assertFalse(r["ok"])
+        self.assertEqual(eng.calls, ["try"])
+
+    def test_bad_request_refused(self):
+        self.assertFalse(self.api(_Engine()).capture_hotkey("nope", 1)["ok"])
+        self.assertFalse(self.api(_Engine()).capture_hotkey("normal", 3)["ok"])
+
+    def test_second_capture_refused_while_one_runs(self):
+        api = self.api(_Engine())
+        api._capture_lock.acquire()
+        try:
+            self.assertFalse(api.capture_hotkey("normal", 1)["ok"])
+        finally:
+            api._capture_lock.release()
+
+    def test_engine_restored_after_capture_error(self):
+        import core
+        from unittest import mock
+        eng = _Engine()
+        with mock.patch.object(core, "capture_keys", side_effect=RuntimeError("hook")), \
+                mock.patch.object(core, "log_error"):
+            r = self.api(eng).capture_hotkey("normal", 1)
+        self.assertFalse(r["ok"])
+        self.assertEqual(eng.calls[-2:], ["resume", "end"])
+
+
+class TestCaptureExclusion(unittest.TestCase):
+    """التقاط الزرار والتسجيل مايحصلوش مع بعض أبدًا — نفس القفل."""
+
+    def make(self):
+        import core
+        app = core.App.__new__(core.App)
+        app.recording, app.busy, app.capturing, app._op = False, False, False, None
+        return app
+
+    def test_capture_blocks_begin(self):
+        import core
+        from unittest import mock
+        app = self.make()
+        self.assertTrue(app.try_begin_capture())
+        with mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("normal")
+        self.assertFalse(app.recording)
+
+    def test_recording_blocks_capture(self):
+        app = self.make()
+        app.recording = True
+        self.assertFalse(app.try_begin_capture())
+        self.assertFalse(app.capturing)
+
+    def test_race_never_leaves_both(self):
+        import threading
+        import core
+        from unittest import mock
+        for _ in range(50):
+            app = self.make()
+            app.rec = mock.Mock(ensure_open=mock.Mock(return_value=True))
+            barrier = threading.Barrier(2)
+
+            def do_begin():
+                barrier.wait()
+                app.begin("normal")
+
+            def do_capture():
+                barrier.wait()
+                app.try_begin_capture()
+
+            with mock.patch.object(core, "_foreground_app", return_value=""), \
+                    mock.patch.object(core, "_probe_password"), \
+                    mock.patch.object(core.App, "_begin_tail"):
+                threads = [threading.Thread(target=do_begin), threading.Thread(target=do_capture)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(5)
+            self.assertFalse(app.recording and app.capturing)
+
+
 if __name__ == "__main__":
     unittest.main()

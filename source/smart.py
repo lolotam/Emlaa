@@ -482,6 +482,10 @@ class CaptureSession:
     def finished(self):
         return self.decided and not self._down
 
+    def captured_down(self):
+        """زرايرنا اللي لسه ماسكة — المستمع مايتقفلش وفيه واحد منهم (تسيبه هيتمنع)."""
+        return frozenset(self._down)
+
     def event(self, vk, is_press, fake_altgr_ctrl):
         """True = الحدث ده بتاعنا (لازم يتمنع عن البرامج التانية)."""
         if fake_altgr_ctrl:

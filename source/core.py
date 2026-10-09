@@ -1280,6 +1280,58 @@ class Operation:
     probe: dict = field(default_factory=dict, compare=False)
 
 
+CAPTURE_TIMEOUT_ERR = "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار"
+
+
+def capture_keys(count, timeout=10.0, listener_factory=None, clock=time.monotonic,
+                 sleep=time.sleep, release_cap=3.0):
+    """
+    بيسجّل زرار التسجيل من الكيبورد (count = ١ أو ٢) ويرجّع {ok, keys, label} أو {ok, err}.
+    الزراير اللي اتداست جوّه الجلسة بس هي اللي بتتسجّل وبتتمنع عن البرامج التانية؛ الماسكة
+    من قبل (حتى تكرارها) بتعدّي. في كل الخروجات (نتيجة/غلط/Esc/مهلة) المستمع بيفضل لحد ما
+    زرايرنا تتساب (لحد release_cap) — غير كده البرنامج يستلم تسيب زرار ما استلمش دوسته.
+    """
+    import winput
+    session = smart.CaptureSession(count, initially_down=winput.keys_down(range(1, 0xFF)))
+    box = {}
+
+    def win32_event_filter(msg, data):
+        if data.dwExtraInfo == winput.EMLAA_TAG:
+            return False
+        vk = data.vkCode
+        fake_ctrl = vk == winput.VK_LCONTROL and bool(data.scanCode & 0x200)
+        if session.event(vk, msg in (0x100, 0x104), fake_ctrl):
+            box["listener"].suppress_event()
+        return False
+
+    if listener_factory is None:
+        from pynput import keyboard
+
+        def listener_factory(filt):
+            return keyboard.Listener(win32_event_filter=filt)
+
+    listener = listener_factory(win32_event_filter)
+    box["listener"] = listener
+    listener.start()
+    try:
+        deadline = clock() + timeout
+        while not session.decided and clock() < deadline:
+            sleep(0.02)
+        cap = clock() + release_cap
+        while session.captured_down() and clock() < cap:
+            sleep(0.02)
+    finally:
+        listener.stop()
+    if session.cancelled:
+        return {"ok": False, "err": "اتلغى"}
+    if session.error:
+        return {"ok": False, "err": session.error}
+    if not session.result:
+        return {"ok": False, "err": CAPTURE_TIMEOUT_ERR}
+    return {"ok": True, "keys": list(session.result),
+            "label": smart.hotkey_label(session.result, CFG.get("lang", "ar"))}
+
+
 class HotkeyDispatcher:
     """
     بيشغّل قرارات زراير التسجيل بترتيب وصول الأحداث، على ثريد لوحده برّه الـhook.
@@ -1901,6 +1953,22 @@ class App:
 
     def pause_hotkey(self):
         self._stop_hotkey()
+
+    def try_begin_capture(self):
+        """
+        حجز «بنسجّل زرار من الإعدادات» تحت نفس قفل التسجيل: لو فيه تسجيل أو تفريغ أو
+        التقاط تاني بيترفض، ولو اتحجز begin() بيرفض لحد end_capture — الاتنين عمرهم ما
+        يحصلوا مع بعض.
+        """
+        with self._state_lock:
+            if self.recording or self.busy or getattr(self, "capturing", False):
+                return False
+            self.capturing = True
+            return True
+
+    def end_capture(self):
+        with self._state_lock:
+            self.capturing = False
 
     def resume_hotkey(self):
         self._stop_hotkey()

@@ -531,6 +531,8 @@ class Api:
         # Task 24: قفل واحد بيحوّش key_add / key_remove وكتابة المفتاح في save_settings
         # عشان دوستين متتاليتين سريعتين مايخلطوش قراية/كتابة .env فوق بعض.
         self._key_lock = threading.Lock()
+        # تسجيل زرار من الإعدادات: جلسة واحدة بس في نفس الوقت
+        self._capture_lock = threading.Lock()
 
     # ── بيانات أول ما الواجهة تفتح ──
     def bootstrap(self):
@@ -810,6 +812,36 @@ class Api:
                 w.hide()
         c.tk_call(wave_setting)
         return {"ok": True, "boot": self.bootstrap()}
+
+    # ── تسجيل زرار ميزة من الكيبورد ──
+    def capture_hotkey(self, feature, count):
+        """
+        بيستنى زرار (count=1) أو موديفاير + زرار (count=2) ويرجّعهم مع اسم الميزة اللي
+        طلبت — الواجهة بتحط النتيجة في الميزة دي حتى لو المستخدم اتنقل لتاب تاني.
+        مرفوض وقت تسجيل/تفريغ: التسجيل والالتقاط مايحصلوش مع بعض.
+        """
+        if feature not in smart.FEATURES or count not in (1, 2):
+            return {"ok": False, "err": "طلب مش مظبوط"}
+        if not self._capture_lock.acquire(blocking=False):
+            return {"ok": False, "err": "فيه تسجيل زرار شغّال بالفعل"}
+        try:
+            engine = self._c.engine
+            if engine is not None and not engine.try_begin_capture():
+                return {"ok": False, "err": "وقّف التسجيل الأول"}
+            try:
+                if engine is not None:
+                    engine.pause_hotkey()
+                result = core.capture_keys(count)
+            except Exception as e:
+                core.log_error(e, "hotkey/capture")
+                result = {"ok": False, "err": "مقدرتش أسجّل الزرار — جرّب تاني"}
+            finally:
+                if engine is not None:
+                    engine.resume_hotkey()
+                    engine.end_capture()
+            return dict(result, feature=feature)
+        finally:
+            self._capture_lock.release()
 
     # ── مجمّعة المفاتيح لكل مزوّد (Task 24) ──
     def key_pool(self, pid):
