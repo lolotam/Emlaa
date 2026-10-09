@@ -31,6 +31,10 @@ class _Ctrl:
     last_text = ""
     update_info = None
     hotkeys = []
+    engine = None
+
+    def start_engine(self):
+        pass
 
 
 def _features(*stt):

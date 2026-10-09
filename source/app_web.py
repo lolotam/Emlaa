@@ -202,7 +202,17 @@ class Controller:
             pass
 
     # ═══════════ المحرّك ═══════════
+    # إضافة مفتاح والحفظ الاتنين بيشغّلوا المحرك لو مش شغّال — وهو لسه بيقوم (engine لسه
+    # None) نداء تاني كان هيعمل محرك تاني بمستمع زراير تاني
+    _engine_lock = threading.Lock()
+    _engine_booting = False
+
     def start_engine(self):
+        with self._engine_lock:
+            if self.engine is not None or self._engine_booting:
+                return
+            self._engine_booting = True
+
         def boot():
             try:
                 app = core.App()
@@ -219,6 +229,8 @@ class Controller:
                 s = str(e).lower()
                 self.set_state("err", "مفيش ميكروفون متوصّل" if "device" in s or "portaudio" in s
                                else "الميكروفون مش شغّال")
+            finally:
+                self._engine_booting = False
         threading.Thread(target=boot, daemon=True).start()
 
     def toggle_record(self, mode="normal"):
@@ -936,7 +948,7 @@ class Api:
                 providers.add_provider_key(core.ENV_PATH, pid, key)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
-            self._reset_engine_client()
+            self._keys_changed()
             return {"ok": True, **self.key_pool(pid)}
 
     def key_remove(self, pid, index, key_id=None):
@@ -964,14 +976,19 @@ class Api:
                 providers.remove_provider_key(core.ENV_PATH, pid, index)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
-            self._reset_engine_client()
+            self._keys_changed()
             return {"ok": True, **self.key_pool(pid)}
 
-    def _reset_engine_client(self):
-        """المفاتيح اتغيّرت: عملاء الميزات المخزّنين بيتبنوا تاني بالمجمّعة الجديدة."""
+    def _keys_changed(self):
+        """
+        المفاتيح اتغيّرت: عملاء الميزات المخزّنين بيتبنوا تاني بالمجمّعة الجديدة — ولو المحرك
+        لسه مابدأش (اتفتحت الإعدادات من الترحيب) وبقى فيه حاجة تفرّغ، بيبدأ دلوقتي.
+        """
         engine = getattr(self._c, "engine", None)
         if engine is not None:
             engine.reset_client()
+        elif core.can_run():
+            self._c.start_engine()
 
     # ── التفريغ من غير إنترنت (F9) ──
     def offline_status(self):

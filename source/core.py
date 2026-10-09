@@ -721,11 +721,13 @@ def load_config():
     return cfg
 
 
-def migrated_features(cfg):
-    try:
-        pools = providers.read_key_pools(ENV_PATH)
-    except Exception:
-        pools = {}
+def migrated_features(cfg, pools=None):
+    """pools: المفاتيح اللي يتحسب على أساسها (افتراضي: .env) — الكلاسيك بيبعت مفتاح لسه ماتكتبش."""
+    if pools is None:
+        try:
+            pools = providers.read_key_pools(ENV_PATH)
+        except Exception:
+            pools = {}
     try:
         local = offline.installed()
     except Exception:

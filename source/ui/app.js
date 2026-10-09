@@ -1168,7 +1168,9 @@ $("#saveBtn").addEventListener("click", async () => {
   btn.disabled = true;
   msg.className = "save-msg";
   msg.textContent = "بحفظ…";
-  const r = await api().save_settings({
+  let r;
+  try {
+    r = await api().save_settings({
     features: S.features,
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
@@ -1177,8 +1179,12 @@ $("#saveBtn").addEventListener("click", async () => {
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
     offline_model: $("#offlineModel").value,
-  });
-  btn.disabled = false;
+    });
+  } catch (e) {
+    r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" };
+  } finally {
+    btn.disabled = false;
+  }
   if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
   S.boot = r.boot;
   setLang(S.boot.cfg.lang);

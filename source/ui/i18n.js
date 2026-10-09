@@ -98,6 +98,7 @@ const EN = {
   "مش متثبّت — نزّله من تحت": "Not installed — download it below", "لفوق": "Move up", "لتحت": "Move down",
   "محلي": "Local", "المفاتيح (API keys)": "API keys", "+ إضافة مفتاح": "+ Add Key",
   "مقدرتش أسجّل الزرار — جرّب تاني": "Couldn't record the key — try again",
+  "مقدرتش أحفظ — جرّب تاني": "Couldn't save — try again",
   "اتلغى": "Cancelled", "وقّف التسجيل الأول": "Stop recording first", "طلب مش مظبوط": "Invalid request",
   "فيه تسجيل زرار شغّال بالفعل": "A key recording is already running",
   "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار": "Windows didn't receive that key — on a laptop, try Fn with it",

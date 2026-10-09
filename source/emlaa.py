@@ -88,16 +88,21 @@ def classic_hotkey_options(features, lang="ar"):
     return out
 
 
-def classic_save_features(cfg, picks, pid):
+def classic_save_features(cfg, picks, pid, new_key=None):
     """
     الميزات بعد حفظة من الواجهة الكلاسيك: (features, features_custom, رسالة غلط أو None).
     مزوّد اتغيّر والميزات لسه محسوبة (مش متعدّلة) = بتتحسب تاني من المزوّد الجديد. القاموس
     كله بيتبني الأول وبعدين يتفحص مرة واحدة — تبديل زرارين بين وضعين في نفس الحفظة يعدّي.
     زرار اتغيّر = الميزات بقت متعدّلة، فتغيير مزوّد بعدين مايمسحهاش.
+    new_key: مفتاح المزوّد الجديد اللي هيتكتب بعد التحقق — بيتحسب كأنه موجود، غير كده
+    المعالجة كانت هتفضل على المزوّد القديم اللي ليه مفتاح.
     """
     base = cfg.get("features") or core.DEFAULTS["features"]
     if pid != cfg.get("provider") and not cfg.get("features_custom"):
-        base = core.migrated_features(dict(cfg, provider=pid))
+        pools = core.providers.read_key_pools(core.ENV_PATH)
+        if new_key:
+            pools = dict(pools, **{pid: [new_key] + list(pools.get(pid) or [])})
+        base = core.migrated_features(dict(cfg, provider=pid), pools)
     features = {m: dict(f, hotkey=list(f["hotkey"])) for m, f in base.items()}
     for mode, vks in picks.items():
         features[mode]["hotkey"] = list(vks)
@@ -1275,7 +1280,7 @@ class EmlaaClassic(tk.Tk):
         pid = self._settings_pid()
         key = self.skey_var.get().strip().strip('"').strip("'")
         self._key_drafts[pid] = key
-        features, custom, err = classic_save_features(self.cfg, self._hotkey_picks(), pid)
+        features, custom, err = classic_save_features(self.cfg, self._hotkey_picks(), pid, key)
         if err:
             self._set_smsg(err, RED)
             return

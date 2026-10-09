@@ -86,6 +86,15 @@ class TestClassicSaveFeatures(unittest.TestCase):
         self.assertEqual(feats["normal"]["hotkey"], [F8])
         self.assertEqual(feats["normal"]["stt"][0]["provider"], "groq")    # متعدّلة = مابتتحسبش تاني
 
+    def test_provider_change_with_its_new_key_uses_that_provider_for_ai(self):
+        # PR #15 (Codex): المفتاح الجديد لسه ماتكتبش وقت الحساب — لازم يتحسب كأنه موجود
+        with open(core.ENV_PATH, "w", encoding="utf-8") as fh:
+            fh.write("GROQ_API_KEY=k\n")
+        feats, _, err = emlaa.classic_save_features(self.cfg, current_picks(self.cfg["features"]), "openai",
+                                                    new_key="sk-new")
+        self.assertIsNone(err)
+        self.assertEqual({i["provider"] for i in feats["prompt"]["ai"]}, {"openai"})
+
     def test_untouched_features_follow_a_provider_change(self):
         feats, custom, err = self.save(current_picks(self.cfg["features"]), pid="openai")
         self.assertIsNone(err)

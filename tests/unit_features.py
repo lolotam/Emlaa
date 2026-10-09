@@ -321,6 +321,26 @@ class TestSaveSettings(_BridgeCase):
                 engine.reset_client.assert_called_once()
 
 
+class TestKeyAddStartsEngine(_BridgeCase):
+    """PR #15 (Codex): أول مفتاح ينفع يتضاف من الإعدادات والمحرك لسه مابدأش — المحرك يبدأ."""
+
+    def add(self, engine=None):
+        ctrl = _Ctrl(engine)
+        with mock.patch.object(self.app_web.providers, "verify", return_value=(True, "")):
+            r = self.app_web.Api(ctrl).key_add("groq", "gsk_new")
+        self.assertTrue(r["ok"])
+        return ctrl
+
+    def test_first_usable_key_starts_the_engine(self):
+        self.assertEqual(self.add().started, 1)
+
+    def test_key_for_a_running_engine_rebuilds_its_clients(self):
+        engine = mock.Mock()
+        ctrl = self.add(engine)
+        self.assertEqual(ctrl.started, 0)
+        engine.reset_client.assert_called_once()
+
+
 class TestBootstrapFeatures(_BridgeCase):
     def test_features_carry_labels_and_catalog_reports_keys_and_local(self):
         self.write_env("GROQ_API_KEY=k\n")

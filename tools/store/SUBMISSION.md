@@ -77,7 +77,7 @@ python tools/store_package.py --no-build --register
 - بيفهم العامية المصرية
 - تحويل الكلام لبرومبت مرتّب
 - ترجمة عربي ⇄ إنجليزي
-- 4 مزوّدين واختيار الموديل
+- 4 مزوّدين وبدائل بالترتيب لكل ميزة
 - سجل وحافظة وقاموس على جهازك
 
 **كلمات البحث:** إملاء · تفريغ صوتي · صوت إلى نص · كتابة بالصوت · عامية مصرية · Arabic dictation · speech to text
@@ -106,7 +106,7 @@ Emlaa is completely free. It needs an API key from your chosen provider (Groq an
 - Understands Egyptian Arabic
 - Turn speech into a structured AI prompt
 - Arabic ⇄ English translation
-- 4 providers with model choice
+- 4 providers with per-feature ordered fallbacks
 - Local history, clipboard and dictionary
 
 **Search terms:** Arabic dictation · speech to text · voice typing · Egyptian Arabic · transcription · Whisper · إملاء
@@ -114,7 +114,7 @@ Emlaa is completely free. It needs an API key from your chosen provider (Groq an
 ### الصور
 ارفع الصور من `tools/store/screenshots/` (1366×768):
 1. `01-home-ar.png` — الرئيسية
-2. `02-models-ar.png` — اختيار الموديل بنسب الترشيح
+2. `02-models-ar.png` — ⚠ صورة قديمة لاختيار الموديل اللي اتشال: صوّر بدالها صفحة الإعدادات (تابات الميزات وقوايم البدائل) بنفس الاسم قبل النشر
 3. `03-history-ar.png` — السجل
 4. `04-home-en.png` — الواجهة بالإنجليزي
 5. `05-clipboard-en.png` — مدير الحافظة

@@ -174,3 +174,15 @@ class TestTrayMenuItem(_PolishGuard):
         self.assertIs(raw_item().checked, False)
         core.CFG["polish"] = False
         self.assertIs(raw_item().checked, True)
+
+
+class TestEngineStartsOnce(unittest.TestCase):
+    """أكتر من نداء start_engine (إضافة مفتاح + حفظ) وهو لسه بيقوم = محرك واحد بس."""
+
+    def test_second_start_while_booting_is_ignored(self):
+        c = object.__new__(app_web.Controller)
+        c.engine = None
+        with mock.patch.object(app_web.threading, "Thread") as thread:
+            c.start_engine()
+            c.start_engine()
+        self.assertEqual(thread.call_count, 1)
