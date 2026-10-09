@@ -117,7 +117,9 @@ function go(page) {
   if (page === "history") renderHistory();
   if (page === "clipboard") loadClips();
   if (page === "dictionary") { renderDict(); renderSnippets(); }
-  if (page === "settings") { fillSettings(); startKeyPoolTimer(); }
+  // الفورم بيتملى من المحفوظ بعد ما أي حفظة شغّالة تخلص — غير كده كان هيتملى بالقيم
+  // القديمة والتعديل الجاي يرجّعها
+  if (page === "settings") { flushSave().then(() => { if (S.page === "settings") fillSettings(); }); startKeyPoolTimer(); }
   else stopKeyPoolTimer();
   updateBulk();
 }
@@ -1173,7 +1175,7 @@ $("#styleList").addEventListener("click", e => {
 /* ── الحفظ التلقائي: أي تغيير في الإعدادات بيتحفظ لوحده بعد لحظة (من غير زرار) ──
    حفظ واحد في نفس الوقت؛ تغيير جه وهو شغّال بيعمل حفظة تانية بعده بالقيم الأحدث.
    الفورم مبيتعادش بناؤه بعد الحفظ — المستخدم ممكن يكون لسه بيعدّل. */
-const SAVE = { timer: null, running: false, again: false, err: null };
+const SAVE = { timer: null, running: false, again: false, err: null, closeWarned: false };
 function settingsPayload() {
   return {
     features: S.features,
@@ -1188,8 +1190,11 @@ function settingsPayload() {
     ...($("#offlineModel").options.length ? { offline_model: $("#offlineModel").value } : {}),
   };
 }
-function scheduleSave(delay = 400) {
+// delay صفر: الدوسة/الاختيار بيتبعتوا علطول — مفيش تغيير بيفضل مستني في تايمر وقت ما
+// البرنامج يتقفل. الكتابة (اسم برنامج) بس اللي ليها مهلة. حفظتين ورا بعض بيتسلسلوا
+function scheduleSave(delay = 0) {
   if (!S.features) return;
+  SAVE.closeWarned = false;       // تعديل جديد = تنبيه القفل القديم مبقاش ليه لازمة
   clearTimeout(SAVE.timer);
   SAVE.timer = setTimeout(saveSettings, delay);
 }
@@ -1234,7 +1239,7 @@ async function leaveSettings() {
   const page = $('.page[data-page="settings"]');
   // المفاتيح بتتحفظ من أزرارها (تحقق وأضف) — ومش جزء من الإعدادات دي
   page.addEventListener("change", e => { if (!e.target.closest("#keysSection")) scheduleSave(); });
-  page.addEventListener("input", e => { if (e.target.matches(".style-exe")) scheduleSave(800); });
+  page.addEventListener("input", e => { if (e.target.matches(".style-exe")) scheduleSave(600); });
 })();
 
 /* ═══════════ أول مرة ═══════════ */
@@ -1284,15 +1289,14 @@ $("#btnTheme").addEventListener("click", () =>
   setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
 // القفل والحفظ اترفض: مرة أولى بننبّه ومابنقفلش (النافذة هتستخبّى والرسالة تحت مش هتبان) —
 // دوسة تانية بتقفل
-let closeWarned = false;
 $("#btnClose").addEventListener("click", async () => {
   await flushSave();
-  if (SAVE.err && !closeWarned) {
-    closeWarned = true;
+  if (SAVE.err && !SAVE.closeWarned) {
+    SAVE.closeWarned = true;
     toast("الإعدادات ماتحفظتش: " + SAVE.err);
     return;
   }
-  closeWarned = false;
+  SAVE.closeWarned = false;
   api().close();
 });
 $("#promo").addEventListener("click", e => { e.preventDefault(); api().open_url(e.currentTarget.dataset.url); });
@@ -1420,6 +1424,7 @@ window.emlaa = {
     }
   },
   go(page) { go(page); },
+  flushSave() { return flushSave(); },   // Python بيناديها قبل الخروج من التراي
 };
 
 /* ═══════════ البداية ═══════════ */

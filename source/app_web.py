@@ -280,10 +280,26 @@ class Controller:
         threading.Thread(target=self.quit, daemon=True).start()
         return False
 
+    def _flush_ui_settings(self, timeout=3.0):
+        """
+        الواجهة بتحفظ الإعدادات لوحدها — حفظة لسه شغّالة (أو مستنية الكتابة) لازم تخلص قبل
+        ما النافذة تتقفل. flushSave بترجّع Promise فالـcallback بيتنده لما تخلص؛ لو الواجهة
+        مش موجودة أو علّقت، القفل بيكمّل بعد المهلة.
+        """
+        done = threading.Event()
+        try:
+            self.window.evaluate_js(
+                "window.emlaa && window.emlaa.flushSave ? window.emlaa.flushSave() : Promise.resolve(null)",
+                lambda _result: done.set())
+            done.wait(timeout)
+        except Exception as e:
+            core.log_error(e, "quit/flush-settings")
+
     def quit(self):
         if self._quitting:
             return
         self._quitting = True
+        self._flush_ui_settings()
         for fn in (lambda: self.tray and self.tray.stop(),
                    lambda: self.engine and self.engine.shutdown(),
                    lambda: self._open_hk and self._open_hk.stop(),
