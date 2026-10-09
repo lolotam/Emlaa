@@ -1180,7 +1180,9 @@ function settingsPayload() {
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
-    offline_model: $("#offlineModel").value,
+    // قايمة الموديل المحلي بتتملى بعد ما offline_status يرجع — قبلها مانبعتهاش، غير كده
+    // حفظة بدري كانت هتمسح الموديل اللي المستخدم اختاره قبل كده
+    ...($("#offlineModel").options.length ? { offline_model: $("#offlineModel").value } : {}),
   };
 }
 function scheduleSave(delay = 400) {
@@ -1214,9 +1216,13 @@ async function saveSettings() {
   }
   if (SAVE.again) { SAVE.again = false; saveSettings(); }
 }
-// الخروج من الصفحة: الحفظ اللي لسه مستني يتنفّذ دلوقتي، وغلط ماتصلّحش بيتقال
+// الحفظ اللي لسه مستني (أو شغّال) يخلص — قبل الخروج من الصفحة أو قفل البرنامج
+async function flushSave() {
+  if (SAVE.timer) { clearTimeout(SAVE.timer); await saveSettings(); }
+  while (SAVE.running) await new Promise(r => setTimeout(r, 50));
+}
 function leaveSettings() {
-  if (SAVE.timer) { clearTimeout(SAVE.timer); saveSettings(); }
+  if (SAVE.timer) flushSave();
   else if (SAVE.err) toast("الإعدادات ماتحفظتش: " + SAVE.err);
 }
 (() => {
@@ -1271,7 +1277,7 @@ async function switchLang(lang) {
 }
 $("#btnTheme").addEventListener("click", () =>
   setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
-$("#btnClose").addEventListener("click", () => api().close());
+$("#btnClose").addEventListener("click", async () => { await flushSave(); api().close(); });
 $("#promo").addEventListener("click", e => { e.preventDefault(); api().open_url(e.currentTarget.dataset.url); });
 $("#checkUpdate").addEventListener("click", async e => {
   const b = e.currentTarget;
