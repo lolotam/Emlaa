@@ -324,31 +324,36 @@ class TestLocalPasswordFields(unittest.TestCase):
 
 
 class TestClassicKeylessSave(unittest.TestCase):
-    """الواجهة الكلاسيك: offline دايمًا + موديل مثبّت = الإعدادات بتتحفظ من غير مفتاح."""
+    """الواجهة الكلاسيك: الإعدادات بتتحفظ من غير مفتاح لو لسه فيه حاجة تفرّغ (الموديل المحلي)."""
 
-    def _ui(self, mode, installed):
+    def _ui(self, stt, installed):
         import emlaa
         ui = emlaa.EmlaaClassic.__new__(emlaa.EmlaaClassic)
-        ui.cfg = cfg(offline_mode=mode)
+        feats = {m: {"hotkey": [], "stt": [dict(stt)], "ai": [] if m == "normal" else
+                     [{"provider": "groq", "model": "m"}]} for m in ("normal", "prompt", "translate", "edit")}
+        ui.cfg = cfg(provider="groq", features=feats, features_custom=True)
         ui._key_drafts = {}
         ui.skey_var = mock.Mock(get=mock.Mock(return_value=""))
         ui._settings_pid = mock.Mock(return_value="groq")
+        ui._hk_opts = emlaa.classic_hotkey_options(feats)
+        ui._hk_vars = {m: mock.Mock(get=mock.Mock(return_value="مفيش")) for m in emlaa.CLASSIC_MODES}
         ui._apply = mock.Mock()
         ui._set_smsg = mock.Mock()
-        p = mock.patch.object(offline, "installed", return_value=installed)
-        p.start(); self.addCleanup(p.stop)
-        k = mock.patch.object(providers, "read_keys", return_value={})
-        k.start(); self.addCleanup(k.stop)
+        for p in (mock.patch.object(offline, "installed", return_value=installed),
+                  mock.patch.object(providers, "read_key_pools", return_value={}),
+                  mock.patch.object(providers, "read_keys", return_value={})):
+            p.start()
+            self.addCleanup(p.stop)
         return ui
 
-    def test_saves_without_key_in_always_with_pack(self):
-        ui = self._ui("always", "base")
+    def test_saves_without_key_when_local_model_transcribes(self):
+        ui = self._ui({"provider": "local", "model": ""}, "base")
         ui._save()
-        ui._apply.assert_called_once_with("groq", "", verified=False)
+        ui._apply.assert_called_once_with("groq", "", False, mock.ANY)
 
-    def test_still_requires_key_otherwise(self):
-        for mode, inst in (("fallback", "base"), ("always", None)):
-            ui = self._ui(mode, inst)
+    def test_still_requires_key_when_nothing_can_transcribe(self):
+        for stt, inst in (({"provider": "groq", "model": "m"}, "base"), ({"provider": "local", "model": ""}, None)):
+            ui = self._ui(stt, inst)
             ui._save()
             ui._apply.assert_not_called()
 
@@ -358,11 +363,10 @@ class TestClassicKeylessSave(unittest.TestCase):
         with mock.patch.object(providers, "write_key") as wk, \
                 mock.patch.object(core, "save_config", side_effect=RuntimeError("stop")):
             ui.cfg = cfg()
-            for name in ("hk_norm_var", "hk_prmt_var", "hk_trns_var", "polish_var", "prompt_var",
-                         "paste_var", "tray_var", "upd_var", "float_var"):
-                setattr(ui, name, mock.Mock(get=mock.Mock(return_value="")))
+            for name in ("polish_var", "prompt_var", "paste_var", "tray_var", "upd_var", "float_var"):
+                setattr(ui, name, mock.Mock(get=mock.Mock(return_value=False)))
             with self.assertRaises(RuntimeError):
-                ui._apply("groq", "", verified=False)
+                ui._apply("groq", "", False, (core.DEFAULTS["features"], False))
         wk.assert_not_called()
 
 

@@ -107,12 +107,11 @@ def combo_listener(combo, fire):
 
 
 class Controller:
-    def __init__(self, version, brand_name, brand_url, hotkeys):
+    def __init__(self, version, brand_name, brand_url):
         import emlaa                                  # WaveOverlay / ResultToast
         self.emlaa = emlaa
         self.version = version
         self.brand = {"name": brand_name, "url": brand_url}
-        self.hotkeys = hotkeys
         self.engine = None
         self.window = None
         self.tray = None
@@ -1040,8 +1039,8 @@ class Api:
         threading.Thread(target=self._c.quit, daemon=True).start()
 
 
-def run(version, brand_name, brand_url, hotkeys):
+def run(version, brand_name, brand_url):
     """بيرفع ImportError لو pywebview/pythonnet مش موجودين — emlaa.py بيرجع للواجهة القديمة."""
     import webview  # noqa: F401
     import clr      # noqa: F401
-    Controller(version, brand_name, brand_url, hotkeys).run()
+    Controller(version, brand_name, brand_url).run()
