@@ -62,8 +62,8 @@ python tools/store_package.py --no-build --register
 إملاء بيحوّل صوتك لنص في أي برنامج على ويندوز. دوس زرار، اتكلم عربي (أو إنجليزي)، ودوس تاني — والكلام يتكتب مكان المؤشر على طول: في المتصفح، Word، واتساب، ChatGPT، Claude، أو أي خانة كتابة.
 
 • بيفهم العامية المصرية، وبيسيب المصطلحات التقنية بالإنجليزي زي ما هي (AI · API).
-• 3 أوضاع، لكل وضع زرار: تسجيل عادي (بيصلّح الترقيم والأخطاء) · تحويل لبرومبت مرتّب للذكاء الاصطناعي · ترجمة عربي ⇄ إنجليزي.
-• اختار المزوّد اللي يناسبك: Groq (مجاني وسريع جدًا) · Google Gemini (باقة مجانية) · Deepgram (رصيد مجاني) · OpenAI. واختار موديل التفريغ بنسبة ترشيح واضحة.
+• 4 ميزات، لكل ميزة زرار تختاره بنفسك: تسجيل عادي (بيصلّح الترقيم والأخطاء) · تحويل لبرومبت مرتّب للذكاء الاصطناعي · ترجمة عربي ⇄ إنجليزي · تعديل النص المحدد بالصوت.
+• اختار المزوّد اللي يناسبك: Groq (مجاني وسريع جدًا) · Google Gemini (باقة مجانية) · Deepgram (رصيد مجاني) · OpenAI — ورتّب بدائل لكل ميزة: لو موديل فشل بيجرّب اللي بعده.
 • لو مفيش خانة كتابة: النص بيظهر على الشاشة ويتنسخ ويتحفظ في السجل.
 • سجل لكل اللي اتكتب، ومدير للحافظة، وقاموس لأسماءك ومصطلحاتك.
 • موجة عائمة وقت التسجيل · وضع فاتح وغامق · واجهة عربي وEnglish.
@@ -77,7 +77,7 @@ python tools/store_package.py --no-build --register
 - بيفهم العامية المصرية
 - تحويل الكلام لبرومبت مرتّب
 - ترجمة عربي ⇄ إنجليزي
-- 4 مزوّدين واختيار الموديل
+- 4 مزوّدين وبدائل بالترتيب لكل ميزة
 - سجل وحافظة وقاموس على جهازك
 
 **كلمات البحث:** إملاء · تفريغ صوتي · صوت إلى نص · كتابة بالصوت · عامية مصرية · Arabic dictation · speech to text
@@ -91,8 +91,8 @@ python tools/store_package.py --no-build --register
 Emlaa turns your voice into text in any Windows app. Tap a hotkey, speak Arabic (or English), tap again — and your words are typed right at the cursor: in your browser, Word, WhatsApp, ChatGPT, Claude, or any text field.
 
 • Understands Egyptian Arabic and keeps technical terms in English (AI, API).
-• 3 modes, each on its own hotkey: Dictation (fixes punctuation and typos) · Prompt (turns speech into a clear, structured AI prompt) · Translate (Arabic ⇄ English).
-• Choose your provider: Groq (free and very fast) · Google Gemini (free tier) · Deepgram (free credit) · OpenAI — and pick the transcription model, with a clear recommendation score.
+• 4 features, each on a hotkey you record yourself: Dictation (fixes punctuation and typos) · Prompt (turns speech into a clear, structured AI prompt) · Translate (Arabic ⇄ English) · Edit selected text by voice.
+• Choose your provider: Groq (free and very fast) · Google Gemini (free tier) · Deepgram (free credit) · OpenAI — and order fallbacks per feature: if one model fails, the next one is tried.
 • No text field? The text pops up on screen, is copied to the clipboard and saved to history.
 • History of everything you dictated, a clipboard manager, and a dictionary for your names and terms.
 • Floating wave while recording · light and dark themes · Arabic and English interface.
@@ -106,7 +106,7 @@ Emlaa is completely free. It needs an API key from your chosen provider (Groq an
 - Understands Egyptian Arabic
 - Turn speech into a structured AI prompt
 - Arabic ⇄ English translation
-- 4 providers with model choice
+- 4 providers with per-feature ordered fallbacks
 - Local history, clipboard and dictionary
 
 **Search terms:** Arabic dictation · speech to text · voice typing · Egyptian Arabic · transcription · Whisper · إملاء
@@ -114,7 +114,7 @@ Emlaa is completely free. It needs an API key from your chosen provider (Groq an
 ### الصور
 ارفع الصور من `tools/store/screenshots/` (1366×768):
 1. `01-home-ar.png` — الرئيسية
-2. `02-models-ar.png` — اختيار الموديل بنسب الترشيح
+2. `02-models-ar.png` — ⚠ صورة قديمة لاختيار الموديل اللي اتشال: صوّر بدالها صفحة الإعدادات (تابات الميزات وقوايم البدائل) بنفس الاسم قبل النشر
 3. `03-history-ar.png` — السجل
 4. `04-home-en.png` — الواجهة بالإنجليزي
 5. `05-clipboard-en.png` — مدير الحافظة

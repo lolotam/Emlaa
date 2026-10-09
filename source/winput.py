@@ -360,6 +360,18 @@ def _kernel32():
     return _k32
 
 
+VK_LCONTROL = 0xA2      # Ctrl الشمال — ويندوز بيبعت واحد مزيّف (scanCode & 0x200) مع AltGr
+
+
+def keys_down(vks):
+    """الزراير الماسكة دلوقتي من الـvks دي (GetAsyncKeyState) — frozenset فاضي لو القراية فشلت."""
+    try:
+        u = _clipboard32()
+        return frozenset(vk for vk in vks if u.GetAsyncKeyState(vk) & 0x8000)
+    except Exception:
+        return frozenset()
+
+
 def foreground_hwnd():
     """HWND النافذة اللي قدام المستخدم — 0 لو مقدرناش نقراه."""
     try:

@@ -276,90 +276,237 @@ class TestEscCancel(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "start_hotkey بيستورد winput (ويندوز)")
 class TestStartHotkeyWiring(unittest.TestCase):
-    """التوصيل الحقيقي في core.start_hotkey بـListener مزيّف — مفيش hook ولا SendInput حقيقي."""
+    """
+    التوصيل الحقيقي في core.start_hotkey بـListener مزيّف: الفلتر (win32_event_filter) بيتنادى
+    بأحداث مزيّفة (vkCode/scanCode/dwExtraInfo)، وطابور الـdispatcher بيتفضّى بـdrain() في
+    نفس الثريد — مفيش hook ولا SendInput ولا كيبورد حقيقي.
+    """
 
-    def wire(self, mode, hotkey="alt_r"):
+    F7, F8, LCTRL, RCTRL, RALT, ESC, SCROLL = 0x76, 0x77, 0xA2, 0xA3, 0xA5, 0x1B, 0x91
+
+    class Suppressed(Exception):
+        pass
+
+    def wire(self, mode, normal=(0xA3,), prompt=(0xA2, 0x77), translate=(0xA5,), held=()):
         from unittest import mock
         import core
         from pynput import keyboard
         captured = {}
+        test = self
+        self.physical = set(held)       # الزراير الماسكة فعلًا — key() بيحدّثها
 
         class FakeListener:
-            def __init__(self, on_press, on_release, win32_event_filter=None):
-                captured.update(press=on_press, release=on_release, filt=win32_event_filter)
+            def __init__(self, win32_event_filter=None, **kw):
+                captured["filt"] = win32_event_filter
+                captured["kw"] = kw
                 self.daemon = False
 
             def start(self):
                 pass
 
+            def stop(self):
+                pass
+
+            def suppress_event(self):
+                raise test.Suppressed()
+
         app = core.App.__new__(core.App)
         app.recording, app.busy, app._listener = False, False, None
         app.begin, app.end, app.cancel = mock.Mock(), mock.Mock(), mock.Mock()
-        cfg = dict(core.CFG, hotkey_normal=hotkey, hotkey_prompt="f9", hotkey_translate="f10", mode=mode)
+        app.on_state = mock.Mock()
+        feats = {m: {"hotkey": list(v), "stt": [{"provider": "groq", "model": "w"}], "ai": []}
+                 for m, v in (("normal", normal), ("prompt", prompt), ("translate", translate),
+                              ("edit", ()))}
+        cfg = dict(core.CFG, features=feats, mode=mode)
         sent = []
         patches = [mock.patch.object(core, "CFG", cfg),
                    mock.patch.object(keyboard, "Listener", FakeListener),
+                   mock.patch.object(core.HotkeyDispatcher, "start", lambda self: None),
+                   mock.patch("winput.keys_down", side_effect=self.keys_down),
+                   mock.patch.object(core, "log_error"),
                    mock.patch("winput.send_vk", side_effect=lambda vk: sent.append(vk) or 2)]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         app.start_hotkey()
-        return app, captured, sent, keyboard
+        self.app, self.filt, self.sent, self.listener_kw = app, captured["filt"], sent, captured["kw"]
+        return app
 
-    def test_alt_mask_sends_unassigned_key_not_alt(self):
-        app, cb, sent, kb = self.wire("hold")
-        cb["press"](kb.Key.alt_r)
-        self.assertEqual(sent, [0xE8])          # VK_MASK — أبدًا Alt (164/165) نفسه
+    def keys_down(self, vks):
+        """GetAsyncKeyState زي ويندوز: الكود العام (Ctrl/Shift/Alt) ماسك لو أي جنب ماسك."""
+        generic = {0x10: (0xA0, 0xA1), 0x11: (0xA2, 0xA3), 0x12: (0xA4, 0xA5)}
+        state = set(self.physical) | {g for g, sides in generic.items() if self.physical & set(sides)}
+        return frozenset(v for v in vks if v in state)
+
+    def key(self, vk, down, extra=0, scan=0):
+        """حدث واحد من الـhook: بيرجّع True لو اتمنع عن البرامج التانية."""
+        import types
+        if down:
+            self.physical.add(vk)
+        else:
+            self.physical.discard(vk)
+        data = types.SimpleNamespace(vkCode=vk, scanCode=scan, dwExtraInfo=extra)
+        try:
+            result = self.filt(0x100 if down else 0x101, data)
+        except self.Suppressed:
+            return True
+        self.assertIs(result, False)      # pynput مبيبعتش لـcallbacks بتاعته خالص
+        return False
+
+    def drain(self):
+        self.app._dispatcher.drain()
+
+    def test_listener_gets_only_the_filter(self):
+        self.wire("toggle")
+        self.assertEqual(self.listener_kw, {})
+
+    def test_f7_toggle_tap_suppressed_and_begins(self):
+        app = self.wire("toggle", normal=(self.F7,))
+        self.assertTrue(self.key(self.F7, True))
+        self.assertTrue(self.key(self.F7, False))
+        self.drain()
         app.begin.assert_called_once_with(mode="normal")
+
+    def test_right_ctrl_tap_begins_and_is_not_suppressed(self):
+        app = self.wire("toggle")
+        self.assertFalse(self.key(self.RCTRL, True))
+        self.assertFalse(self.key(self.RCTRL, False))
+        self.drain()
+        app.begin.assert_called_once_with(mode="normal")
+
+    def test_ctrl_f8_hold_begins_and_ends_suppressing_only_f8(self):
+        app = self.wire("hold")
+        self.assertFalse(self.key(self.LCTRL, True))
+        self.assertTrue(self.key(self.F8, True))
+        self.drain()
+        app.begin.assert_called_once_with(mode="prompt")
+        app.recording = True
+        self.assertTrue(self.key(self.F8, False))
+        self.assertFalse(self.key(self.LCTRL, False))
+        self.drain()
+        app.end.assert_called_once()
+
+    def test_injected_event_neither_queued_nor_suppressed(self):
+        import winput
+        app = self.wire("toggle", normal=(self.F7,))
+        self.assertFalse(self.key(self.F7, True, extra=winput.EMLAA_TAG))
+        self.assertFalse(self.key(self.F7, False, extra=winput.EMLAA_TAG))
+        self.drain()
+        app.begin.assert_not_called()
+
+    def test_altgr_fake_ctrl_ignored_and_right_alt_begins_with_mask(self):
+        app = self.wire("hold")
+        self.assertFalse(self.key(self.LCTRL, True, scan=0x21D))   # Ctrl المزيّف بتاع AltGr
+        self.assertFalse(self.key(self.RALT, True))
+        self.drain()
+        app.begin.assert_called_once_with(mode="translate")
+        self.assertEqual(self.sent, [0xE8])                         # VK_MASK — أبدًا Alt نفسه
+
+    def test_ctrl_held_when_listener_starts_does_not_block_hotkeys_after_release(self):
+        # ويندوز بيقول إن Ctrl العام (0x11) ماسك كمان، بس الـhook بيبعت تسيب Ctrl الشمال بس
+        self.wire("toggle", normal=(self.F7,), held=(self.LCTRL,))
+        self.key(self.LCTRL, False)
+        self.key(self.F7, True)
+        self.key(self.F7, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
+
+    def test_modifier_release_lost_on_secure_desktop_does_not_block_hotkeys(self):
+        # Ctrl+Alt+Del / Win+L: الدوسة وصلت للـhook والتسيب ماوصلش
+        self.wire("toggle", normal=(self.F7,))
+        self.key(self.LCTRL, True)
+        self.physical.discard(self.LCTRL)
+        self.key(self.F7, True)
+        self.key(self.F7, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
+
+    def test_lost_modifier_release_does_not_block_a_modifier_only_hotkey(self):
+        # Win+L وبعده فتح القفل: تسيب Win ماوصلش — Ctrl اليمين لوحده لازم يفضل شغّال
+        self.wire("toggle", normal=(self.RCTRL,))
+        self.key(0x5B, True)
+        self.physical.discard(0x5B)
+        self.key(self.RCTRL, True)
+        self.key(self.RCTRL, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
+
+    def test_alt_and_win_combos_and_bare_win_send_the_mask_key(self):
+        # من غير الـmask البرنامج بيشوف Alt/Win لوحده (F8 اتمنع) فبيفتح القايمة أو Start
+        import winput
+        for hotkey in ((0xA4, self.F8), (0x5B, self.F8), (0x5B,)):
+            with self.subTest(hotkey=hotkey):
+                self.wire("toggle", normal=hotkey)
+                for vk in hotkey:
+                    self.key(vk, True)
+                self.drain()
+                self.assertIn(winput.VK_MASK, self.sent)
+
+    def test_ctrl_combo_sends_no_mask_key(self):
+        self.wire("toggle", normal=(self.LCTRL, self.F8))
+        self.key(self.LCTRL, True)
+        self.key(self.F8, True)
+        self.drain()
+        self.assertEqual(self.sent, [])
+
+    def test_initially_held_ctrl_makes_f7_a_different_hotkey(self):
+        app = self.wire("toggle", normal=(self.F7,), held=(self.LCTRL,))
+        self.assertFalse(self.key(self.F7, True))                   # Ctrl+F7 مش زرار حد
+        self.key(self.F7, False)
+        self.drain()
+        app.begin.assert_not_called()
 
     def test_hold_chord_cancels(self):
-        app, cb, sent, kb = self.wire("hold", hotkey="ctrl_r")
-        cb["press"](kb.Key.ctrl_r)
+        app = self.wire("hold")
+        self.key(self.RCTRL, True)
+        self.drain()
         app.recording = True
-        cb["press"](kb.KeyCode.from_char("c"))
+        self.key(0x43, True)                                          # C
+        self.drain()
         app.cancel.assert_called_once()
 
-    def test_filter_ignores_only_our_tagged_events(self):
-        import winput
-        _, cb, _, _ = self.wire("toggle")
-
-        class Data:
-            def __init__(self, extra):
-                self.dwExtraInfo = extra
-        self.assertFalse(cb["filt"](0x100, Data(winput.EMLAA_TAG)))
-        self.assertTrue(cb["filt"](0x100, Data(0)))
-
-    def test_lock_hotkey_restored_once_per_press_even_with_auto_repeat(self):
-        app, cb, sent, kb = self.wire("toggle", hotkey="scroll_lock")
-        for _ in range(3):                      # دوسة + تكرار تلقائي
-            cb["press"](kb.Key.scroll_lock)
-        cb["release"](kb.Key.scroll_lock)
-        self.assertEqual(sent, [0x91])          # دوسة استرجاع واحدة بس
-        app.begin.assert_called_once_with(mode="normal")
-
-    def test_esc_cancels_when_recording_toggle(self):
-        app, cb, sent, kb = self.wire("toggle", hotkey="ctrl_r")
-        app.recording = True
-        cb["press"](kb.Key.esc)
-        app.cancel.assert_called_once()
-
-    def test_esc_cancels_when_recording_hold(self):
-        app, cb, sent, kb = self.wire("hold", hotkey="ctrl_r")
-        cb["press"](kb.Key.ctrl_r)
-        app.recording = True
-        cb["press"](kb.Key.esc)
-        app.cancel.assert_called_once()
+    def test_esc_cancels_when_recording(self):
+        for mode in ("toggle", "hold"):
+            app = self.wire(mode)
+            app.recording = True
+            self.key(self.ESC, True)
+            self.drain()
+            app.cancel.assert_called_once()
 
     def test_esc_idle_does_nothing(self):
-        app, cb, sent, kb = self.wire("toggle", hotkey="ctrl_r")
-        cb["press"](kb.Key.esc)
+        app = self.wire("toggle")
+        self.key(self.ESC, True)
+        self.key(self.ESC, False)
+        self.drain()
         app.begin.assert_not_called()
-        app.end.assert_not_called()
         app.cancel.assert_not_called()
 
-    def test_esc_as_hotkey_still_begins(self):
-        app, cb, sent, kb = self.wire("toggle", hotkey="esc")
-        cb["press"](kb.Key.esc)
-        cb["release"](kb.Key.esc)
-        app.cancel.assert_not_called()
+    def test_scroll_lock_trigger_is_suppressed_and_begins(self):
+        # الزرار متمنوع فمبيقلبش حالة Scroll Lock — مفيش دوسة استرجاع
+        app = self.wire("toggle", normal=(self.SCROLL,))
+        self.assertTrue(self.key(self.SCROLL, True))
+        self.assertTrue(self.key(self.SCROLL, True))                # تكرار تلقائي
+        self.assertTrue(self.key(self.SCROLL, False))
+        self.drain()
         app.begin.assert_called_once_with(mode="normal")
+        self.assertEqual(self.sent, [])
+
+    def test_action_error_reported_and_next_event_still_processed(self):
+        app = self.wire("toggle")
+        app.begin.side_effect = [RuntimeError("mic"), None]
+        for _ in range(2):
+            self.key(self.RCTRL, True)
+            self.key(self.RCTRL, False)
+            self.drain()
+        self.assertEqual(app.begin.call_count, 2)
+        self.assertEqual(app.on_state.call_args_list[0].args[0], "err")
+
+    def test_restart_drops_events_queued_for_the_old_engine(self):
+        app = self.wire("toggle")
+        old = app._dispatcher
+        self.key(self.RCTRL, True)
+        self.key(self.RCTRL, False)
+        app.restart_hotkey()
+        self.assertIsNot(app._dispatcher, old)
+        old.drain()
+        app.begin.assert_not_called()

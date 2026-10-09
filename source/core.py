@@ -21,6 +21,7 @@ import wave
 import tempfile
 import threading
 import collections
+import queue
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -36,6 +37,7 @@ except Exception:
 
 import providers
 import smart     # القرارات النقية (تخطّي الردود القصيرة F2…) — core بيستورد smart، مش العكس
+import chains    # قوايم الميزات: كل وضع بيمشي على قايمة تفريغ وقايمة معالجة
 import offline   # F9: تفريغ من غير إنترنت — مسار بديل من غير مفتاح ولا شبكة (بيتستورد core جوّه دواله بس)
 
 # ── مسار البيانات ────────────────────────────────────────────────────────────
@@ -194,6 +196,14 @@ DEFAULTS = {
     "lang":              "ar",      # لغة الواجهة: ar / en
     "history_keep_last10": True,    # السجل بيحتفظ بآخر 10 تسجيلات بس والأقدم بيتمسح
 }
+# الإعدادات الافتراضية للميزات (Groq لكل حاجة بترتيب النهارده) — ثابتة ومن غير قراية
+# مفاتيح، عشان أي CFG مبني من DEFAULTS يبقى فيه features. ملف المستخدم اللي مفيهوش
+# features بيترحّل في load_config من إعداداته هو، مش من دول.
+DEFAULTS["features"] = smart.default_features(
+    DEFAULTS, {p: ["-"] for p in providers.ORDER}, None,
+    {p: providers.stt_order(p) for p in providers.ORDER},
+    {p: providers.chat_models(p) for p in providers.ORDER})
+DEFAULTS["features_custom"] = False
 
 SR = 16000          # 16kHz mono — الأنسب لموديلات التفريغ
 HISTORY_PATH = os.path.join(BASE, "history.json")
@@ -692,14 +702,67 @@ def asset(name):
 # ── الإعدادات ────────────────────────────────────────────────────────────────
 def load_config():
     cfg = dict(DEFAULTS)
+    raw = {}
     if os.path.exists(CFG_PATH):
         try:
-            cfg.update(json.load(open(CFG_PATH, encoding="utf-8")))
+            loaded = json.load(open(CFG_PATH, encoding="utf-8"))
+            raw = loaded if isinstance(loaded, dict) else {}
         except Exception:
             pass
-    if not cfg.get("hotkey_normal") and cfg.get("hotkey"):
-        cfg["hotkey_normal"] = cfg["hotkey"]
+    cfg.update(raw)
+    # الملف القديم جدًا فيه "hotkey" بس: الافتراضي (ctrl_r) مايغطّيش على زرار المستخدم
+    if raw.get("hotkey") and not raw.get("hotkey_normal"):
+        cfg["hotkey_normal"] = raw["hotkey"]
+    if smart.validate_features(raw.get("features")) is not None:
+        # الترحيل بيتحسب بس — عمره ما بيتكتب هنا: ملف اتقرا غلط ميتكتبش فوقه، واستيراد
+        # core (في الاختبارات) ميلمسش الملف. أول «حفظ» من الإعدادات هو اللي بيحفظه.
+        cfg["features"] = migrated_features(cfg)
+        cfg["features_custom"] = False
     return cfg
+
+
+def migrated_features(cfg, pools=None):
+    """pools: المفاتيح اللي يتحسب على أساسها (افتراضي: .env) — الكلاسيك بيبعت مفتاح لسه ماتكتبش."""
+    if pools is None:
+        try:
+            pools = providers.read_key_pools(ENV_PATH)
+        except Exception:
+            pools = {}
+    try:
+        local = offline.installed()
+    except Exception:
+        local = None
+    models = cfg.get("models") or {}
+    return smart.default_features(
+        cfg, pools, local,
+        {p: providers.stt_order(p, models.get(p)) for p in providers.ORDER},
+        {p: providers.chat_models(p) for p in providers.ORDER})
+
+
+def feature(mode):
+    """إعدادات ميزة (زرارها وقايمة التفريغ وقايمة المعالجة) من CFG الحالي."""
+    return (CFG.get("features") or DEFAULTS["features"])[mode]
+
+
+_UNSET = object()
+
+
+def can_run(cfg=None, pools=None, local=_UNSET):
+    """
+    البرنامج يقدر يفرّغ؟ — فيه ميزة عندها عنصر تفريغ ينفع دلوقتي: مزوّد ليه مفتاح،
+    أو الموديل المحلي متثبّت. ده اللي بيقرر تشغيل المحرك والحفظ ومسح آخر مفتاح.
+    """
+    cfg = CFG if cfg is None else cfg
+    if pools is None:
+        pools = providers.read_key_pools(ENV_PATH)
+    if local is _UNSET:
+        local = offline.installed()
+    for f in (cfg.get("features") or {}).values():
+        for item in f.get("stt") or []:
+            pid = item.get("provider")
+            if (pid == smart.LOCAL and local) or (pid != smart.LOCAL and pools.get(pid)):
+                return True
+    return False
 
 
 
@@ -1219,6 +1282,134 @@ class Operation:
     probe: dict = field(default_factory=dict, compare=False)
 
 
+# قايمة معالجة فاضية = اختيار (خصوصية): الكلام اتكتب زي ما اتقال، والتعديل مايشتغلش
+NO_AI_MSG = "اتفرّغ بس — الميزة دي مالهاش موديل معالجة (ضيفه من الإعدادات)"
+EDIT_NO_AI_MSG = "التعديل محتاج موديل معالجة — ضيفه من تاب «تعديل» في الإعدادات"
+
+CAPTURE_TIMEOUT_ERR = "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار"
+
+
+def capture_keys(count, timeout=10.0, listener_factory=None, clock=time.monotonic,
+                 sleep=time.sleep, release_cap=3.0):
+    """
+    بيسجّل زرار التسجيل من الكيبورد (count = ١ أو ٢) ويرجّع {ok, keys, label} أو {ok, err}.
+    الزراير اللي اتداست جوّه الجلسة بس هي اللي بتتسجّل وبتتمنع عن البرامج التانية؛ الماسكة
+    من قبل (حتى تكرارها) بتعدّي. في كل الخروجات (نتيجة/غلط/Esc/مهلة) المستمع بيفضل لحد ما
+    زرايرنا تتساب (لحد release_cap) — غير كده البرنامج يستلم تسيب زرار ما استلمش دوسته.
+    """
+    import winput
+    session = smart.CaptureSession(count, initially_down=winput.keys_down(range(1, 0xFF)))
+    box = {}
+
+    def win32_event_filter(msg, data):
+        if data.dwExtraInfo == winput.EMLAA_TAG:
+            return False
+        vk = data.vkCode
+        fake_ctrl = vk == winput.VK_LCONTROL and bool(data.scanCode & 0x200)
+        if session.event(vk, msg in (0x100, 0x104), fake_ctrl):
+            box["listener"].suppress_event()
+        return False
+
+    if listener_factory is None:
+        from pynput import keyboard
+
+        def listener_factory(filt):
+            return keyboard.Listener(win32_event_filter=filt)
+
+    listener = listener_factory(win32_event_filter)
+    box["listener"] = listener
+    listener.start()
+    try:
+        deadline = clock() + timeout
+        while not session.decided and clock() < deadline:
+            sleep(0.02)
+        cap = clock() + release_cap
+        while session.captured_down() and clock() < cap:
+            sleep(0.02)
+    finally:
+        listener.stop()
+    if session.cancelled:
+        return {"ok": False, "err": "اتلغى"}
+    if session.error:
+        return {"ok": False, "err": session.error}
+    if not session.result:
+        return {"ok": False, "err": CAPTURE_TIMEOUT_ERR}
+    return {"ok": True, "keys": list(session.result),
+            "label": smart.hotkey_label(session.result, CFG.get("lang", "ar"))}
+
+
+class HotkeyDispatcher:
+    """
+    بيشغّل قرارات زراير التسجيل بترتيب وصول الأحداث، على ثريد لوحده برّه الـhook.
+    كل start_hotkey بيعمل واحد جديد؛ stop() بيقفل القديم فأي حدث فاضل في طابوره
+    مبيتنفّذش (إعادة تشغيل الزراير مبتشغّلش دوسة اتداست على الإعدادات القديمة).
+    غلط في أي إجراء بيتسجّل ويتعرض والثريد بيكمّل — الـhook لسه بيمنع زراير فلازم
+    حد يفضل يشغّلها.
+    """
+    _STOP = object()
+
+    def __init__(self, logic, app):
+        self._logic = logic
+        self._app = app
+        self._queue = queue.Queue()
+        self._stopped = False
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def put(self, vk, is_press, now, held):
+        if not self._stopped:
+            self._queue.put((vk, is_press, now, held))
+
+    def stop(self):
+        self._stopped = True
+        self._queue.put(self._STOP)
+
+    def drain(self):
+        """للاختبارات: بيفضّي الطابور في نفس الثريد."""
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            if item is self._STOP or self._stopped:
+                return
+            self._apply(*item)
+
+    def _run(self):
+        while True:
+            item = self._queue.get()
+            if item is self._STOP or self._stopped:
+                return
+            self._apply(*item)
+
+    def _apply(self, vk, is_press, now, held):
+        import winput
+        app = self._app
+        try:
+            if is_press:
+                acts = self._logic.press(vk, now, app.recording, app.busy, held=held)
+            else:
+                acts = self._logic.release(vk, now, app.recording, app.busy)
+            for act in acts:
+                if act == "mask":
+                    winput.send_vk(winput.VK_MASK)
+                elif act == "end":
+                    app.end()
+                elif act == "cancel":
+                    app.cancel()
+                elif act.startswith("begin:"):
+                    app.begin(mode=act[len("begin:"):])
+        except Exception as e:
+            log_error(e, "hotkey")
+            try:
+                app.recording = False
+                app._active_key = None
+                app.on_state("err", friendly_error(e))
+            except Exception:
+                pass
+
+
 class App:
     """
     الواجهة بترث منه وبتعمل override لـ on_state / on_text عشان تعرض الحالة.
@@ -1238,26 +1429,28 @@ class App:
         self._client = None
         self._client_sig = None
         self._listener = None
+        self._dispatcher = None
+        self.capturing = False                  # بنسجّل زرار من الإعدادات — مفيش تسجيل صوت
+        self._hotkey_restart_pending = False
 
-    # ── العميل بيتبني حسب المزوّد المختار، وبيتعاد بناؤه لو اتغيّر ──
-    def client(self):
-        pid = CFG.get("provider", providers.DEFAULT)
+    # ── عميل كل ميزة (قايمة التفريغ + قايمة المعالجة)، وبيتعاد بناؤه لو اتغيّر ──
+    def client(self, mode="normal"):
+        """
+        عميل الميزة (قايمة التفريغ + قايمة المعالجة) — واحد لكل وضع ومخزّن. التوقيع فيه
+        إعدادات الميزة ومفاتيح كل مزوّد بقيمتها: إضافة مفتاح أو مسحه لنفس المزوّد بتعيد البناء.
+        """
         pools = providers.read_key_pools(ENV_PATH)
-        keys = providers.read_keys(ENV_PATH)
-        pool = pools.get(pid, [])
-        key = keys.get(pid, "")
-        model = (CFG.get("models") or {}).get(pid)
-        # المزوّد اللي بيفرّغ بس (Deepgram) بيستعين بأول مزوّد تاني ليه مفتاح للتنظيف والترجمة
-        hid = None
-        if not providers.meta(pid).get("chat"):
-            hid = next((h for h in providers.CHAT_HELPERS if pools.get(h)), None)
-        # الكاش بيشمل المجمّعات كلها — لو اتغيّر أي مفتاح بيتعاد بناء العميل
-        sig = (pid, tuple(pool), model, hid, tuple(pools.get(hid) or []) if hid else None)
-        if self._client is None or self._client_sig != sig:
-            helper = providers.Client(hid, keys.get(hid), keys=pools.get(hid)) if hid else None
-            self._client = providers.Client(pid, key, model=model, keys=pool, helper=helper)
-            self._client_sig = sig
-        return self._client
+        feat = feature(mode)
+        sig = (json.dumps(feat, sort_keys=True),
+               tuple(sorted((pid, tuple(keys)) for pid, keys in pools.items())))
+        cache, sigs = self._client, self._client_sig
+        if cache is None or sigs is None:
+            cache, sigs = {}, {}
+            self._client, self._client_sig = cache, sigs
+        if sigs.get(mode) != sig:
+            cache[mode] = chains.FeatureClient(feat, pools)
+            sigs[mode] = sig
+        return cache[mode]
 
     def reset_client(self):
         self._client = None
@@ -1288,10 +1481,14 @@ class App:
         # F5: اسم البرنامج بيتقعد على العملية قبل القفل — هو اللي هيحدد أسلوب
         # السياق (dev/chat/formal) وقت التنظيف، ومبيغادرش يتغيّر في نص الدورة.
         target_app = (_foreground_app() or "").strip().lower()
+        if mode == "edit" and not feature("edit").get("ai") and not (self.recording or self.busy):
+            # من غير موديل مفيش تعديل — منسجّلش ولا نلمس التحديد على الفاضي
+            self.on_state("err", EDIT_NO_AI_MSG)
+            return
         with self._state_lock:
             # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
             # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
-            if self.recording or self.busy:
+            if self.recording or self.busy or getattr(self, "capturing", False):
                 return
             self.recording = True
             self.active_mode = mode
@@ -1321,6 +1518,7 @@ class App:
                 self.recording = False
                 self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
+            self._apply_pending_hotkeys()
             return
         # F1: فتح الميك ممكن ياخد وقت (ريكونكت)، وجوّه الوقت ده end()/cancel()
         # بيقدروا يقفلوا recording ويشيلوا _op. بنفحص تاني جوّه القفل إن الدورة
@@ -1365,6 +1563,7 @@ class App:
             self.recording = False
             self._op = None
         self.on_state("err", msg)
+        self._apply_pending_hotkeys()
 
     def _begin_edit(self, op):
         """
@@ -1453,10 +1652,12 @@ class App:
             log_error(e, "recorder/stop")
             self._set_busy(False)             # مفيش worker بدأ — الحجز اتأخد على الفاضي فبيترجّع
             self.on_state("err", "مشكلة في قراية الصوت — جرّب تاني")
+            self._apply_pending_hotkeys()
             return
         if not wav:
             self._set_busy(False)             # نفس السبب: مفيش عملية هتبدأ فالحجز بيتترجّع
             self.on_state("ready", "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف")
+            self._apply_pending_hotkeys()
             return
         threading.Thread(target=self.process, args=(wav, op), daemon=True).start()
 
@@ -1483,6 +1684,7 @@ class App:
             except Exception as e:
                 log_error(e, "recorder/cancel")
         self.on_state("ready", "اتلغى التسجيل")
+        self._apply_pending_hotkeys()
 
     def process(self, wav, op):
         # busy اتحجز بالفعل في end() (قبل ما الثريد ده يبدأ) — هنا بنفكّه
@@ -1518,45 +1720,23 @@ class App:
             # على العربي — Whisper المجبر على "ar" بيترجم الكلام الإنجليزي («How are you» ←
             # «كيف تتعرّف؟»)، والبرومبت كان عمره ما بيوصله طلب إنجليزي. التعديل بالصوت ليه مساره.
             lang = None
-            # F9: مسار offline — "always" بيفرّغ من غير ما نبني Client خالص (من غير مفتاح)،
-            # و"fallback" بيرجع للموديل المحلي بس لو النت وقع والموديل مثبّت.
-            # N1: "always" = وضع خصوصية — الصوت عمره ما يروح لأي مزوّد. لو الموديل
-            # مش متثبّت منبنيش Client ولا ننادي مزوّد، نرفض على طول (من غير سجل/حافظة).
-            offline_used = False
-            offline_model = None
-            if CFG.get("offline_mode") == "always":
-                if not offline.installed():
-                    self.on_state("err", "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات")
-                    return
-                offline_used = True
-                offline_model = offline.installed()
-                text = offline.transcribe(wav, lang)
-            else:
-                cl = self.client()
-                cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-                # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
-                # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
-                cl.vocab_extra = [str(s.get("trigger") or "").strip()
-                                  for s in (CFG.get("snippets") or [])
-                                  if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
-                try:
-                    text = cl.transcribe(wav, lang)
-                except Exception as e:
-                    if smart.is_network_error(e) and offline.installed():
-                        offline_used = True
-                        offline_model = offline.installed()
-                        text = offline.transcribe(wav, lang)
-                    else:
-                        raise
+            # كل ميزة ليها قايمة تفريغ بالترتيب (مزوّدين و/أو الموديل المحلي) — FeatureClient
+            # بيجرّب الأول ولو فشل بأي سبب بينقل للي بعده؛ "محلي" أول القايمة = من غير نت خالص.
+            cl = self.client(cur_mode)
+            cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+            # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
+            # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
+            cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                              for s in (CFG.get("snippets") or [])
+                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+            text = cl.transcribe(wav, lang)
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
-            # بعد تفريغ offline الموديل (LLM) عمره ما بيتنادي. البرومبت والترجمة محتاجين نت
-            # فبيتسلّموا للمستخدم؛ العادي بيكمّل في نفس مسار الكتابة تحت بالنص الخام —
-            # عشان قواعد الباسورد والحقن والسجل تفضل في مكان واحد
-            if offline_used and cur_mode != "normal":
-                self._offline_handoff(wav, op, text, dur, offline_model, early_secure)
-                return
+            # خام = مفيش معالجة بالـAI ولا تنضيف محلي: «تفريغ حرفي» من جنب الساعة، أو
+            # قايمة معالجة العادي فاضية. قايمة المعالجة بتشتغل مهما كان مين فرّغ — المحلي
+            # أول القايمة اختيار (خصوصية/سرعة) مش «مفيش نت».
+            raw = not CFG.get("polish", True) or not feature(cur_mode).get("ai")
 
             bypass = False
             snippet = None
@@ -1567,11 +1747,9 @@ class App:
                 # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
                 # يندسّ في خانة باسورد.
                 out = text
-            elif offline_used:
-                # offline (الوضع العادي بس — البرومبت/الترجمة اتسلّموا فوق): مفيش لفة
-                # موديل، بس توسيع الاختصار محلي بالكامل فبيشتغل زي ما هو أونلاين
-                snippet = smart.match_snippet(text, CFG.get("snippets"))
-                out = snippet.get("text", "") if snippet is not None else text
+            elif not feature(cur_mode).get("ai") and cur_mode in ("prompt", "translate"):
+                # قايمة المعالجة فاضية: الكلام زي ما اتقال — ولا نداء لأي موديل
+                out = text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
@@ -1586,7 +1764,7 @@ class App:
                 snippet = smart.match_snippet(text, CFG.get("snippets"))
                 if snippet is not None:
                     out = snippet.get("text", "")
-                elif CFG.get("polish", True):
+                elif not raw:
                     if smart.should_bypass(text, cur_mode, CFG):
                         # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
                         # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
@@ -1620,8 +1798,8 @@ class App:
             # بايتاته خطر. التصنيف ماشي عليه زي ما هو: مبنصنّفش تاني، بنغيّر
             # النص المتحقن بس ونسّيبه على سياسة الأسطر الأصلية.
             # ومن غير خانات الباسورد: أي تعديل في الترقيم هناك بيغيّر الباسورد نفسه
-            if (cur_mode == "normal" and CFG.get("polish", True)
-                    and snippet is None and not offline_used
+            if (cur_mode == "normal" and not raw
+                    and snippet is None
                     and not smart.is_dev_app(op.target_app, CFG)
                     and target[0] not in ("terminal", "secure")):
                 out = smart.fix_mixed(out)
@@ -1632,8 +1810,7 @@ class App:
                 # الكامل — عشان المستخدم يعرف إن اللي اتكتب ده كان اختصار مش إملاء.
                 history_result = ("[اختصار] " + str(snippet.get("trigger") or "")) if snippet is not None else out
                 # engine بعد نداء الموديل — غير كده السجل مايعرفش موديل التنضيف
-                engine = ({"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
-                          if offline_used else cl.engine())
+                engine = cl.engine()
                 rid = history_add(cur_mode, text, history_result, dur, engine=engine,
                                   bypass=bypass, app=op.target_app)
                 self.on_text(out)
@@ -1655,7 +1832,15 @@ class App:
             # "err" فوق فمينفعش يتغطى بـ"done". الخانة الآمنة لو الكتابة فشلت: "err"
             # من غير "done" — مفيش حافظة تلزق منها، المستخدم لازم يكتبها بنفسه.
             if res == "placed" or res == "handoff" or (not secure and res == "failed"):
-                self.on_state("done", "اتفرّغ من غير إنترنت (من غير تحسين)" if offline_used else cur_mode)
+                # البرومبت/الترجمة ومفيش ولا عنصر معالجة رد (نت/كوتا/مفاتيح): الكلام اتكتب
+                # زي ما اتقال — الحالة لازم تقول كده بدل ما تدّعي إن التحويل حصل
+                converting = cur_mode in ("prompt", "translate") and not early_secure
+                if converting and not feature(cur_mode).get("ai"):
+                    self.on_state("done", NO_AI_MSG)
+                elif converting and not cl.ai_ok:
+                    self.on_state("done", "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال")
+                else:
+                    self.on_state("done", cur_mode)
             elif secure and res == "failed":
                 self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:
@@ -1667,30 +1852,12 @@ class App:
                 os.remove(wav)
             except Exception:
                 pass
+            self._apply_pending_hotkeys()
 
-    def _offline_handoff(self, wav, op, text, dur, offline_model, early_secure):
-        """
-        F9: برومبت/ترجمة بعد تفريغ offline — التحويل نفسه محتاج نت، فالنص الخام بيتعرض
-        بزرار نسخ بدل ما يتكتب (وبيتنسخ لو auto_paste مقفول، زي paste_text). من غير خانات
-        الباسورد: نصها عمره ما يروح للحافظة ولا السجل.
-        """
-        if early_secure:
-            self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
-            return
-        # N2: فحص أخير للفوكس قبل أي نسخ/عرض/سجل — نفس قراية process المتأخرة.
-        # الفوكس ممكن يكون اتنقل لخانة باسورد بعد التفريغ، فنرفض من غير ما نلمس حاجة.
-        import winput
-        if winput.focused_info().get("is_password") is True:
-            self.on_state("err", "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
-            return
-        engine = {"stt": "offline", "stt_model": "whisper.cpp " + (offline_model or "")}
-        cur_mode = op.mode
-        if not CFG.get("auto_paste", True) and _copy_owned(text) is None:
-            self.on_state("err", "مقدرتش أنسخ النص — جرّب تاني")
-            return
-        self.on_unplaced(text)
-        history_add(cur_mode, text, text, dur, engine=engine, app=op.target_app)
-        self.on_state("done", "اتفرّغ بس — التحويل محتاج إنترنت")
+    def _apply_pending_hotkeys(self):
+        """زراير اتحفظت وقت عملية — بتتطبّق أول ما العملية تخلص."""
+        if getattr(self, "_hotkey_restart_pending", False) and not self.recording and not self.busy:
+            self.restart_hotkey()
 
     def _process_edit(self, wav, op):
         """
@@ -1706,12 +1873,7 @@ class App:
         if _probe_password_seen(op):
             self.on_state("err", "مينفعش تعديل خانة باسورد")
             return
-        # F9/N1: التعديل في المكان بيحتاج الموديل (LLM) — وضع offline دايمًا مينفعش
-        # معاه سواء الموديل متثبّت ولا لأ: مينفعش نبني Client ولا ننادي أي مزوّد.
-        if CFG.get("offline_mode") == "always":
-            self.on_state("err", "التعديل محتاج إنترنت")
-            return
-        cl = self.client()
+        cl = self.client("edit")
         cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
         cl.vocab_extra = [str(s.get("trigger") or "").strip()
                           for s in (CFG.get("snippets") or [])
@@ -1721,16 +1883,10 @@ class App:
                 dur = w.getnframes() / float(w.getframerate())
         except Exception:
             dur = None
-        try:
-            # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه
-            instruction = cl.transcribe(wav, None)
-        except Exception as e:
-            # F9: النت وقع والموديل المحلي موجود — التفريغ ممكن يتعمل، بس التعديل
-            # نفسه محتاج الموديل، فنرفض من غير ما نلمس التحديد ولا نحقن حاجة.
-            if smart.is_network_error(e) and offline.installed():
-                self.on_state("err", "التعديل محتاج إنترنت")
-                return
-            raise
+        # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه.
+        # التفريغ بيمشي على قايمة تاب «تعديل»؛ لو اتفرّغ محلي والمعالجة ماوصلتش لحد،
+        # edit() بيرجّع None والتحديد بيفضل زي ما هو (تحت).
+        instruction = cl.transcribe(wav, None)
         if not instruction:
             self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
             return
@@ -1764,120 +1920,82 @@ class App:
 
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
+        """
+        زراير التسجيل من features: الـhook (win32_event_filter) بيقرر في نفس اللحظة نمنع
+        الحدث ولا لأ (HotkeyFilter — نفس مطابقة التشغيل)، وبيحط الحدث في طابور. ثريد
+        الـdispatcher بيشغّل المنطق بالترتيب برّه الـhook (الـhook ليه وقت قليل جدًا من
+        ويندوز). callbacks بتاعة pynput مش مستخدمة: الطابور هو المسار الوحيد المرتّب.
+        """
         from pynput import keyboard
-        import winput   # آثار جانبية Win32 (mask/مفاتيح القفل) — جوّه الدالة عشان
+        import winput   # آثار جانبية Win32 (mask/حالة الزراير) — جوّه الدالة عشان
                        # ماتستورداش في مستوى موديول core (وsmart مالمسهاش خالص)
 
-        def _parse_key(val):
-            if not val:
-                return None
-            s = str(val).lower().strip()
-            try:
-                return keyboard.Key[s]
-            except KeyError:
-                try:
-                    return keyboard.KeyCode.from_char(s)
-                except Exception:
-                    return None
-
-        hk_normal = CFG.get("hotkey_normal") or CFG.get("hotkey") or "ctrl_r"
-        hk_prompt = CFG.get("hotkey_prompt") or "alt_r"
-        hk_trans  = CFG.get("hotkey_translate") or "shift_r"
-        hk_edit   = CFG.get("hotkey_edit") or ""        # F6: "" = مقفول
-        mode_type = CFG.get("mode", "hold")
-
-        key_map = {}
-        k_norm = _parse_key(hk_normal)
-        k_prmt = _parse_key(hk_prompt)
-        k_trns = _parse_key(hk_trans)
-        k_edit = _parse_key(hk_edit)
-
-        if k_norm: key_map[k_norm] = "normal"
-        if k_prmt: key_map[k_prmt] = "prompt"
-        if k_trns: key_map[k_trns] = "translate"
-        if k_edit: key_map[k_edit] = "edit"
-
+        feats = CFG.get("features") or DEFAULTS["features"]
+        matcher = smart.HotkeyMatcher({m: smart.hotkey_from_vks(feats[m].get("hotkey"))
+                                       for m in smart.FEATURES if m in feats})
+        logic = smart.HotkeyLogic(matcher, CFG.get("mode", "toggle"), alt_keys=smart.MASKED_MODIFIER_VKS,
+                                  cancel_keys={smart.VK_ESCAPE})
+        # Ctrl الماسك من قبل ما المستمع يبدأ لازم يتحسب: غير كده F7 يتقري F7 مش Ctrl+F7
+        filt = smart.HotkeyFilter(matcher, initially_down=winput.keys_down(smart.SIDE_MODIFIER_VKS),
+                                  is_down=lambda vk: bool(winput.keys_down((vk,))))
+        dispatcher = HotkeyDispatcher(logic, self)
+        dispatcher.start()
+        self._dispatcher = dispatcher
         self._active_key = None
-
-        # أي زرار من الأربعة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
-        # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
-        # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
-        ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
-        LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
-                    "scroll_lock": winput.VK_SCROLL_LOCK}
-        alt_keys, lock_vks = set(), {}
-        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans), (k_edit, hk_edit)):
-            if not k:
-                continue
-            s = str(raw).lower().strip()
-            if s in ALT_NAMES:
-                alt_keys.add(k)
-            if s in LOCK_VKS:
-                lock_vks[k] = LOCK_VKS[s]
-
-        # القرار نفسه (toggle: دوسة نضيفة / hold: دوسة-تسيب + أي زرار تاني
-        # وقت التسجيل = cancel) بقى جوّه smart.HotkeyLogic — مبسوط هنا
-        # عشان الاختبار من غير pynput ولا ويندوز.
-        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys,
-                                  cancel_keys={keyboard.Key.esc})
-        # مفاتيح قفل اتداست ولسه ماتسابتش. كل دوسة حقيقية على Caps/Scroll Lock بتقلب
-        # الحالة مرة واحدة بالظبط (التكرار التلقائي مابيقلبهاش)، فعند التسيب بنرجّعها
-        # بدوسة واحدة. مش بنقارن GetKeyState قبل وبعد: من ثريد الـhook الحالة بتبان
-        # متقلبة من وقت الدوسة نفسها، فالمقارنة كانت دايمًا «متغيرتش» (اتجرّب فعليًا).
-        locks_down = set()
-
-        def guard(fn):
-            def wrapped(key):
-                try:
-                    fn(key)
-                except Exception as e:
-                    log_error(e, "hotkey")
-                    try:
-                        self.recording = False
-                        self._active_key = None
-                        self.on_state("err", friendly_error(e))
-                    except Exception:
-                        pass
-            return wrapped
-
-        @guard
-        def on_press(key):
-            now = time.time()
-            if key in lock_vks:
-                locks_down.add(key)
-            for act in logic.press(key, now, self.recording, self.busy):
-                if act == "mask":
-                    winput.send_vk(winput.VK_MASK)
-                elif act == "end":
-                    self.end()
-                elif act == "cancel":
-                    self.cancel()
-                elif act.startswith("begin:"):
-                    self.begin(mode=act[len("begin:"):])
-
-        @guard
-        def on_release(key):
-            for act in logic.release(key, time.time(), self.recording, self.busy):
-                if act == "end":
-                    self.end()
-                elif act == "cancel":
-                    self.cancel()
-                elif act.startswith("begin:"):
-                    self.begin(mode=act[len("begin:"):])
-            if key in locks_down:
-                locks_down.discard(key)
-                winput.send_vk(lock_vks[key])
+        box = {}
 
         def win32_event_filter(msg, data):
-            # أحداثنا التركيبية (معلّمة EMLAA_TAG) مابنسمعهاش:
-            # غير كده منطق زرار التسجيل كان هيسمع دوساته هو. بنفلتر
-            # أحداثنا إحنا بس — مفاتيح المستخدم الحقيقية مالهاش دعوة بالفلتر.
-            return data.dwExtraInfo != winput.EMLAA_TAG
+            vk = data.vkCode
+            is_press = msg in (0x100, 0x104)          # WM_KEYDOWN / WM_SYSKEYDOWN
+            injected = data.dwExtraInfo == winput.EMLAA_TAG   # أحداثنا التركيبية — مابنسمعهاش
+            fake_ctrl = vk == winput.VK_LCONTROL and bool(data.scanCode & 0x200)
+            dispatch, suppress = filt.event(vk, is_press, injected, fake_ctrl)
+            if dispatch:
+                dispatcher.put(vk, is_press, time.time(), filt.held())
+            if suppress:
+                box["listener"].suppress_event()
+            return False
 
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release,
-                                           win32_event_filter=win32_event_filter)
+        self._listener = keyboard.Listener(win32_event_filter=win32_event_filter)
+        box["listener"] = self._listener
         self._listener.daemon = True
         self._listener.start()
+
+    def _stop_hotkey(self):
+        """المستمع والـdispatcher بيقفوا مع بعض — أحداث الجيل القديم مبتتنفّذش."""
+        try:
+            if self._listener:
+                self._listener.stop()
+        except Exception:
+            pass
+        self._listener = None
+        dispatcher = getattr(self, "_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.stop()
+        self._dispatcher = None
+
+    def pause_hotkey(self):
+        self._stop_hotkey()
+
+    def try_begin_capture(self):
+        """
+        حجز «بنسجّل زرار من الإعدادات» تحت نفس قفل التسجيل: لو فيه تسجيل أو تفريغ أو
+        التقاط تاني بيترفض، ولو اتحجز begin() بيرفض لحد end_capture — الاتنين عمرهم ما
+        يحصلوا مع بعض.
+        """
+        with self._state_lock:
+            if self.recording or self.busy or getattr(self, "capturing", False):
+                return False
+            self.capturing = True
+            return True
+
+    def end_capture(self):
+        with self._state_lock:
+            self.capturing = False
+
+    def resume_hotkey(self):
+        self._stop_hotkey()
+        self.start_hotkey()
 
 
     def restart_hotkey(self):
@@ -1885,21 +2003,21 @@ class App:
         بيعيد تسجيل زرار التسجيل بالقيمة الجديدة من غير ما البرنامج يتقفل.
         (قبل كده كان لازم إعادة تشغيل — والرسالة دي كانت بتخلّي المستخدم
          يقفل ويفتح ويشك إن الإعدادات ما اتحفظتش أصلًا.)
+        وقت تسجيل أو تفريغ بيتأجل لآخر العملية: تبديل المنطق وزرار hold ماسك كان
+        هيضيّع التسيب اللي بيوقف التسجيل.
         """
-        try:
-            if self._listener:
-                self._listener.stop()
-        except Exception:
-            pass
-        self._listener = None
+        # الفحص والتعليم تحت نفس قفل begin/end: حفظة من ثريد الواجهة مع آخر عملية بتخلص
+        # كانت ممكن تضيّع العلامة
+        with self._state_lock:
+            if self.recording or self.busy:
+                self._hotkey_restart_pending = True
+                return
+            self._hotkey_restart_pending = False
+        self._stop_hotkey()
         self.start_hotkey()
 
     def shutdown(self):
-        try:
-            if self._listener:
-                self._listener.stop()
-        except Exception:
-            pass
+        self._stop_hotkey()
         self.rec.close()
 
 
@@ -1947,7 +2065,7 @@ def friendly_error(e):
         return str(e).strip()
     # T20: رسالة الموديل المحلي البايظ بتوصل للمستخدم زي ما هي — فيها توجيه
     # واضح (شيله ونزّله تاني) فممن تلبس زي «مشكلة مش متوقّعة»
-    if "الموديل المحلي بايظ" in str(e):
+    if "الموديل المحلي بايظ" in str(e) or chains.LOCAL_MISSING in str(e):
         return str(e).strip()
     if "project has been denied access" in s or "permission_denied" in s:
         return "مشروع Google محظور أو مرفوض (Project denied access) — أنشئ مشروع جديد ومفتاح جديد من Google AI Studio"

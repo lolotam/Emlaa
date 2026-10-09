@@ -31,6 +31,10 @@ class StubRec:
 class FakeClient:
     """مزوّد وهمي: بيرجّع نص ثابت وبيحتفظ بسجل النداءات والمفاتيح الإضافية."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, text="مرحبا بالعالم"):
         self.vocab = []
         self.vocab_extra = []
@@ -94,7 +98,7 @@ class TestSnippetExpansion(unittest.TestCase):
     def test_expands_in_normal_mode(self):
         app = make_app()
         fake = FakeClient(text="إيميلي الشخصي")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _snippets_cfg()), \
@@ -116,7 +120,7 @@ class TestSnippetExpansion(unittest.TestCase):
         # نص الاختصار فيه «الAPI» — ممن يتعدّل (fix_mixed كان هيحوّلها لـ«الـ API»)
         app = make_app()
         fake = FakeClient(text="حساب البنك")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         cfg = dict(core.DEFAULTS)
         cfg["snippets"] = [{"trigger": "حساب البنك", "text": "الAPI KW123"}]
@@ -134,7 +138,7 @@ class TestSnippetExpansion(unittest.TestCase):
     def test_sets_vocab_extra_on_client(self):
         app = make_app()
         fake = FakeClient(text="إيميلي الشخصي")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _snippets_cfg()), \
@@ -154,7 +158,7 @@ class TestSnippetPrivacy(unittest.TestCase):
     def test_not_expanded_when_secure(self):
         app = make_app()
         fake = FakeClient(text="إيميلي الشخصي")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _snippets_cfg()), \
@@ -171,7 +175,7 @@ class TestSnippetPrivacy(unittest.TestCase):
     def test_not_expanded_in_prompt_mode(self):
         app = make_app()
         fake = FakeClient(text="إيميلي الشخصي")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _snippets_cfg()), \

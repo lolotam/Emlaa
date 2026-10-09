@@ -389,6 +389,29 @@ def meta(pid):
     return PROVIDERS.get(pid) or PROVIDERS[DEFAULT]
 
 
+# ── كتالوجات الموديلات: ترتيب الترحيل منفصل عن اختيارات الواجهة ────────────────
+def chat_models(pid):
+    """موديلات الشات بترتيب النهارده (chat ثم chat_alt) — ترتيب الترحيل وكتالوج المعالجة."""
+    m = PROVIDERS.get(pid) or {}
+    return _model_list(m.get("chat"), m.get("chat_alt")) if m.get("chat") else []
+
+
+def stt_order(pid, chosen=None):
+    """ترتيب التفريغ اللي Client غير الصارم كان بيمشي عليه للاختيار ده — للترحيل بس."""
+    m = PROVIDERS.get(pid) or {}
+    base = _model_list(m.get("stt"), m.get("stt_alt"))
+    if chosen:
+        return [chosen] + [x for x in base if x != chosen]
+    return base
+
+
+def stt_catalog(pid):
+    """كل موديلات التفريغ اللي ينفع تتختار في الواجهة: MODELS الأول، وبعدها أي موديل
+    من ترتيب النهارده مش فيها (عشان OpenAI يبان فيه gpt-4o-transcribe و whisper-1)."""
+    out = [x["id"] for x in MODELS.get(pid, [])]
+    return out + [x for x in stt_order(pid) if x not in out]
+
+
 # موديلات الشات اللي المزوّد رد عليها «مش موجود/مش متاح لحسابك» في الجلسة دي —
 # (provider_id, بصمة المفتاح, model). بنشيلها من السلسلة عشان مانضيّعش عليها نداء كل
 # مرة، والأهم: المحاولة التانية بعد الانتظار (للموديل الأخير بس) تروح لآخر موديل شغّال
@@ -627,14 +650,162 @@ class NetworkError(RuntimeError):
     is_network = True
 
 
+# ── عمليات النص (تنظيف/برومبت/ترجمة/تعديل) ─────────────────────────────────
+class TextOps:
+    """
+    البرومبتات وقواعدها، من غير ما تعرف مين المزوّد: بتنادي self._chat و
+    self._chat_raw، وبتقرا self.vocab و self.vocab_extra و self.last_chat. Client
+    (مزوّد واحد) و chains.FeatureClient (قايمة مزوّدين بالترتيب) الاتنين بيورثوها —
+    فالبرومبت مكتوب في مكان واحد مهما كان مين بيرد.
+    """
+
+    def _stt_prompt(self, language="ar"):
+        """البرومبت + كلمات القاموس + مفاتيح الاختصارات (Whisper بياخد لحد ~٢٢٤ توكن، فبنقصّ).
+        language=None = ثنائي اللغة."""
+        base = STT_PROMPT if language else STT_PROMPT_BILINGUAL
+        vocab = [str(w).strip() for w in (self.vocab or []) if str(w).strip()]
+        extra = [str(w).strip() for w in (self.vocab_extra or []) if str(w).strip()]
+        if not vocab and not extra:
+            return base
+        words = "، ".join((vocab + extra)[:60])[:500]
+        if not language:
+            return base + " Names and terms that may come up: " + words.replace("، ", ", ") + "."
+        return base + " كلمات وأسماء ممكن تيجي: " + words + "."
+
+    def _with_vocab(self, system):
+        """القاموس بيتحط قبل التعليمات: في التجربة الموديل كان بيطنّشه لما ييجي في الآخر."""
+        if not self.vocab:
+            return system
+        return self._vocab_rule() + "\n\n" + system
+
+    def _vocab_rule(self):
+        if not self.vocab:
+            return ""
+        return ("قاموس المستخدم — أولويته أعلى من أي استنتاج: الكلمات دي ممكن تيجي في النص "
+                "مكتوبة غلط، أو بحروف عربي على حسب نطقها، أو متقسّمة لكلمتين (زي «نكست جي اس» = "
+                "Next.js)، وممكن يكون لازق فيها حرف عربي زي ب أو و أو ال أو ل (زي «بنكست جي اس» = "
+                "بـ Next.js). أي كلمة أو كلمتين نطقهم قريب من واحدة منهم اكتبها بالكتابة دي بالظبط "
+                "(وسيب الحرف اللي كان لازق فيها): "
+                + "، ".join(str(w).strip() for w in self.vocab[:100]) + ".")
+
+    def polish(self, text, profile=None):
+        """profile = أسلوب السياق (F5) — قاعدته بتتزود ورا قواعد التنضيف الأساسية.
+        الكلام الإنجليزي الخالص بياخد قواعد إنجليزي من غير قواعد الأسلوب (مكتوبة للعامية)."""
+        english = smart.is_english(text)
+        if english:
+            system = POLISH_SYSTEM_EN
+        else:
+            system = POLISH_SYSTEM
+            if profile in STYLE_RULES:
+                system += "\n\n" + STYLE_RULES[profile]
+        out = self._chat(self._with_vocab(system), text, temperature=0.1)
+        if english and smart.has_arabic(out):
+            # الموديل ترجم الإنجليزي لعربي بدل ما ينضّفه — الخام أأمن من كلام ماتقالش
+            return self._polish_rejected(text, "التصحيح غيّر لغة الكلام الإنجليزي")
+        # التصحيح بيغيّر كلمات، مش بيضيف كلام. لو الرد طلع أطول من الأصل بكتير يبقى
+        # الموديل رد على الكلام (أو ألّف) بدل ما يصحّحه — فالنص الخام أأمن.
+        if len(out) > 2 * len(text) + 40:
+            return self._polish_rejected(
+                text, f"التصحيح طلع أطول من الأصل ({len(text)} ← {len(out)})")
+        return out
+
+    def _polish_rejected(self, text, reason):
+        """رد التصحيح مرفوض: بنرجّع الخام، والسجل بيقول إن مفيش تنظيف اتطبّق."""
+        self.last_chat = None
+        try:
+            import core
+            core.log_error(RuntimeError(reason), "chat/polish (رجّعنا النص الخام)")
+        except Exception:
+            pass
+        return text
+
+    def _prompt_lang(self, text):
+        """
+        لغة برومبت الطلب النهائية (F2): الطلب الإنجليزي بيتقرر محليًا
+        (smart.prompt_language)، وأي طلب عربي أو مخلوط بيروح لتصنيف واحد قصير
+        TECH/OTHER حسب اللي المستخدم عايز يطلّعه. لو التصنيف فشل أو رد حاجة غريبة،
+        التخمين بالكلمات التقنية (smart.tech_guess) — ومينفعش نرفع خطأ أبدًا: قرار
+        اللغة رفاهية، وكلام المستخدم أهم منه.
+        """
+        try:
+            lang = smart.prompt_language(text)
+            if lang is not None:
+                return lang
+            try:
+                lang = self._classify_lang(text)
+            except Exception:
+                lang = None                  # فشل التصنيف = التخمين بالكلمات تحت
+            return lang or smart.tech_guess(text)
+        except Exception:
+            return "ar"
+
+    def _classify_lang(self, text):
+        """
+        بيرجّع "en"/"ar" من تصنيف الموديل (TECH/OTHER)، أو None لو النداء فشل أو
+        الرد طلع حاجة غريبة. بيستخدم _chat_raw عشان منرجعش النص الأصلي أبدًا على
+        الفشل (لو رجعناه كان الرد «الغريب» هيتحسب وكأنه قرار لغة صح).
+        """
+        out = self._chat_raw(LANG_CLASSIFY_SYSTEM, text, temperature=0.0)
+        if out is None:
+            return None
+        word = "".join(ch for ch in out.upper() if ch.isalpha())
+        if word == "TECH":
+            return "en"
+        if word == "OTHER":
+            return "ar"
+        return None
+
+    def to_prompt(self, text):
+        """
+        يحوّل الكلام المُملى لبرومبت مرتّب جاهز للّزق في أي موديل.
+        لغة البرومبت بتتقرر من _prompt_lang (F2): الـdirective بيتضاف للنظام، ولو
+        الموديل رد باللغة الغلط بنعيد مرة واحدة والـdirective في أول سطر عشان ياخد أولوية.
+        """
+        lang = self._prompt_lang(text)
+        base = self._with_vocab(PROMPT_SYSTEM + "\n\n" + PROMPT_GUARDRAILS + "\n" + STT_FIX_RULE)
+        directive = PROMPT_OUTPUT_AR if lang == "ar" else PROMPT_OUTPUT_EN
+        out = self._chat(base + "\n\n" + directive, text, temperature=0.2)
+        # out == text = النداء الأول فشل ورجّع الكلام الخام — مفيش برومبت أصلًا نعيده،
+        # والإعادة كانت هتأخّر الرجوع للنص الخام وقت عطل المزوّد
+        if out != text and _prompt_wrong_language(out, lang):
+            # فشل النداء بيرجّع النص الخام (من ضياع كلام المستخدم) — فالإعادة بتحصل
+            # بس لما الرد فعلًا باللغة الغلط، مش على كل فشل.
+            first, first_chat = out, self.last_chat
+            retry = self._chat(directive + "\n" + base, text, temperature=0.2)
+            if retry and retry != text:
+                out = retry
+            else:
+                # الإعادة فشلت (رجّعت الكلام الخام): البرومبت الأول، حتى لو بلغة غلط،
+                # أنفع من الكلام الخام — وسجل المحرك يفضل على النداء اللي نجح
+                out, self.last_chat = first, first_chat
+        return out
+
+    def translate(self, text):
+        """يترجم الكلام تلقائياً: لو عربي يحوله لإنجليزي، ولو إنجليزي يحوله لعربي."""
+        return self._chat(self._with_vocab(TRANSLATE_SYSTEM + "\n" + STT_FIX_RULE), text, temperature=0.2)
+
+    def edit(self, selection, instruction):
+        """
+        F6: تعديل نص محدد بتعليمات منطوقة. بيبعت الاثنين معًا للموديل مفصولين
+        بعلامات، وبيرجّع النص المعدّل بس — أو None لو النداء فشل أو الموديل رجّع
+        شكل المدخل نفسه (لسه فيه «<<<»). النص المحدد نفسه مبيتخزنش في أي حاجة.
+        """
+        prompt = "<<<النص>>>\n" + (selection or "") + "\n<<<التعليمات>>>\n" + (instruction or "")
+        out = self._chat_raw(self._with_vocab(EDIT_SYSTEM), prompt, temperature=0.2)
+        if out is None or "<<<" in out:
+            return None
+        return out
+
+
 # ── عميل موحّد ───────────────────────────────────────────────────────────────
-class Client:
+class Client(TextOps):
     """
     واجهة واحدة لكل المزوّدين: transcribe() و polish() و verify().
     الكود اللي فوق مش لازم يعرف مين المزوّد.
     """
 
-    def __init__(self, provider_id, key=None, model=None, helper=None, keys=None):
+    def __init__(self, provider_id, key=None, model=None, helper=None, keys=None,
+                 strict=False, chat_model=None):
         self.id = provider_id
         self.m = meta(provider_id)
         # مجمّعة المفاتيح: لو keys (قايمة) اتبعتت نستخدمها، غير كده مفتاح واحد.
@@ -642,6 +813,11 @@ class Client:
         self.key = self._pool[0] if self._pool else ""
         self.model = (model or "").strip() or None   # موديل التفريغ اللي المستخدم اختاره
         self.helper = helper      # عميل مزوّد تاني للتنظيف (لو المزوّد ده بيفرّغ بس)
+        # الوضع الصارم (عنصر واحد في قايمة ميزة): موديل تفريغ واحد وموديل شات واحد بالظبط —
+        # البديل هو العنصر اللي بعده في قايمة المستخدم، مش stt_alt/chat_alt المخبّية.
+        # تبديل المفاتيح جوّه نفس المزوّد بيفضل شغّال: ده مش تغيير موديل.
+        self.strict = strict
+        self.chat_model = (chat_model or "").strip() or None
         self._oa = None
         self.vocab = []           # كلمات القاموس — بيحطها core قبل كل تسجيل
         self.vocab_extra = []     # مفاتيح الاختصارات الصوتية — بتتضاف للـprompt بعد كلمات القاموس
@@ -733,7 +909,11 @@ class Client:
         raise RuntimeError(KEYS_EXHAUSTED_MSG)
 
     def _stt_models(self):
-        """الموديل المختار الأول، وبعده البدائل لو مش متاح."""
+        """الموديل المختار الأول، وبعده البدائل لو مش متاح (الصارم: المختار بس)."""
+        if self.strict:
+            if not self.model:
+                raise RuntimeError("مفيش موديل تفريغ")
+            return [self.model]
         base = _model_list(self.m["stt"], self.m.get("stt_alt"))
         if self.model:
             return [self.model] + [x for x in base if x != self.model]
@@ -956,8 +1136,9 @@ class Client:
         if not text:
             return text
         if not self.m.get("chat"):
-            # مزوّد بيفرّغ بس (Deepgram) → التنظيف على مزوّد تاني ليه مفتاح، وإلا النص زي ما هو
-            if not self.helper:
+            # مزوّد بيفرّغ بس (Deepgram) → التنظيف على مزوّد تاني ليه مفتاح، وإلا النص زي ما هو.
+            # الصارم مبيستلفش مزوّد: قايمة الميزة هي اللي بتحدد مين يعالج
+            if self.strict or not self.helper:
                 return text
             out = self.helper._chat(system, text, temperature)
             self.last_chat = self.helper.last_chat
@@ -989,8 +1170,8 @@ class Client:
         if not text:
             return None
         if not self.m.get("chat"):
-            # مزوّد بيفرّغ بس (Deepgram) → نفس المسار على مزوّد تاني ليه مفتاح
-            if not self.helper:
+            # مزوّد بيفرّغ بس (Deepgram) → نفس المسار على مزوّد تاني ليه مفتاح (مش في الصارم)
+            if self.strict or not self.helper:
                 return None
             out = self.helper._chat_raw(system, text, temperature)
             self.last_chat = self.helper.last_chat
@@ -1015,146 +1196,15 @@ class Client:
         # اتأكدنا إن فيه رد: _clean_output بيرجّع المدخل لو الرد فاضي، وده بالظبط اللي ممنوع هنا
         return _clean_output(text, out) or None
 
-    def _stt_prompt(self, language="ar"):
-        """البرومبت + كلمات القاموس + مفاتيح الاختصارات (Whisper بياخد لحد ~٢٢٤ توكن، فبنقصّ).
-        language=None = ثنائي اللغة."""
-        base = STT_PROMPT if language else STT_PROMPT_BILINGUAL
-        vocab = [str(w).strip() for w in (self.vocab or []) if str(w).strip()]
-        extra = [str(w).strip() for w in (self.vocab_extra or []) if str(w).strip()]
-        if not vocab and not extra:
-            return base
-        words = "، ".join((vocab + extra)[:60])[:500]
-        if not language:
-            return base + " Names and terms that may come up: " + words.replace("، ", ", ") + "."
-        return base + " كلمات وأسماء ممكن تيجي: " + words + "."
 
-    def _with_vocab(self, system):
-        """القاموس بيتحط قبل التعليمات: في التجربة الموديل كان بيطنّشه لما ييجي في الآخر."""
-        if not self.vocab:
-            return system
-        return self._vocab_rule() + "\n\n" + system
 
-    def _vocab_rule(self):
-        if not self.vocab:
-            return ""
-        return ("قاموس المستخدم — أولويته أعلى من أي استنتاج: الكلمات دي ممكن تيجي في النص "
-                "مكتوبة غلط، أو بحروف عربي على حسب نطقها، أو متقسّمة لكلمتين (زي «نكست جي اس» = "
-                "Next.js)، وممكن يكون لازق فيها حرف عربي زي ب أو و أو ال أو ل (زي «بنكست جي اس» = "
-                "بـ Next.js). أي كلمة أو كلمتين نطقهم قريب من واحدة منهم اكتبها بالكتابة دي بالظبط "
-                "(وسيب الحرف اللي كان لازق فيها): "
-                + "، ".join(str(w).strip() for w in self.vocab[:100]) + ".")
-
-    def polish(self, text, profile=None):
-        """profile = أسلوب السياق (F5) — قاعدته بتتزود ورا قواعد التنضيف الأساسية.
-        الكلام الإنجليزي الخالص بياخد قواعد إنجليزي من غير قواعد الأسلوب (مكتوبة للعامية)."""
-        english = smart.is_english(text)
-        if english:
-            system = POLISH_SYSTEM_EN
-        else:
-            system = POLISH_SYSTEM
-            if profile in STYLE_RULES:
-                system += "\n\n" + STYLE_RULES[profile]
-        out = self._chat(self._with_vocab(system), text, temperature=0.1)
-        if english and smart.has_arabic(out):
-            # الموديل ترجم الإنجليزي لعربي بدل ما ينضّفه — الخام أأمن من كلام ماتقالش
-            return self._polish_rejected(text, "التصحيح غيّر لغة الكلام الإنجليزي")
-        # التصحيح بيغيّر كلمات، مش بيضيف كلام. لو الرد طلع أطول من الأصل بكتير يبقى
-        # الموديل رد على الكلام (أو ألّف) بدل ما يصحّحه — فالنص الخام أأمن.
-        if len(out) > 2 * len(text) + 40:
-            return self._polish_rejected(
-                text, f"التصحيح طلع أطول من الأصل ({len(text)} ← {len(out)})")
-        return out
-
-    def _polish_rejected(self, text, reason):
-        """رد التصحيح مرفوض: بنرجّع الخام، والسجل بيقول إن مفيش تنظيف اتطبّق."""
-        self.last_chat = None
-        try:
-            import core
-            core.log_error(RuntimeError(reason), "chat/polish (رجّعنا النص الخام)")
-        except Exception:
-            pass
-        return text
-
-    def _prompt_lang(self, text):
-        """
-        لغة برومبت الطلب النهائية (F2): الطلب الإنجليزي بيتقرر محليًا
-        (smart.prompt_language)، وأي طلب عربي أو مخلوط بيروح لتصنيف واحد قصير
-        TECH/OTHER حسب اللي المستخدم عايز يطلّعه. لو التصنيف فشل أو رد حاجة غريبة،
-        التخمين بالكلمات التقنية (smart.tech_guess) — ومينفعش نرفع خطأ أبدًا: قرار
-        اللغة رفاهية، وكلام المستخدم أهم منه.
-        """
-        try:
-            lang = smart.prompt_language(text)
-            if lang is not None:
-                return lang
-            try:
-                lang = self._classify_lang(text)
-            except Exception:
-                lang = None                  # فشل التصنيف = التخمين بالكلمات تحت
-            return lang or smart.tech_guess(text)
-        except Exception:
-            return "ar"
-
-    def _classify_lang(self, text):
-        """
-        بيرجّع "en"/"ar" من تصنيف الموديل (TECH/OTHER)، أو None لو النداء فشل أو
-        الرد طلع حاجة غريبة. بيستخدم _chat_raw عشان منرجعش النص الأصلي أبدًا على
-        الفشل (لو رجعناه كان الرد «الغريب» هيتحسب وكأنه قرار لغة صح).
-        """
-        out = self._chat_raw(LANG_CLASSIFY_SYSTEM, text, temperature=0.0)
-        if out is None:
-            return None
-        word = "".join(ch for ch in out.upper() if ch.isalpha())
-        if word == "TECH":
-            return "en"
-        if word == "OTHER":
-            return "ar"
-        return None
-
-    def to_prompt(self, text):
-        """
-        يحوّل الكلام المُملى لبرومبت مرتّب جاهز للّزق في أي موديل.
-        لغة البرومبت بتتقرر من _prompt_lang (F2): الـdirective بيتضاف للنظام، ولو
-        الموديل رد باللغة الغلط بنعيد مرة واحدة والـdirective في أول سطر عشان ياخد أولوية.
-        """
-        lang = self._prompt_lang(text)
-        base = self._with_vocab(PROMPT_SYSTEM + "\n\n" + PROMPT_GUARDRAILS + "\n" + STT_FIX_RULE)
-        directive = PROMPT_OUTPUT_AR if lang == "ar" else PROMPT_OUTPUT_EN
-        out = self._chat(base + "\n\n" + directive, text, temperature=0.2)
-        # out == text = النداء الأول فشل ورجّع الكلام الخام — مفيش برومبت أصلًا نعيده،
-        # والإعادة كانت هتأخّر الرجوع للنص الخام وقت عطل المزوّد
-        if out != text and _prompt_wrong_language(out, lang):
-            # فشل النداء بيرجّع النص الخام (من ضياع كلام المستخدم) — فالإعادة بتحصل
-            # بس لما الرد فعلًا باللغة الغلط، مش على كل فشل.
-            first, first_chat = out, self.last_chat
-            retry = self._chat(directive + "\n" + base, text, temperature=0.2)
-            if retry and retry != text:
-                out = retry
-            else:
-                # الإعادة فشلت (رجّعت الكلام الخام): البرومبت الأول، حتى لو بلغة غلط،
-                # أنفع من الكلام الخام — وسجل المحرك يفضل على النداء اللي نجح
-                out, self.last_chat = first, first_chat
-        return out
-
-    def translate(self, text):
-        """يترجم الكلام تلقائياً: لو عربي يحوله لإنجليزي، ولو إنجليزي يحوله لعربي."""
-        return self._chat(self._with_vocab(TRANSLATE_SYSTEM + "\n" + STT_FIX_RULE), text, temperature=0.2)
-
-    def edit(self, selection, instruction):
-        """
-        F6: تعديل نص محدد بتعليمات منطوقة. بيبعت الاثنين معًا للموديل مفصولين
-        بعلامات، وبيرجّع النص المعدّل بس — أو None لو النداء فشل أو الموديل رجّع
-        شكل المدخل نفسه (لسه فيه «<<<»). النص المحدد نفسه مبيتخزنش في أي حاجة.
-        """
-        prompt = "<<<النص>>>\n" + (selection or "") + "\n<<<التعليمات>>>\n" + (instruction or "")
-        out = self._chat_raw(self._with_vocab(EDIT_SYSTEM), prompt, temperature=0.2)
-        if out is None or "<<<" in out:
-            return None
-        return out
-
+    def _chat_candidates(self):
+        if self.strict:
+            return [self.chat_model] if self.chat_model else []
+        return _model_list(self.m["chat"], self.m.get("chat_alt"))
 
     def _oa_chat(self, system, text, temperature, raw=False):
-        candidates = _model_list(self.m["chat"], self.m.get("chat_alt"))
+        candidates = self._chat_candidates()
         # الموديلات اللي اتأكدنا إنها مش متاحة للمفتاح ده بتتشال — بس لو كله اتشال
         # بنجرّب القايمة كاملة (يمكن الحساب اتغيّر) بدل ما نرجع النص الخام من غير نداء
         scope = (self.id, _key_fingerprint(self.key))
@@ -1207,7 +1257,7 @@ class Client:
             "generationConfig": {"temperature": temperature},
         }
         hdr = {"x-goog-api-key": self.key}
-        candidates = _model_list(self.m["chat"], self.m.get("chat_alt"))
+        candidates = self._chat_candidates()
         last = None
         for i, model in enumerate(candidates):
             try:
@@ -1335,76 +1385,11 @@ def verify(provider_id, key):
         return False, ("معرفناش نتأكد من المفتاح" + (" — " + detail if detail else ""))
 
 
-# ── موديلات التفريغ المتاحة للمفتاح ─────────────────────────────────────────
 def _get_json(url, headers, timeout=12):
     # Groq (Cloudflare) بيرفض الـUser-Agent الافتراضي بتاع بايثون بـ403
     req = urllib.request.Request(url, headers={"User-Agent": "Emlaa", **headers}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         return json.loads(r.read().decode("utf-8"))
-
-
-def _is_stt(pid, mid):
-    """هل ده موديل تفريغ صوت؟ (بنستبعد موديلات الشات والصور والنطق)."""
-    s = mid.lower()
-    if pid in ("groq", "openai"):
-        return ("whisper" in s or "transcribe" in s) and "tts" not in s and "diarize" not in s
-    if pid == "gemini":
-        bad = ("image", "tts", "live", "embed", "native-audio", "thinking", "robotics", "computer", "lite")
-        return s.startswith("gemini-") and "flash" in s and not any(b in s for b in bad)
-    if pid == "deepgram":
-        return not any(x in s for x in ("whisper-tiny", "whisper-base", "whisper-small"))
-    return True
-
-
-def _live_ids(pid, key):
-    """أسماء الموديلات اللي المفتاح شايفها فعلاً (أو None لو معرفناش نسأل)."""
-    if pid == "gemini":
-        d = _get_json(GEMINI_API + "/models?pageSize=200", {"x-goog-api-key": key})
-        return [m["name"].split("/", 1)[-1] for m in d.get("models", [])
-                if "generateContent" in (m.get("supportedGenerationMethods") or [])]
-    if pid == "deepgram":
-        d = _get_json(DEEPGRAM_API + "/models", {"Authorization": "Token " + key})
-        out = []
-        for m in d.get("stt", []):
-            langs = [str(l).lower() for l in (m.get("languages") or [])]
-            name = m.get("canonical_name") or m.get("name")
-            if name and any(l == "ar" or l.startswith("ar-") or l == "multi" for l in langs):
-                # nova-3-general → nova-3 (الاسم اللي بيتبعت في الطلب)
-                out.append(name.replace("-general", "") if name.startswith("nova") else name)
-        return out
-    base = meta(pid)["base_url"] or "https://api.openai.com/v1"
-    d = _get_json(base + "/models", {"Authorization": "Bearer " + key})
-    return [m.get("id") for m in d.get("data", []) if m.get("id")]
-
-
-def list_models(pid, key=None):
-    """
-    موديلات التفريغ بس للمزوّد ده، مرتّبة بنسبة الترشيح.
-    لو فيه مفتاح: بنسأل المزوّد ونخفي اللي مش متاح ونضيف موديلات تفريغ جديدة (من غير نسبة).
-    بيرجّع {"models": [...], "live": هل اتأكدنا من المزوّد}.
-    """
-    catalog = [dict(m) for m in MODELS.get(pid, [])]
-    live = None
-    if key:
-        try:
-            live = [x for x in _live_ids(pid, key.strip()) if _is_stt(pid, x)]
-        except Exception as e:
-            try:
-                import core
-                core.log_error(e, f"models/{pid} (رجّعنا القايمة الثابتة)")
-            except Exception:
-                pass
-    if live is None:
-        return {"models": catalog, "live": False}
-    known = {m["id"] for m in catalog}
-    out = [m for m in catalog if m["id"] in live]
-    for x in sorted(set(live) - known):
-        out.append({"id": x, "score": None, "note": ""})
-    # «latest» aliases مش بتظهر في الليستة أحيانًا — نسيبها لو المزوّد Gemini
-    if pid == "gemini":
-        out += [m for m in catalog if m["id"].endswith("-latest") and m not in out]
-    out.sort(key=lambda m: -(m["score"] if m["score"] is not None else -1))
-    return {"models": out or catalog, "live": bool(out)}
 
 
 # ── قراءة/كتابة المفاتيح في .env (مفصولة بفواصل — Task 22) ────────────────────

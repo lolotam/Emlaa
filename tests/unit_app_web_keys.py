@@ -31,6 +31,16 @@ class _Ctrl:
     last_text = ""
     update_info = None
     hotkeys = []
+    engine = None
+
+    def start_engine(self):
+        pass
+
+
+def _features(*stt):
+    """نفس قايمة التفريغ في الأربع ميزات — الحماية من شيل آخر مفتاح بتبص على التفريغ بس."""
+    return {m: {"hotkey": [], "stt": [dict(i) for i in stt], "ai": []}
+            for m in ("normal", "prompt", "translate", "edit")}
 
 
 def _cfg(**over):
@@ -243,18 +253,29 @@ class TestKeyPoolApi(unittest.TestCase):
     def test_key_remove_refuses_last_key_of_selected_provider(self):
         self._write("GROQ_API_KEY=k1\n")
         api = self._api()
-        with mock.patch.object(core, "CFG", _cfg(provider="groq", offline_mode="fallback")), \
+        with mock.patch.object(core, "CFG", _cfg(provider="groq")), \
                 mock.patch.object(offline, "installed", return_value=None):
             r = api.key_remove("groq", 0)
         self.assertFalse(r["ok"])
         self.assertIn("آخر مفتاح", r["err"])
         self.assertEqual(providers.read_key_pools(self.env_path).get("groq"), ["k1"])
 
-    def test_key_remove_last_key_allowed_when_offline_always_installed(self):
+    def test_key_remove_last_key_allowed_when_local_model_transcribes(self):
         self._write("GROQ_API_KEY=k1\n")
         api = self._api()
-        with mock.patch.object(core, "CFG", _cfg(provider="groq", offline_mode="always")), \
+        with mock.patch.object(core, "CFG", _cfg(features=_features({"provider": "groq", "model": "m"},
+                                                                    {"provider": "local", "model": ""}))), \
                 mock.patch.object(offline, "installed", return_value="base"):
+            r = api.key_remove("groq", 0)
+        self.assertTrue(r["ok"])
+        self.assertNotIn("groq", providers.read_key_pools(self.env_path))
+
+    def test_key_remove_old_provider_allowed_when_features_use_another(self):
+        self._write("GROQ_API_KEY=k1\nOPENAI_API_KEY=sk-1\n")
+        api = self._api()
+        with mock.patch.object(core, "CFG", _cfg(provider="groq",
+                                                 features=_features({"provider": "openai", "model": "whisper-1"}))), \
+                mock.patch.object(offline, "installed", return_value=None):
             r = api.key_remove("groq", 0)
         self.assertTrue(r["ok"])
         self.assertNotIn("groq", providers.read_key_pools(self.env_path))
@@ -300,6 +321,30 @@ class TestStaticUiChecks(unittest.TestCase):
             ("اتضاف المفتاح ✓", "Key added ✓"),
         ]:
             self.assertIn('"%s": "%s"' % (ar, en), self.i18n, ar)
+
+    def test_every_arabic_text_in_index_html_has_an_en_entry(self):
+        import re
+        no_dict = re.sub(r"<script[\s\S]*?</script>", "", self.html)
+        texts = {t.strip() for t in re.findall(r">([^<>]+)<", no_dict)}
+        texts |= {t.strip() for t in re.findall(r'(?:title|placeholder|aria-label)="([^"]+)"', no_dict)}
+        # «ع» = زرار اللغة نفسه؛ «0 تسجيل» وأمثالها عدّادات بتترجمها EN_PATTERNS
+        arabic = {t for t in texts if re.search(r"[\u0600-\u06FF]", t) and not re.match(r"[\d,.]+ ", t)} - {"ع"}
+        missing = sorted(t for t in arabic if '"%s":' % t not in self.i18n)
+        self.assertEqual(missing, [])
+
+    def test_feature_settings_strings_written_by_js_have_en_entries(self):
+        for ar in ("دوس الزرار دلوقتي… (Esc للإلغاء)", "مش متثبّت — نزّله من تحت",
+                   "مفيش معالجة — الكلام بيتكتب زي ما اتقال", "بيتجرّب بالترتيب — من غير موديل الميزة دي مبتحوّلش الكلام",
+                   "مفيش موديل — الكلام بيتكتب زي ما اتقال من غير تحويل",
+                   "مفيش موديل — التعديل مش هيشتغل لحد ما تضيف واحد",
+                   "التنظيف والتصحيح — لو شلت كل الموديلات الكلام بيتكتب زي ما اتقال",
+                   "مقدرتش أسجّل الزرار — جرّب تاني", "+ إضافة مفتاح", "لفوق", "لتحت",
+                   "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد"):
+            self.assertIn(ar, self.js + self.html, ar)
+            self.assertIn('"%s":' % ar, self.i18n, ar)
+        # رسايل بتيجي من Python وبتظهر في الواجهة زي ما هي
+        for ar in (app_web.LAST_STT_KEY_ERR, core.CAPTURE_TIMEOUT_ERR):
+            self.assertIn('"%s":' % ar, self.i18n, ar)
 
     def test_app_js_never_uses_browser_dialogs(self):
         import re

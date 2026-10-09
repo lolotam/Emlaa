@@ -174,3 +174,37 @@ class TestTrayMenuItem(_PolishGuard):
         self.assertIs(raw_item().checked, False)
         core.CFG["polish"] = False
         self.assertIs(raw_item().checked, True)
+
+
+class TestEngineStartsOnce(unittest.TestCase):
+    """أكتر من نداء start_engine (إضافة مفتاح + حفظ) وهو لسه بيقوم = محرك واحد بس."""
+
+    def test_second_start_while_booting_is_ignored(self):
+        c = object.__new__(app_web.Controller)
+        c.engine = None
+        with mock.patch.object(app_web.threading, "Thread") as thread:
+            c.start_engine()
+            c.start_engine()
+        self.assertEqual(thread.call_count, 1)
+
+    def test_hotkey_failure_at_boot_leaves_no_engine_so_a_later_start_retries(self):
+        # PR #15 (CodeRabbit): الـengine كان بيتسجّل قبل start_hotkey — لو فشل، الحارس كان بيرفض أي محاولة تانية
+        c = object.__new__(app_web.Controller)
+        c.engine, c.root = None, None
+        c.set_state = mock.Mock()
+        app = mock.Mock()
+        app.start_hotkey.side_effect = OSError("hook")
+        threads = []
+
+        def thread(target=None, daemon=None):
+            threads.append(target)
+            return mock.Mock(start=target)
+
+        with mock.patch.object(app_web.core, "App", return_value=app), \
+                mock.patch.object(app_web.core, "log_error"), \
+                mock.patch.object(app_web.threading, "Thread", side_effect=thread):
+            c.start_engine()
+            self.assertIsNone(c.engine)
+            app.shutdown.assert_called_once()
+            c.start_engine()
+        self.assertEqual(len(threads), 2)

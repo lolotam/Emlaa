@@ -18,6 +18,7 @@ import difflib
 import http.client
 import unicodedata
 import urllib.error
+from collections import namedtuple
 
 
 # ── تطبيع النص (مشترك بين تخطّي الردود القصيرة F2 والاختصارات الصوتية F8) ──
@@ -205,6 +206,113 @@ def is_dev_app(exe, cfg):
 # (أو التكرار التلقائي) مش دوسة.
 TAP_MAX = 0.6
 
+# ── الزراير بأرقام ويندوز (vk) ─────────────────────────────────────────────
+# الزرار بيتعرف برقمه مش باسمه في pynput: Alt اليمين في كيبورد عليه عربي ويندوز
+# بيبعته AltGr، وpynput بيفرّق alt_r (extended) عن alt_gr مع إن الاتنين VK_RMENU —
+# فالمقارنة بالاسم كانت بتفشل. والزرار اللي بيتسجّل من الكيبورد بيتحفظ برقمه زي ما هو.
+VK_ESCAPE = 0x1B
+MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C})
+# الـhook دايمًا بيبعت الكود اليمين/الشمال — العام (0x10–0x12) عمره ما بييجي له تسيب، فلو
+# اتحسب ماسك وقت بداية المستمع كان هيفضل ماسك للأبد ويبوّظ كل الزراير
+SIDE_MODIFIER_VKS = MODIFIER_VKS - {0x10, 0x11, 0x12}
+# Alt/Win لو اتداسوا واتسابوا والبرنامج ماشافش زرار في النص بيفتحوا قايمة البرنامج أو
+# Start — فدوسة زرار تسجيل فيها واحد منهم بتبعت «mask» (زرار وهمي) وهو لسه ماسك
+MASKED_MODIFIER_VKS = frozenset({0x12, 0xA4, 0xA5, 0x5B, 0x5C})
+# زراير بنكتب بيها: لوحدها مينفعش تبقى زرار تسجيل (كانت هتتمنع عن كل البرامج) — مع
+# موديفاير عادي (Ctrl + A)
+TYPING_VKS = frozenset({0x08, 0x09, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2E}
+                       | set(range(0x30, 0x3A)) | set(range(0x41, 0x5B)) | set(range(0x60, 0x70))
+                       | set(range(0xBA, 0xC1)) | set(range(0xDB, 0xE0)) | {0xE2})
+
+# أسماء الإعدادات القديمة (قايمة الزراير الثابتة) ← رقمها — للترحيل بس
+LEGACY_HOTKEY_VKS = {
+    "ctrl_r": 0xA3, "alt_r": 0xA5, "shift_r": 0xA1, "caps_lock": 0x14, "scroll_lock": 0x91,
+    "f6": 0x75, "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+}
+
+Hotkey = namedtuple("Hotkey", "mods trigger")
+
+
+def hotkey_shape_ok(vks):
+    """
+    [] أو [زرار مش بيتكتب بيه] أو [موديفاير، زرار مش موديفاير] — أرقام vk بس (1–254)،
+    وEsc ممنوع (هو الإلغاء).
+    """
+    vks = list(vks or [])
+    if len(vks) > 2 or not all(type(v) is int and 0 < v < 0xFF for v in vks) or VK_ESCAPE in vks:
+        return False
+    if len(vks) == 2:
+        return vks[0] in MODIFIER_VKS and vks[1] not in MODIFIER_VKS
+    return not vks or vks[0] not in TYPING_VKS
+
+
+def hotkey_from_vks(vks):
+    """[] = مفيش زرار (None)؛ [t] = زرار لوحده؛ [m, t] = موديفاير + الزرار اللي بيشغّل."""
+    vks = list(vks or [])
+    if not vks:
+        return None
+    return Hotkey(frozenset(vks[:-1]), vks[-1])
+
+
+class HotkeyMatcher:
+    """
+    المطابقة الوحيدة: المنع (HotkeyFilter) والتشغيل (HotkeyLogic) بيسألوها هي، عشان
+    مفيش زرار يتمنع ومايشتغلش. F7 وCtrl+F7 ممكن يبقوا وضعين مختلفين: التطابق على
+    الموديفايرز الماسكة بالظبط — زيادة موديفاير (Shift+F7) مش بتطابق حاجة.
+    """
+
+    def __init__(self, hotkeys):
+        self._by_trigger = {}
+        for mode, hk in hotkeys.items():
+            if hk is not None:
+                self._by_trigger.setdefault(hk.trigger, []).append((hk.mods, mode))
+
+    def match(self, trigger, held):
+        held_mods = (frozenset(held) & MODIFIER_VKS) - {trigger}
+        for mods, mode in self._by_trigger.get(trigger, ()):
+            if mods == held_mods:
+                return mode
+        return None
+
+    def triggers(self):
+        return set(self._by_trigger)
+
+
+_VK_NAMES = {
+    0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x13: "Pause", 0x14: "Caps Lock",
+    0x20: "Space", 0x21: "Page Up", 0x22: "Page Down", 0x23: "End", 0x24: "Home",
+    0x25: "Left", 0x26: "Up", 0x27: "Right", 0x28: "Down", 0x2C: "Print Screen",
+    0x2D: "Insert", 0x2E: "Delete", 0x90: "Num Lock", 0x91: "Scroll Lock",
+    0xA6: "Browser Back", 0xA7: "Browser Forward", 0xA8: "Browser Refresh", 0xA9: "Browser Stop",
+    0xAA: "Browser Search", 0xAB: "Browser Favorites", 0xAC: "Browser Home",
+    0xAD: "Mute", 0xAE: "Volume Down", 0xAF: "Volume Up", 0xB0: "Media Next",
+    0xB1: "Media Prev", 0xB2: "Media Stop", 0xB3: "Media Play/Pause", 0xB4: "Mail",
+    0xB5: "Media Select",
+}
+# الموديفايرز بس اللي ليها اسم عربي (يمين/شمال) — الباقي نفس الكتابة في اللغتين
+_MOD_NAMES = {
+    0x10: ("Shift", "Shift"), 0x11: ("Ctrl", "Ctrl"), 0x12: ("Alt", "Alt"),
+    0xA0: ("Shift الشمال", "Left Shift"), 0xA1: ("Shift اليمين", "Right Shift"),
+    0xA2: ("Ctrl الشمال", "Left Ctrl"), 0xA3: ("Ctrl اليمين", "Right Ctrl"),
+    0xA4: ("Alt الشمال", "Left Alt"), 0xA5: ("Alt اليمين", "Right Alt"),
+    0x5B: ("Win الشمال", "Left Win"), 0x5C: ("Win اليمين", "Right Win"),
+}
+
+
+def vk_label(vk, lang="ar"):
+    if vk in _MOD_NAMES:
+        ar, en = _MOD_NAMES[vk]
+        return en if lang == "en" else ar
+    if 0x70 <= vk <= 0x87:
+        return "F%d" % (vk - 0x6F)
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    return _VK_NAMES.get(vk, "Key 0x%02X" % vk)
+
+
+def hotkey_label(vks, lang="ar"):
+    return " + ".join(vk_label(v, lang) for v in (vks or []))
+
 
 class HotkeyLogic:
     """
@@ -220,51 +328,60 @@ class HotkeyLogic:
     أو مسكة أطول من TAP_MAX مهمل.
     hold: الدوسة تبدأ وتسيب نفس الزرار يوقف، وأي زرار تاني اتداس
     والتسجيل شغال = cancel (الكلام اللي اتسجل بيرمي بهدوء).
+
+    «هل الدوسة دي زرار تسجيل؟» بيتقرر من HotkeyMatcher بالموديفايرز الماسكة (held):
+    نفس المطابقة اللي بتقرر المنع، فمفيش زرار يتمنع ومايشتغلش. قاموس {زرار: وضع}
+    القديم لسه مقبول (زراير لوحدها من غير موديفايرز).
     """
 
-    def __init__(self, key_map, mode_type, tap_max=TAP_MAX, alt_keys=(), cancel_keys=()):
-        self._key_map = dict(key_map)
+    def __init__(self, matcher, mode_type, tap_max=TAP_MAX, alt_keys=(), cancel_keys=()):
+        if not isinstance(matcher, HotkeyMatcher):
+            matcher = HotkeyMatcher({mode: Hotkey(frozenset(), key) for key, mode in dict(matcher).items()})
+        self._matcher = matcher
+        self._triggers = matcher.triggers()
         self._hold = mode_type == "hold"
         self._tap_max = tap_max
         self._alt = set(alt_keys)   # المفاتيح اللي في نفس الوقت زراير Alt — "mask" ليهم
         self._cancel = set(cancel_keys)   # مفاتيح الإلغاء (Esc) — بس لو مش زراير تسجيل
-        self._held = {}             # toggle: مفتاح → وقت الدوسة
+        self._held = {}             # toggle: مفتاح → (وقت الدوسة، الوضع اللي طابقه)
         self._spoiled = set()       # toggle: مفاتيح اتداست في كورد
         self._active = None         # hold: مفتاح التسجيل اللي ماسكه دلوقتي
 
-    def press(self, key, now, recording, busy):
+    def press(self, key, now, recording, busy, held=frozenset()):
         # مفتاح إلغاء (مش زرار تسجيل): بيطلّع "cancel" وقت التسجيل في الوضعين،
         # وno-op وقت الخمول من غير ما يلمس الحالة (منيفسدش hotkey متعقدة).
-        if key in self._cancel and key not in self._key_map:
+        if key in self._cancel and key not in self._triggers:
             if recording:
                 # F6: لو زرار تسجيل متعقد اتساس دلوقتي والتسجيل هيتلغى، بنففسد كل
                 # المتعقدين — عشان تسيب الزرار بعد الإلغاء ميشغّلش تسجيل جديد.
                 self._spoiled.update(self._held)
                 return ["cancel"]
             return []
+        mode = self._matcher.match(key, held)
         if self._hold:
-            return self._press_hold(key, now, recording, busy)
-        return self._press_toggle(key, now)
+            return self._press_hold(key, mode, recording, busy, held)
+        return self._press_toggle(key, now, mode, held)
 
     def release(self, key, now, recording, busy):
         if self._hold:
             return self._release_hold(key, now)
         return self._release_toggle(key, now, recording, busy)
 
-    def _mask(self, key):
-        # أول دوسة على زرار Alt (لو هو زرار تسجيل) بتطلّع "mask" قبل أي إجراء —
-        # حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt مايفتحش قايمة البرنامج.
+    def _mask(self, key, mode, held):
+        # أول دوسة على زرار Alt/Win (لو هو زرار تسجيل)، أو زرار تسجيل Alt/Win ماسك معاه،
+        # بتطلّع "mask" قبل أي إجراء — حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt/Win
+        # (والزرار نفسه اتمنع) مايفتحش قايمة البرنامج أو Start.
         # التكرار التلقائي وهو ماسك ملوش mask (المتصل بيتأكد قبل ما ينادي).
-        if key in self._key_map and key in self._alt:
+        if (key in self._triggers and key in self._alt) or (mode is not None and self._alt & set(held)):
             return ["mask"]
         return []
 
     # ── hold ──
 
-    def _press_hold(self, key, now, recording, busy):
+    def _press_hold(self, key, mode, recording, busy, held):
         if self._active is not None and key == self._active:
             return []                  # تكرار تلقائي — مفيش mask ولا إجراء
-        acts = self._mask(key)
+        acts = self._mask(key, mode, held)
         if self._active is not None:
             if key == self._active:
                 # التكرار التلقائي لزرار التسجيل نفسه وهو لسه ماسك:
@@ -274,9 +391,9 @@ class HotkeyLogic:
             if recording:
                 acts.append("cancel")
             return acts
-        if key in self._key_map and not recording and not busy:
+        if mode is not None and not recording and not busy:
             self._active = key
-            acts.append("begin:" + self._key_map[key])
+            acts.append("begin:" + mode)
         return acts
 
     def _release_hold(self, key, now):
@@ -290,17 +407,16 @@ class HotkeyLogic:
 
     # ── toggle ──
 
-    def _press_toggle(self, key, now):
+    def _press_toggle(self, key, now, mode, held):
         if key in self._held:
             return []                  # تكرار تلقائي وهو ماسك — مفيش mask ولا إجراء
-        acts = self._mask(key)
+        acts = self._mask(key, mode, held)
         for k in self._held:
             if k != key:
                 self._spoiled.add(k)
-        if key in self._key_map:
-            if key in self._held:      # تكرار تلقائي وهو ماسك
-                return acts
-            self._held[key] = now
+        if mode is not None:
+            # الوضع بيتثبّت وقت الدوسة: Ctrl لو اتساب قبل الزرار مايغيّرش الوضع
+            self._held[key] = (now, mode)
             if len(self._held) > 1:
                 self._spoiled.add(key)
         else:
@@ -308,16 +424,215 @@ class HotkeyLogic:
         return acts
 
     def _release_toggle(self, key, now, recording, busy):
-        t0 = self._held.pop(key, None)
+        entry = self._held.pop(key, None)
         clean = key not in self._spoiled
         self._spoiled.discard(key)
-        if key not in self._key_map or t0 is None or not clean or now - t0 > self._tap_max:
+        if entry is None or not clean or now - entry[0] > self._tap_max:
             return []
         if recording:
             return ["end"]
         elif not busy:
-            return ["begin:" + self._key_map[key]]
+            return ["begin:" + entry[1]]
         return []
+
+
+class HotkeyFilter:
+    """
+    قرار «نمنع الحدث ده عن البرامج التانية؟» — بيتحسب جوّه الـhook نفسه (لازم يبقى سريع).
+    المنع بنفس HotkeyMatcher اللي بيشغّل التسجيل. القرار بيتثبّت لكل دوسة حقيقية لحد
+    التسيب: التكرار التلقائي والتسيب بياخدوا قرار أول دوسة، حتى لو Ctrl اتداس أو اتساب
+    في النص (غير كده البرنامج كان ممكن يستلم تسيب من غير دوسة أو العكس).
+    الموديفاير لوحده (Ctrl/Alt/Shift/Win) عمره ما بيتمنع — Ctrl+C وأخواتها تفضل شغّالة.
+    initially_down: الزراير الماسكة وقت ما المستمع بدأ (من ويندوز) — عشان Ctrl الماسك
+    من قبل يتحسب. is_down(vk): حالة الزرار الفعلية — قبل أي دوسة جديدة بنشيل الموديفاير اللي
+    مبقاش ماسك (تسيبه ضاع، زي Ctrl+Alt+Del أو Win+L) عشان مايفضلش يبوّظ المطابقة — حتى
+    لو الدوسة نفسها موديفاير (Ctrl اليمين لوحده زرار تسجيل).
+    """
+
+    def __init__(self, matcher, initially_down=frozenset(), is_down=None):
+        self._matcher = matcher
+        self._down = set(initially_down)
+        self._latched = {}
+        self._is_down = is_down
+
+    def event(self, vk, is_press, injected, fake_altgr_ctrl):
+        """بيرجّع (dispatch, suppress): نبعته لمنطق الزراير؟ ونمنعه عن البرامج التانية؟"""
+        if injected or fake_altgr_ctrl:
+            return False, False
+        if is_press:
+            if vk not in self._down:
+                if self._is_down is not None:
+                    self._down = {k for k in self._down if k not in MODIFIER_VKS or self._is_down(k)}
+                matched = self._matcher.match(vk, frozenset(self._down)) is not None
+                self._latched[vk] = matched and vk not in MODIFIER_VKS
+                self._down.add(vk)
+            return True, self._latched.get(vk, False)
+        suppress = self._latched.pop(vk, False)
+        self._down.discard(vk)
+        return True, suppress
+
+    def held(self):
+        return frozenset(self._down)
+
+
+CAPTURE_PAIR_ERR = "لازم زرار منهم يبقى Ctrl أو Alt أو Shift أو Win"
+CAPTURE_KEY_ERR = "الزرار ده مينفعش يبقى زرار تسجيل — اختار زرار زي F8 أو تركيبة زي Ctrl + زرار"
+
+
+class CaptureSession:
+    """
+    تسجيل زرار التسجيل من الكيبورد (count = ١ أو ٢). بيسجّل الزراير اللي اتداست جوّه
+    الجلسة بس: الزراير الماسكة من قبلها (initially_down) — حتى تكرارها التلقائي — مش
+    بتاعتنا لحد ما تتساب، فتعدّي للبرنامج زي ما هي ومايفضلش فيه زرار «متعلّق».
+    decided = النتيجة (أو الغلط أو الإلغاء) اتعرفت؛ finished = decided وكل زرار
+    سجّلناه اتساب — المستمع لازم يفضل يمنع لحد finished، غير كده البرنامج التاني
+    يستلم تسيب زرار ما استلمش دوسته.
+    """
+
+    def __init__(self, count, initially_down=frozenset()):
+        self._count = count
+        self._foreign = set(initially_down)
+        self._down = []             # زرايرنا الماسكة دلوقتي بترتيب الدوس
+        self._pair = None           # count=2: أول زرارين اتمسكوا مع بعض
+        self.decided = False
+        self.cancelled = False
+        self.error = None
+        self.result = None
+
+    @property
+    def finished(self):
+        return self.decided and not self._down
+
+    def captured_down(self):
+        """زرايرنا اللي لسه ماسكة — المستمع مايتقفلش وفيه واحد منهم (تسيبه هيتمنع)."""
+        return frozenset(self._down)
+
+    def event(self, vk, is_press, fake_altgr_ctrl):
+        """True = الحدث ده بتاعنا (لازم يتمنع عن البرامج التانية)."""
+        if fake_altgr_ctrl:
+            return False
+        if vk in self._foreign:
+            if not is_press:
+                self._foreign.discard(vk)
+            return False
+        if is_press:
+            if vk in self._down:
+                return True                         # تكرار تلقائي لزرار بتاعنا
+            if self.decided:
+                return False                        # زرار جديد بعد ما خلصنا — مش بتاعنا
+            self._down.append(vk)
+            if vk == VK_ESCAPE and len(self._down) == 1:
+                self.cancelled = self.decided = True
+            elif self._count == 2 and self._pair is None and len(self._down) >= 2:
+                self._pair = self._down[:2]
+            return True
+        if vk not in self._down:
+            return False
+        self._down.remove(vk)
+        if not self.decided:
+            if self._count == 1:
+                self._decide([vk])
+            elif self._pair is not None:
+                mods = [k for k in self._pair if k in MODIFIER_VKS]
+                keys = [k for k in self._pair if k not in MODIFIER_VKS]
+                if len(mods) == 1 and len(keys) == 1:
+                    self._decide([mods[0], keys[0]])
+                else:
+                    self.error, self.decided = CAPTURE_PAIR_ERR, True
+        return True
+
+    def _decide(self, vks):
+        self.decided = True
+        if hotkey_shape_ok(vks):
+            self.result = vks
+        else:
+            self.error = CAPTURE_KEY_ERR
+
+
+# ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
+FEATURES = ("normal", "prompt", "translate", "edit")
+LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
+STT_ONLY = ("deepgram", LOCAL)        # بيفرّغوا بس — ممنوعين في قايمة المعالجة
+KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram")
+_CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
+
+
+def default_features(cfg, pools, local_model, stt_orders, chat_orders):
+    """
+    ترحيل الإعدادات القديمة (مزوّد واحد لكل حاجة) لقوايم الميزات من غير تغيير في التصرف:
+    البدائل اللي كانت مخبّية جوّه المزوّد (stt_alt / chat_alt) بتبقى عناصر ظاهرة بنفس
+    الترتيب. cfg = الملف القديم؛ stt_orders/chat_orders = ترتيب النهارده لكل مزوّد.
+    """
+    names = {"normal": cfg.get("hotkey_normal") or cfg.get("hotkey"),
+             "prompt": cfg.get("hotkey_prompt"), "translate": cfg.get("hotkey_translate"),
+             "edit": cfg.get("hotkey_edit")}
+    pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS else "groq"
+    local = {"provider": LOCAL, "model": ""}
+
+    # «من غير إنترنت دايمًا» كان اختيار خصوصية: لا الصوت ولا النص عمرهم خرجوا من الجهاز —
+    # فولا ميزة بتاخد موديل معالجة (البرومبت/الترجمة بيكتبوا الكلام زي ما اتقال والتعديل
+    # بيرفض، زي قبل كده). المستخدم هو اللي يضيف موديل لو عايز.
+    local_only = cfg.get("offline_mode") == "always"
+    if local_only:
+        stt = [local]
+    else:
+        stt = [{"provider": pid, "model": m} for m in stt_orders.get(pid) or []]
+        if local_model and cfg.get("offline_mode", "fallback") == "fallback":
+            stt.append(local)
+        stt = stt or [local]
+
+    candidates = [pid] + [p for p in _CHAT_FALLBACK_ORDER if p != pid]
+    chat_capable = [p for p in candidates if chat_orders.get(p)]
+    keyed = [p for p in chat_capable if pools.get(p)]
+    ai_pid = keyed[0] if keyed else (chat_capable[0] if chat_capable else None)
+    ai = [{"provider": ai_pid, "model": m} for m in chat_orders.get(ai_pid) or []]
+
+    out = {}
+    for mode in FEATURES:
+        vk = LEGACY_HOTKEY_VKS.get(str(names[mode] or "").strip().lower())
+        out[mode] = {
+            "hotkey": [vk] if vk else [],
+            "stt": [dict(i) for i in stt],
+            # من غير ولا مفتاح شات: العادي بيفضل خام زي النهارده؛ الباقي محتاج معالجة
+            # فبياخد أول مزوّد شات — التشغيل هيقول إن المفتاح ناقص
+            "ai": [dict(i) for i in ai] if not local_only and (keyed or mode != "normal") else [],
+        }
+    return out
+
+
+def validate_features(features, known=KNOWN_PROVIDERS):
+    """قبل الحفظ بس: رسالة الغلط بالعربي، أو None لو الإعدادات سليمة."""
+    if not isinstance(features, dict) or any(not isinstance(features.get(m), dict) for m in FEATURES):
+        return "إعدادات الميزات ناقصة"
+    seen = {}
+    for mode in FEATURES:
+        f = features[mode]
+        stt, ai, hk = f.get("stt"), f.get("ai"), f.get("hotkey")
+        if not isinstance(stt, list) or not stt:
+            return "لازم يبقى فيه مزوّد تفريغ واحد على الأقل في كل ميزة"
+        if not isinstance(ai, list):     # فاضية مسموحة: العادي خام، والباقي من غير تحويل
+            return "إعدادات الميزات ناقصة"
+        for item in stt:
+            if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,):
+                return "مزوّد تفريغ مش معروف"
+            if item["provider"] != LOCAL and not item.get("model"):
+                return "اختار موديل لكل مزوّد تفريغ"
+        for item in ai:
+            if not isinstance(item, dict) or item.get("provider") not in known \
+                    or item.get("provider") in STT_ONLY or not item.get("model"):
+                return "المعالجة محتاجة مزوّد بيعرف يكتب (مش Deepgram ولا الموديل المحلي)"
+        if not isinstance(hk, list) or not hotkey_shape_ok(hk):
+            return "زرار التسجيل مش مظبوط — زرار واحد، أو Ctrl/Alt/Shift/Win مع زرار"
+        if hk:
+            if tuple(hk) in seen:
+                return "كل ميزة لازم يبقى ليها زرار مختلف"
+            seen[tuple(hk)] = mode
+    # Ctrl اليمين لوحده زرار ميزة، وCtrl اليمين + F8 زرار ميزة تانية: دوسة Ctrl هتبدأ
+    # الأولى وF8 هيلغيها — فبنرفض التركيبة دي من الأول
+    singles = {k[0] for k in seen if len(k) == 1}
+    if any(len(k) == 2 and k[0] in singles for k in seen):
+        return "زرار لوحده مينفعش يبقى أول زرار في تركيبة ميزة تانية"
+    return None
 
 
 # ── F3: الحقن الهجين — تصنيف الهدف واستراتيجية الحقن ───────────────────────────

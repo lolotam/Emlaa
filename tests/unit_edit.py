@@ -95,6 +95,10 @@ def make_app():
 class FakeEditClient:
     """مزوّد وهمي: transcribe بيرجّع التعليمات، edit بيرجّع النتيجة (أو None)."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, instruction="حط عنوان", result="النص المعدل"):
         self.instruction = instruction
         self.result = result
@@ -222,7 +226,7 @@ class TestProcessEdit(unittest.TestCase):
     def _run(self, op, fake=None, same=True, paste="placed"):
         app = make_app()
         fake = fake or FakeEditClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -265,7 +269,7 @@ class TestProcessEdit(unittest.TestCase):
         app = make_app()
         cfg = dict(core.DEFAULTS, auto_paste=auto_paste)
         fake = fake or FakeEditClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", cfg), \
@@ -521,44 +525,6 @@ class TestSameTarget(unittest.TestCase):
         op = core.Operation(mode="edit", hwnd=7, runtime_id=(), selection="نص")
         with mock.patch.object(winput, "foreground_hwnd", return_value=7):
             self.assertFalse(winput.same_target(op))
-
-
-# ── الإعدادات: رفض الزرار المكرر ──────────────────────────────────────────────
-class TestSaveSettingsHotkey(unittest.TestCase):
-    def test_duplicate_hotkey_rejected(self):
-        import app_web
-        ctrl = mock.Mock()
-        api = app_web.Api(ctrl)
-        cfg = dict(core.DEFAULTS)
-        d = tempfile.TemporaryDirectory()
-        self.addCleanup(d.cleanup)
-        with mock.patch.object(core, "CFG", cfg), \
-                mock.patch.object(providers, "read_keys", return_value={"groq": "k"}), \
-                mock.patch.object(core, "save_config"), \
-                mock.patch.object(core, "HISTORY_PATH", os.path.join(d.name, "history.json")), \
-                mock.patch.object(core, "RECORDINGS_DIR", os.path.join(d.name, "recordings")), \
-                mock.patch.object(core, "history_prune"):
-            r = api.save_settings({"hotkey_normal": "ctrl_r", "hotkey_prompt": "ctrl_r"})
-        self.assertFalse(r["ok"])
-        self.assertIn("err", r)
-
-    def test_edit_hotkey_can_be_off_without_conflict(self):
-        import app_web
-        ctrl = mock.Mock()
-        ctrl.hotkeys = []
-        ctrl.engine = None
-        api = app_web.Api(ctrl)
-        cfg = dict(core.DEFAULTS)
-        d = tempfile.TemporaryDirectory()
-        self.addCleanup(d.cleanup)
-        with mock.patch.object(core, "CFG", cfg), \
-                mock.patch.object(providers, "read_keys", return_value={"groq": "k"}), \
-                mock.patch.object(core, "save_config"), \
-                mock.patch.object(core, "HISTORY_PATH", os.path.join(d.name, "history.json")), \
-                mock.patch.object(core, "RECORDINGS_DIR", os.path.join(d.name, "recordings")), \
-                mock.patch.object(core, "history_prune"):
-            r = api.save_settings({"hotkey_edit": ""})
-        self.assertTrue(r["ok"])
 
 
 if __name__ == "__main__":

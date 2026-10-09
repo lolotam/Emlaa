@@ -20,8 +20,8 @@ import tkinter as tk
 from tkinter import ttk
 
 import core
-import offline
 import providers
+import smart
 import winput
 
 APP_VERSION = "1.19"
@@ -70,22 +70,44 @@ STATE = {
     "err":       (RED,       "في مشكلة"),
 }
 
-HOTKEYS = [
-    ("ctrl_r",      "Ctrl اليمين"),
-    ("alt_r",       "Alt اليمين"),
-    ("shift_r",     "Shift اليمين"),
-    ("caps_lock",   "Caps Lock"),
-    ("scroll_lock", "Scroll Lock"),
-    ("f6",          "F6"),
-    ("f7",          "F7"),
-    ("f8",          "F8"),
-    ("f9",          "F9"),
-    ("f10",         "F10"),
-    ("f11",         "F11"),
-    ("f12",         "F12"),
-]
-HK_LABEL = dict(HOTKEYS)
-HK_KEY   = {v: k for k, v in HOTKEYS}
+# الواجهة الكلاسيك بتعرض زراير التلات أوضاع دي بس — زرار التعديل بيتظبط من الواجهة الجديدة
+CLASSIC_MODES = ("normal", "prompt", "translate")
+
+
+def classic_hotkey_options(features, lang="ar"):
+    """
+    خيارات كومبوبوكس كل وضع: [(الاسم، vks)] — الزراير القديمة، وكمان الزرار المحفوظ لو
+    مش واحد منهم (تركيبة اتسجّلت من الواجهة الجديدة) عشان حفظ مالمسهوش مايضيّعهوش.
+    """
+    base = [(smart.hotkey_label([vk], lang), [vk]) for vk in smart.LEGACY_HOTKEY_VKS.values()]
+    out = {}
+    for mode in CLASSIC_MODES:
+        cur = list(features[mode]["hotkey"])
+        extra = [] if any(vks == cur for _, vks in base) else [(smart.hotkey_label(cur, lang) or "مفيش", cur)]
+        out[mode] = base + extra
+    return out
+
+
+def classic_save_features(cfg, picks, pid, new_key=None):
+    """
+    الميزات بعد حفظة من الواجهة الكلاسيك: (features, features_custom, رسالة غلط أو None).
+    مزوّد اتغيّر والميزات لسه محسوبة (مش متعدّلة) = بتتحسب تاني من المزوّد الجديد. القاموس
+    كله بيتبني الأول وبعدين يتفحص مرة واحدة — تبديل زرارين بين وضعين في نفس الحفظة يعدّي.
+    زرار اتغيّر = الميزات بقت متعدّلة، فتغيير مزوّد بعدين مايمسحهاش.
+    new_key: مفتاح المزوّد الجديد اللي هيتكتب بعد التحقق — بيتحسب كأنه موجود، غير كده
+    المعالجة كانت هتفضل على المزوّد القديم اللي ليه مفتاح.
+    """
+    base = cfg.get("features") or core.DEFAULTS["features"]
+    if pid != cfg.get("provider") and not cfg.get("features_custom"):
+        pools = core.providers.read_key_pools(core.ENV_PATH)
+        if new_key:
+            pools = dict(pools, **{pid: [new_key] + list(pools.get(pid) or [])})
+        base = core.migrated_features(dict(cfg, provider=pid), pools)
+    features = {m: dict(f, hotkey=list(f["hotkey"])) for m, f in base.items()}
+    for mode, vks in picks.items():
+        features[mode]["hotkey"] = list(vks)
+    changed = any(features[m]["hotkey"] != base[m]["hotkey"] for m in CLASSIC_MODES)
+    return features, bool(cfg.get("features_custom")) or changed, smart.validate_features(features)
 
 
 def open_link(url):
@@ -609,10 +631,8 @@ class EmlaaClassic(tk.Tk):
         # قبل ثريد المحرّك: start_hotkey بيستورد pynput (اللي بيستورد six) — لو اتداخل
         # مع استيراد pystray بيحصل سباق six.moves (#6)
         core.preload_pystray()
-        keys = providers.read_keys(core.ENV_PATH)
-        # F9: وضع offline دايمًا + موديل مثبّت بيشتغل من غير مفتاح — زي الواجهة الأساسية
-        if keys.get(self._sel_provider) or (
-                self.cfg.get("offline_mode") == "always" and offline.installed()):
+        # أي ميزة عندها حاجة تفرّغ (مزوّد بمفتاح أو الموديل المحلي) — زي الواجهة الأساسية
+        if core.can_run():
             self._screen_main()
             self._start_engine()
         else:
@@ -865,6 +885,8 @@ class EmlaaClassic(tk.Tk):
             if ok:
                 providers.write_key(core.ENV_PATH, pid, key)
                 self.cfg["provider"] = pid
+                if not self.cfg.get("features_custom"):
+                    self.cfg["features"] = core.migrated_features(self.cfg)
                 core.save_config(self.cfg)
                 self._screen_main()
                 self._center()
@@ -1130,29 +1152,19 @@ class EmlaaClassic(tk.Tk):
         tk.Frame(inner, bg=LINE, height=1).pack(fill="x", pady=16)
 
         # ── أزرار الاختصارات الثلاثة ──
-        tk.Label(inner, text=R("زرار التسجيل العادي (تفريغ وتنظيف)"), bg=BG, fg=MUTED,
-                 font=(FONT, 8), anchor="e").pack(fill="x")
-        cur_norm = self.cfg.get("hotkey_normal") or self.cfg.get("hotkey") or "ctrl_r"
-        self.hk_norm_var = tk.StringVar(value=HK_LABEL.get(cur_norm, cur_norm))
-        ttk.Combobox(inner, textvariable=self.hk_norm_var, state="readonly", justify="right",
-                     style="D.TCombobox", values=[v for _, v in HOTKEYS]
-                     ).pack(fill="x", pady=(4, 9), ipady=2)
-
-        tk.Label(inner, text=R("زرار تسجيل البرومبت (تحويل لطلب للـAI)"), bg=BG, fg=MUTED,
-                 font=(FONT, 8), anchor="e").pack(fill="x")
-        cur_prmt = self.cfg.get("hotkey_prompt") or "alt_r"
-        self.hk_prmt_var = tk.StringVar(value=HK_LABEL.get(cur_prmt, cur_prmt))
-        ttk.Combobox(inner, textvariable=self.hk_prmt_var, state="readonly", justify="right",
-                     style="D.TCombobox", values=[v for _, v in HOTKEYS]
-                     ).pack(fill="x", pady=(4, 9), ipady=2)
-
-        tk.Label(inner, text=R("زرار الترجمة الفورية (عربي ⟷ إنجليزي)"), bg=BG, fg=MUTED,
-                 font=(FONT, 8), anchor="e").pack(fill="x")
-        cur_trns = self.cfg.get("hotkey_translate") or "shift_r"
-        self.hk_trns_var = tk.StringVar(value=HK_LABEL.get(cur_trns, cur_trns))
-        ttk.Combobox(inner, textvariable=self.hk_trns_var, state="readonly", justify="right",
-                     style="D.TCombobox", values=[v for _, v in HOTKEYS]
-                     ).pack(fill="x", pady=(4, 9), ipady=2)
+        feats = self.cfg.get("features") or core.DEFAULTS["features"]
+        self._hk_opts = classic_hotkey_options(feats)
+        self._hk_vars = {}
+        for mode, title in (("normal", "زرار التسجيل العادي (تفريغ وتنظيف)"),
+                            ("prompt", "زرار تسجيل البرومبت (تحويل لطلب للـAI)"),
+                            ("translate", "زرار الترجمة الفورية (عربي ⟷ إنجليزي)")):
+            tk.Label(inner, text=R(title), bg=BG, fg=MUTED, font=(FONT, 8), anchor="e").pack(fill="x")
+            opts = self._hk_opts[mode]
+            cur = next(label for label, vks in opts if vks == list(feats[mode]["hotkey"]))
+            self._hk_vars[mode] = tk.StringVar(value=cur)
+            ttk.Combobox(inner, textvariable=self._hk_vars[mode], state="readonly", justify="right",
+                         style="D.TCombobox", values=[label for label, _ in opts]
+                         ).pack(fill="x", pady=(4, 9), ipady=2)
 
 
         self.polish_var = tk.BooleanVar(value=self.cfg.get("polish", True))
@@ -1260,27 +1272,36 @@ class EmlaaClassic(tk.Tk):
         if getattr(self, "smsg", None) and self.smsg.winfo_exists():
             self.smsg.config(text=R(text) if text else "", fg=color)
 
+    def _hotkey_picks(self):
+        """الزرار اللي في كل كومبوبوكس — vks مش الاسم."""
+        return {m: dict(self._hk_opts[m])[self._hk_vars[m].get()] for m in CLASSIC_MODES}
+
     def _save(self):
         pid = self._settings_pid()
         key = self.skey_var.get().strip().strip('"').strip("'")
         self._key_drafts[pid] = key
+        features, custom, err = classic_save_features(self.cfg, self._hotkey_picks(), pid, key)
+        if err:
+            self._set_smsg(err, RED)
+            return
+        plan = (features, custom)
 
         old_key = providers.read_keys(core.ENV_PATH).get(pid, "")
         old_pid = self.cfg.get("provider")
         need_check = key and (key != old_key or pid != old_pid)
 
         if not key:
-            # F9: وضع offline دايمًا + موديل مثبّت شغّال من غير مفتاح — باقي الإعدادات
-            # (الأزرار والتنضيف…) لازم تتحفظ برضه، من غير ما نكتب مفتاح فاضي
-            if self.cfg.get("offline_mode") == "always" and offline.installed():
-                self._apply(pid, "", verified=False)
+            # من غير مفتاح الإعدادات بتتحفظ لو لسه فيه حاجة تفرّغ (مفتاح مزوّد تاني أو
+            # الموديل المحلي) — من غير ما نكتب مفتاح فاضي
+            if core.can_run(dict(self.cfg, features=features)):
+                self._apply(pid, "", False, plan)
                 return
             self._set_smsg(f"محطّتش مفتاح لـ{providers.meta(pid)['name']} — "
                            "من غيره مش هيعرف يفرّغ كلامك.", AMBER)
             return
 
         if not need_check:
-            self._apply(pid, key, verified=False)
+            self._apply(pid, key, False, plan)
             return
 
         self.save_btn.config(text=R("بتأكد من المفتاح…"), state="disabled")
@@ -1293,25 +1314,26 @@ class EmlaaClassic(tk.Tk):
         def done(ok, err):
             self.save_btn.config(state="normal")
             if ok:
-                self._apply(pid, key, verified=True)
+                self._apply(pid, key, True, plan)
             else:
                 self.save_btn.config(text=R("حفظ"))
                 self._set_smsg(err + " — متحفظش لحد ما يظبط.", RED)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply(self, pid, key, verified):
-
-        """الحفظ الفعلي + التطبيق على طول من غير إعادة تشغيل."""
-        if key:                                          # offline من غير مفتاح: منكتبش مفتاح فاضي
+    def _apply(self, pid, key, verified, plan):
+        """
+        الحفظ الفعلي + التطبيق على طول من غير إعادة تشغيل.
+        plan = (features, features_custom) من classic_save_features — متفحوصة قبل كده.
+        """
+        if key:                                          # من غير مفتاح: منكتبش مفتاح فاضي
             providers.write_key(core.ENV_PATH, pid, key)
 
-        old_keys = (self.cfg.get("hotkey_normal"), self.cfg.get("hotkey_prompt"), self.cfg.get("hotkey_translate"))
+        features, custom = plan
+        old_keys = [f["hotkey"] for f in (self.cfg.get("features") or {}).values()]
         self.cfg["provider"]         = pid
-        self.cfg["hotkey_normal"]    = HK_KEY.get(self.hk_norm_var.get(), self.hk_norm_var.get())
-        self.cfg["hotkey_prompt"]    = HK_KEY.get(self.hk_prmt_var.get(), self.hk_prmt_var.get())
-        self.cfg["hotkey_translate"] = HK_KEY.get(self.hk_trns_var.get(), self.hk_trns_var.get())
-        self.cfg["hotkey"]           = self.cfg["hotkey_normal"]
+        self.cfg["features"]         = features
+        self.cfg["features_custom"]  = custom
         self.cfg["polish"]           = bool(self.polish_var.get())
         self.cfg["prompt_mode"]      = bool(self.prompt_var.get())
         self.cfg["auto_paste"]       = bool(self.paste_var.get())
@@ -1321,7 +1343,7 @@ class EmlaaClassic(tk.Tk):
         core.save_config(self.cfg)
         self._wave_apply_setting()
 
-        new_keys = (self.cfg.get("hotkey_normal"), self.cfg.get("hotkey_prompt"), self.cfg.get("hotkey_translate"))
+        new_keys = [f["hotkey"] for f in features.values()]
         if self.engine:
             self.engine.reset_client()                   # المزوّد/المفتاح
             if new_keys != old_keys:
@@ -1330,7 +1352,7 @@ class EmlaaClassic(tk.Tk):
         self._render_provider(); self._render_mode(); self._set_hint()
 
         if not key:
-            self._set_smsg("اتحفظ ✓ — شغّال دلوقتي من غير إنترنت", GREEN)
+            self._set_smsg("اتحفظ ✓ — التغييرات شغّالة دلوقتي", GREEN)
             return
         name = providers.meta(pid)["name"]
         self._set_smsg(f"اتحفظ ✓ — شغّال دلوقتي على {name}"
@@ -1473,8 +1495,10 @@ class EmlaaClassic(tk.Tk):
         self.after(1500, lambda: self.copy_btn.config(text=R("نسخ"), fg=MUTED))
 
     def _render_provider(self):
-        m = providers.meta(self.cfg.get("provider"))
-        self.prov_lbl.config(text=R("عن طريق " + m["name"]))
+        """أول مزوّد في قايمة تفريغ التسجيل العادي — ده اللي هيتجرّب الأول."""
+        pid = core.feature("normal")["stt"][0]["provider"]
+        name = "Whisper محلي" if pid == smart.LOCAL else providers.meta(pid)["name"]
+        self.prov_lbl.config(text=R("عن طريق " + name))
 
     def _render_mode(self):
         if self.cfg.get("prompt_mode"):
@@ -1483,9 +1507,7 @@ class EmlaaClassic(tk.Tk):
             self.mode_lbl.pack_forget()
 
     def _set_hint(self):
-        hn = HK_LABEL.get(self.cfg.get("hotkey_normal", self.cfg.get("hotkey", "ctrl_r")), "Ctrl يمين")
-        hp = HK_LABEL.get(self.cfg.get("hotkey_prompt", "alt_r"), "Alt يمين")
-        ht = HK_LABEL.get(self.cfg.get("hotkey_translate", "shift_r"), "Shift يمين")
+        hn, hp, ht = (smart.hotkey_label(core.feature(m)["hotkey"]) or "—" for m in CLASSIC_MODES)
         self.hint.config(text=R(f"عادي: {hn} · برومبت: {hp} · ترجمة: {ht}"))
 
     def _toggle_record(self):
@@ -1648,7 +1670,7 @@ if __name__ == "__main__":
     if "--classic" not in sys.argv:
         try:
             import app_web
-            app_web.run(APP_VERSION, BRAND_NAME, BRAND_URL, HOTKEYS)
+            app_web.run(APP_VERSION, BRAND_NAME, BRAND_URL)
             raise SystemExit(0)
         except SystemExit:
             raise

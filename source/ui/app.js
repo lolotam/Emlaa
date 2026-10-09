@@ -19,7 +19,10 @@ const S = {
   provider: null,
   snipEditKey: null,
   offline: null,
-  keyPool: { pid: null, keys: [] },
+  keyPools: {},          // pid → المفاتيح المموّهة وحالتها
+  features: null,        // نسخة الإعدادات اللي بنعدّل فيها لحد «حفظ»
+  feat: "normal",        // التاب المفتوح
+  capturing: false,      // مستنيين المستخدم يدوس الزرار
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
@@ -39,6 +42,8 @@ const ICON = {
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
   eye: '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg>',
+  down: '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>',
   eyeOff: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
 };
 
@@ -82,12 +87,6 @@ async function copyText(text, btn) {
   btn.classList.add("ok");
   btn.innerHTML = btn.classList.contains("icon-btn") ? ICON.check : ICON.check + "<span>اتنسخ</span>";
   setTimeout(() => { btn.classList.remove("ok"); btn.innerHTML = old; }, 1300);
-}
-const KEYCAP = { ctrl_r: "Right Ctrl", alt_r: "Right Alt", shift_r: "Right Shift", caps_lock: "Caps Lock", scroll_lock: "Scroll Lock" };
-function hkLabel(id) {
-  if (KEYCAP[id]) return KEYCAP[id];
-  const h = (S.boot?.hotkeys || []).find(x => x.id === id);
-  return h ? h.label : (id || "—");
 }
 
 /* ═══════════ المظهر (فاتح / غامق / تلقائي) ═══════════ */
@@ -149,11 +148,11 @@ function renderStats(st) {
   $("#navHistCount").textContent = st.count ? num(st.count) : "";
 }
 function renderKeys() {
-  const c = S.boot.cfg;
-  const toggle = c.mode !== "hold";
-  const rows = [["normal", c.hotkey_normal], ["prompt", c.hotkey_prompt], ["translate", c.hotkey_translate]];
-  if (c.hotkey_edit) rows.push(["edit", c.hotkey_edit]);
-  $("#homeKeys").innerHTML = rows.map(([m, k]) => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(hkLabel(k))}</span></div>`).join("")
+  const toggle = S.boot.cfg.mode !== "hold";
+  const f = S.boot.features;
+  // التعديل بيظهر بس لو ليه زرار — من غيره مالوش طريقة يتشغّل بيها من الرئيسية
+  const modes = ["normal", "prompt", "translate"].concat(f.edit.hotkey.length ? ["edit"] : []);
+  $("#homeKeys").innerHTML = modes.map(m => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(f[m].label || "—")}</span></div>`).join("")
     + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من دول تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
 }
 function renderLast() {
@@ -698,8 +697,8 @@ function provCards(container, onPick) {
 function curProv() { return S.boot.providers.find(p => p.id === S.provider) || S.boot.providers[0]; }
 
 /* ── دليل المفتاح لكل مزوّد ── */
-function renderGuide(el) {
-  const p = curProv(), g = p.guide || {};
+function renderGuide(el, p) {
+  const g = p.guide || {};
   el.innerHTML = `
     <summary><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2.2-2.4 3.5"/><path d="M12 17h.01"/></svg>
       <span>إزاي أجيب مفتاح</span> <bdi class="g-name">${esc(p.name)}</bdi>${g.free ? `<span class="g-free">${esc(g.free)}</span>` : ""}</summary>
@@ -710,63 +709,165 @@ function renderGuide(el) {
     </div>`;
   el.onclick = e => { const b = e.target.closest("[data-url]"); if (b) api().open_url(b.dataset.url); };
 }
-
-/* ── اختيار موديل التفريغ (موديلات الصوت بس + نسبة الترشيح) ── */
-function badgeHTML(s) {
-  if (s == null) return `<span class="mbadge b-new">بدون تقييم</span>`;
-  const cls = s >= 100 ? "b-top" : s >= 85 ? "b-good" : "b-ok";
-  return `<span class="mbadge ${cls}"><b>${s}%</b>${s >= 100 ? "<span>موصى به</span>" : ""}</span>`;
-}
-const MP = { list: [], live: false, seq: 0 };
-function renderModels() {
-  const box = $("#modelPick"), list = MP.list;
-  if (S.model && !list.some(m => m.id === S.model)) list.push({ id: S.model, score: null, note: "" });
-  if (!S.model) S.model = list[0] ? list[0].id : "";
-  const cur = list.find(m => m.id === S.model);
-  $(".msel-val", box).innerHTML = cur ? `<bdi class="mo-id">${esc(cur.id)}</bdi>${badgeHTML(cur.score)}` : "—";
-  $(".msel-list", box).innerHTML = list.map(m => `
-    <button type="button" class="msel-opt${m.id === S.model ? " sel" : ""}" role="option" data-id="${esc(m.id)}">
-      <span class="mo-main"><bdi class="mo-id">${esc(m.id)}</bdi>${m.note ? `<small class="mo-note">${esc(m.note)}</small>` : ""}</span>
-      ${badgeHTML(m.score)}</button>`).join("");
-}
-function setModelSrc(t) { $("#modelSrc").textContent = t; }
-async function loadModels(key) {
-  const p = curProv(), seq = ++MP.seq;
-  MP.list = (p.models || []).map(m => ({ ...m })); MP.live = false;
-  renderModels();
-  if (!key && !p.hasKey) { setModelSrc("قايمة مقترحة — هتتحدّث لما تحط المفتاح"); return; }
-  setModelSrc("بجيب الموديلات المتاحة على مفتاحك…");
-  const r = await api().models(p.id, key || "");
-  if (seq !== MP.seq) return;                                     // المستخدم غيّر المزوّد في النص
-  MP.list = r.models; MP.live = r.live;
-  renderModels();
-  setModelSrc(r.live ? "دي موديلات التفريغ المتاحة على مفتاحك" : "قايمة مقترحة — معرفناش نسأل المزوّد دلوقتي");
-}
-(() => {
-  const box = $("#modelPick"), lst = $(".msel-list", box);
-  const close = () => { lst.hidden = true; box.classList.remove("open"); };
-  $(".msel-btn", box).addEventListener("click", e => {
-    e.stopPropagation(); lst.hidden = !lst.hidden; box.classList.toggle("open", !lst.hidden);
-  });
-  lst.addEventListener("click", e => {
-    const o = e.target.closest(".msel-opt"); if (!o) return;
-    S.model = o.dataset.id; renderModels(); close();
-  });
-  document.addEventListener("click", e => { if (!box.contains(e.target)) close(); });
-  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
-})();
-function sttOnlyNote() {
-  const p = curProv(), n = $("#sttOnlyNote");
-  n.hidden = !p.sttOnly;
-  if (!p.sttOnly) return;
-  n.textContent = S.boot.chatHelper
-    ? `${p.name} بيفرّغ بس — التنظيف والبرومبت والترجمة هيشتغلوا بمفتاح ${S.boot.chatHelper}`
-    : `${p.name} بيفرّغ بس — ضيف مفتاح Groq أو Gemini كمان عشان التنظيف والبرومبت والترجمة يشتغلوا`;
-}
 function fillSelect(sel, list, value) {
   sel.innerHTML = list.map(o => `<option value="${esc(o.id)}">${esc(o.label)}</option>`).join("");
   sel.value = value ?? "";
 }
+
+/* ── الميزات الأربعة: زرار + قايمة تفريغ + قايمة معالجة لكل ميزة ──
+   S.features نسخة بنعدّل فيها لحد «حفظ»؛ كل قايمة بتتجرّب بالترتيب (البديل لو اللي قبله فشل) */
+const FEAT_DESC = {
+  normal: "بيكتب كلامك زي ما هو بعد التنظيف",
+  prompt: "بيرتّب كلامك كطلب واضح للـAI",
+  translate: "عربي ← إنجليزي والعكس",
+  edit: "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد",
+};
+const AI_EMPTY = {
+  normal: "مفيش معالجة — الكلام بيتكتب زي ما اتقال",
+  prompt: "مفيش موديل — الكلام بيتكتب زي ما اتقال من غير تحويل",
+  translate: "مفيش موديل — الكلام بيتكتب زي ما اتقال من غير تحويل",
+  edit: "مفيش موديل — التعديل مش هيشتغل لحد ما تضيف واحد",
+};
+const LOCAL = "local";
+const CAPTURE_WAIT = "دوس الزرار دلوقتي… (Esc للإلغاء)";
+
+function feat() { return S.features[S.feat]; }
+function catalog(pid) { return (S.boot.catalog || {})[pid] || {}; }
+function chainModels(kind, pid) {
+  const c = catalog(pid);
+  return (kind === "stt" ? c.sttModels : c.chatModels) || [];
+}
+// اللي ينفع يتختار في القايمة: المعالجة بمزوّد بيكتب بس، والمحلي للتفريغ بس (ومش في نسخة الـStore)
+function chainProviders(kind, current) {
+  return Object.keys(S.boot.catalog || {}).filter(pid => {
+    if (pid === LOCAL) return kind === "stt" && (!S.boot.offline?.packaged || current === LOCAL);
+    return kind === "stt" || !catalog(pid).sttOnly;
+  });
+}
+function chainWarn(item) {
+  if (item.provider === LOCAL) return catalog(LOCAL).installed ? "" : "مش متثبّت — نزّله من تحت";
+  return catalog(item.provider).hasKey ? "" : "مفيش مفتاح";
+}
+function chainRowHTML(kind, item, i, n, canRemove) {
+  const provs = chainProviders(kind, item.provider).map(pid =>
+    `<option value="${esc(pid)}"${pid === item.provider ? " selected" : ""}>${esc(catalog(pid).name || pid)}</option>`).join("");
+  let models = "";
+  if (item.provider !== LOCAL) {
+    const list = chainModels(kind, item.provider).slice();
+    if (item.model && !list.includes(item.model)) list.unshift(item.model);   // الموديل المحفوظ دايمًا ظاهر
+    models = `<select class="select chain-model">${list.map(m =>
+      `<option value="${esc(m)}"${m === item.model ? " selected" : ""}>${esc(m)}</option>`).join("")}</select>`;
+  } else {
+    const inst = catalog(LOCAL).installed;
+    models = `<span class="chain-local">${inst ? esc(inst) : ""}</span>`;
+  }
+  const warn = chainWarn(item);
+  return `<div class="chain-row" data-i="${i}">
+    <span class="chain-n">${i + 1}</span>
+    <select class="select chain-prov">${provs}</select>
+    ${models}
+    ${warn ? `<span class="chain-warn">${esc(warn)}</span>` : ""}
+    <span class="chain-acts">
+      <button class="icon-btn chain-up" type="button" title="لفوق"${i === 0 ? " disabled" : ""}>${ICON.up}</button>
+      <button class="icon-btn chain-down" type="button" title="لتحت"${i === n - 1 ? " disabled" : ""}>${ICON.down}</button>
+      <button class="icon-btn del chain-del" type="button" title="حذف"${canRemove ? "" : " disabled"}>${ICON.x}</button>
+    </span>
+  </div>`;
+}
+function renderChain(kind) {
+  const list = feat()[kind];
+  // التفريغ لازم يفضل فيه عنصر؛ المعالجة ممكن تفضى (اختيار خصوصية)
+  const minLen = kind === "stt" ? 1 : 0;
+  const box = $(kind === "stt" ? "#sttList" : "#aiList");
+  box.innerHTML = list.length
+    ? list.map((it, i) => chainRowHTML(kind, it, i, list.length, list.length > minLen)).join("")
+    : `<div class="chain-empty">${AI_EMPTY[S.feat]}</div>`;
+}
+function renderFeat() {
+  const f = feat();
+  $$("#featTabs [data-feat]").forEach(b => b.classList.toggle("active", b.dataset.feat === S.feat));
+  $("#featDesc").textContent = FEAT_DESC[S.feat];
+  $("#hkLabel").textContent = S.capturing ? CAPTURE_WAIT : (f.label || "—");
+  $("#hkLabel").classList.toggle("wait", !!S.capturing);
+  $("#hkClear").disabled = !!S.capturing || !f.hotkey.length;
+  $("#aiHint").textContent = S.feat === "normal"
+    ? "التنظيف والتصحيح — لو شلت كل الموديلات الكلام بيتكتب زي ما اتقال"
+    : "بيتجرّب بالترتيب — من غير موديل الميزة دي مبتحوّلش الكلام";
+  renderChain("stt");
+  renderChain("ai");
+}
+// عنصر جديد: أول مزوّد/موديل مش في القايمة — المزوّدين اللي ليهم مفتاح الأول
+function newChainItem(kind) {
+  const list = feat()[kind];
+  const provs = chainProviders(kind).filter(p => p !== LOCAL || catalog(LOCAL).installed);
+  provs.sort((a, b) => Number(!!catalog(b).hasKey || b === LOCAL) - Number(!!catalog(a).hasKey || a === LOCAL));
+  const options = provs.flatMap(pid => pid === LOCAL ? [{ provider: LOCAL, model: "" }]
+    : chainModels(kind, pid).map(model => ({ provider: pid, model })));
+  return options.find(o => !list.some(x => x.provider === o.provider && x.model === o.model)) || options[0];
+}
+function chainEdit(kind, e) {
+  const row = e.target.closest(".chain-row");
+  if (!row) return;
+  const list = feat()[kind], i = Number(row.dataset.i);
+  if (e.type === "change") {
+    if (e.target.classList.contains("chain-prov")) {
+      const pid = e.target.value;
+      list[i] = { provider: pid, model: pid === LOCAL ? "" : (chainModels(kind, pid)[0] || "") };
+    } else if (e.target.classList.contains("chain-model")) {
+      list[i].model = e.target.value;
+    }
+  } else if (e.target.closest(".chain-up") && i > 0) {
+    [list[i - 1], list[i]] = [list[i], list[i - 1]];
+  } else if (e.target.closest(".chain-down") && i < list.length - 1) {
+    [list[i + 1], list[i]] = [list[i], list[i + 1]];
+  } else if (e.target.closest(".chain-del")) {
+    list.splice(i, 1);
+  } else {
+    return;
+  }
+  renderChain(kind);
+}
+["stt", "ai"].forEach(kind => {
+  const box = $(kind === "stt" ? "#sttList" : "#aiList");
+  box.addEventListener("change", e => chainEdit(kind, e));
+  box.addEventListener("click", e => chainEdit(kind, e));
+  $(kind === "stt" ? "#sttAdd" : "#aiAdd").addEventListener("click", () => {
+    const item = newChainItem(kind);
+    if (!item) return;
+    feat()[kind].push({ ...item });
+    renderChain(kind);
+  });
+});
+$("#featTabs").addEventListener("click", e => {
+  const b = e.target.closest("[data-feat]");
+  if (!b || S.capturing) return;
+  S.feat = b.dataset.feat;
+  renderFeat();
+});
+
+/* ── تسجيل الزرار من الكيبورد ── النتيجة بتروح للميزة اللي طلبت (r.feature) */
+function setCapturing(on) {
+  S.capturing = on;
+  $$("#featTabs [data-feat], #hkRec1, #hkRec2").forEach(b => { b.disabled = on; });
+  $("#saveBtn").disabled = on;
+  renderFeat();
+}
+async function captureHotkey(count) {
+  setCapturing(true);
+  let r;
+  try { r = await api().capture_hotkey(S.feat, count); }
+  catch (e) { r = { ok: false, err: "مقدرتش أسجّل الزرار — جرّب تاني" }; }
+  if (r && r.ok) Object.assign(S.features[r.feature], { hotkey: r.keys, label: r.label });
+  setCapturing(false);
+  if (!r || !r.ok) toast((r && r.err) || "مقدرتش أسجّل الزرار — جرّب تاني");
+}
+$("#hkRec1").addEventListener("click", () => captureHotkey(1));
+$("#hkRec2").addEventListener("click", () => captureHotkey(2));
+$("#hkClear").innerHTML = ICON.x;
+$("#hkClear").addEventListener("click", () => {
+  Object.assign(feat(), { hotkey: [], label: "" });
+  renderFeat();
+});
 
 /* ── أساليب السياق F5: override لكل برنامج (اسم exe بدون امتداد ← dev/chat/formal) ── */
 const STYLE_OPTS = [["dev", "تطوير"], ["chat", "شات"], ["formal", "رسمي"]];
@@ -796,8 +897,8 @@ function collectStyles() {
   return out;
 }
 /* ── التفريغ من غير إنترنت (F9) ── */
-// keepForm: تحديث الحالة بس (بعد تنزيل/إزالة) — اختيار الوضع/الموديل اللي المستخدم
-// لسه ماحفظهوش بيفضل زي ما هو؛ غير كده «دايمًا» كان بيرجع «احتياطي» من غير ما يحس
+// keepForm: تحديث الحالة بس (بعد تنزيل/إزالة) — الموديل اللي المستخدم اختاره ولسه
+// ماحفظهوش بيفضل زي ما هو
 function renderOffline(keepForm) {
   const o = S.offline;
   if (!o) return;
@@ -812,16 +913,14 @@ function renderOffline(keepForm) {
     ? "الموديل بايظ — شيله ونزّله تاني"
     : (installed ? `مثبّت: ${installed}، ${sz} MB` : "الموديل مش متثبّت");
   $("#offlineRemove").disabled = !installed && !o.residual;
-  const prevModel = $("#offlineModel").value, prevMode = $("#offlineMode").value;
+  const prevModel = $("#offlineModel").value;
   $("#offlineModel").innerHTML = (o.models || []).map(m =>
     `<option value="${esc(m.id)}">${esc(m.id)} ≈ ${m.size} MB — ${OFFLINE_MODEL_LABEL[m.id] || ""}</option>`).join("");
-  if (keepForm && prevMode) {
-    if ((o.models || []).some(m => m.id === prevModel)) $("#offlineModel").value = prevModel;
-    $("#offlineMode").value = prevMode;
+  if (keepForm && (o.models || []).some(m => m.id === prevModel)) {
+    $("#offlineModel").value = prevModel;
     return;
   }
   $("#offlineModel").value = (o.model && (o.models || []).some(m => m.id === o.model)) ? o.model : (installed || "small-q5_1");
-  $("#offlineMode").value = o.mode === "always" ? "always" : "fallback";
 }
 async function refreshOffline(keepForm) {
   S.offline = await api().offline_status();
@@ -849,36 +948,18 @@ $("#offlineDownload").addEventListener("click", async () => {
 $("#offlineRemove").addEventListener("click", async () => {
   await api().offline_remove();
   refreshOffline(true);
-  refreshBoot();          // وضع «دايمًا» من غير مفتاح: من غير الموديل البرنامج مبقاش يقدر يشتغل
+  refreshCatalog();       // لو المحلي كان الوحيد اللي بيفرّغ، البرنامج مبقاش يقدر يشتغل
   toast("اتشال الموديل");
 });
 
 function fillSettings() {
   const c = S.boot.cfg;
-  S.provider = c.provider;
-  const ps = $("#setProvider");
-  ps.innerHTML = S.boot.providers.map(p => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.tag)}${p.hasKey ? " ✓" : ""}</option>`).join("");
-  ps.value = S.provider;
-  $("#setKey").value = "";
-  const provChanged = () => {
-    renderGuide($("#setGuide")); sttOnlyNote();
-    S.model = (c.models || {})[S.provider] || ""; loadModels("");
-    refreshKeyPool();
-  };
-  ps.onchange = () => { S.provider = ps.value; $("#setKey").value = ""; provChanged(); };
-  provChanged();
-  let kt;
-  $("#setKey").oninput = e => {                                   // مفتاح جديد → نجيب الموديلات بتاعته
-    clearTimeout(kt);
-    const k = e.target.value.trim();
-    if (k.length >= 20) kt = setTimeout(() => loadModels(k), 700);
-  };
-  fillSelect($("#hkNormal"), S.boot.hotkeys, c.hotkey_normal);
-  fillSelect($("#hkPrompt"), S.boot.hotkeys, c.hotkey_prompt);
-  fillSelect($("#hkTranslate"), S.boot.hotkeys, c.hotkey_translate);
-  fillSelect($("#hkEdit"), S.boot.hotkeys, c.hotkey_edit || "");
-  $("#hkEdit").insertAdjacentHTML("afterbegin", `<option value="">مفيش</option>`);
-  $("#hkEdit").value = c.hotkey_edit || "";
+  S.features = JSON.parse(JSON.stringify(S.boot.features));
+  S.feat = S.feat || "normal";
+  S.capturing = false;
+  renderFeat();
+  renderKeysSection();
+  refreshKeyPools();
   fillSelect($("#hkOpen"), S.boot.openHotkeys, c.open_hotkey || "");
   $("#recMode").value = c.mode === "hold" ? "hold" : "toggle";
   $("#sInsert").value = c.insert_method === "auto" || c.insert_method === "paste" ? c.insert_method : "type";
@@ -894,25 +975,50 @@ function fillSettings() {
   $("#saveMsg").className = "save-msg";
   refreshOffline();
 }
+// المفاتيح أو الموديل المحلي اتغيّروا: الكتالوج (مين ليه مفتاح) بيتحدّث من غير ما نلمس
+// تعديلات الميزات اللي لسه ماتحفظتش
+async function refreshCatalog() {
+  await refreshBoot();
+  if (S.page === "settings" && S.features) renderFeat();
+}
 
-/* ═══════════ مجمّعة المفاتيح لكل مزوّد (Task 24) ═══════════ */
+/* ═══════════ المفاتيح: مجمّعة لكل مزوّد، مشتركة بين كل الميزات (Task 24) ═══════════ */
 const KEY_BADGE = { active: "🟢 نشط", rate_limited: "🔴 نفدت الكوتا مؤقتاً", invalid: "⚠️ غير صالح" };
 let keyPoolTimer = null;
 
+function keyBlock(pid) { return $(`#keysSection .key-block[data-pid="${pid}"]`); }
+function renderKeysSection() {
+  $("#keysSection").innerHTML = S.boot.providers.map(p => `
+    <div class="srow srow-stack key-block" data-pid="${esc(p.id)}">
+      <span class="srow-text"><b>${esc(p.name)} <span class="prov-tag">${esc(p.tag)}</span></b><small>${esc(p.keyHint)}</small></span>
+      <div class="key-pool">
+        <div class="key-list"></div>
+        <button class="ghost-btn key-add" type="button">+ إضافة مفتاح</button>
+        <div class="key-add-row" hidden>
+          <div class="key-add-line">
+            <input class="input key-add-input" type="password" placeholder="الصق المفتاح هنا" autocomplete="off" spellcheck="false">
+            <button class="cta cta-sm key-add-go" type="button">تحقق وأضف</button>
+            <button class="ghost-btn key-add-cancel" type="button">إلغاء</button>
+          </div>
+          <div class="key-add-err" hidden></div>
+        </div>
+      </div>
+      <details class="guide"></details>
+    </div>`).join("");
+  S.boot.providers.forEach(p => renderGuide($(".guide", keyBlock(p.id)), p));
+}
 function keyBadgeHTML(st, retryIn) {
   const label = KEY_BADGE[st] || KEY_BADGE.active;
   // الوقت المتبقي في title بس — النص الظاهر لسه قابل للترجمة
   const title = st === "rate_limited" && retryIn != null ? `⏱ ${Math.max(0, Math.round(retryIn))}s` : "";
   return `<span class="key-badge ${esc(st)}"${title !== "" ? ` title="${title}"` : ""}>${label}</span>`;
 }
-function renderKeyPool() {
-  const box = $("#keyList");
-  const keys = S.keyPool.keys || [];
-  if (!keys.length) {
-    box.innerHTML = `<div class="key-empty">مفيش مفاتيح محفوظة للمزوّد ده</div>`;
-    return;
-  }
-  box.innerHTML = keys.map(k => `
+function renderKeyPool(pid) {
+  const block = keyBlock(pid);
+  if (!block) return;
+  const keys = S.keyPools[pid] || [];
+  $(".key-add", block).textContent = keys.length ? "+ إضافة مفتاح إضافي" : "+ إضافة مفتاح";
+  $(".key-list", block).innerHTML = keys.length ? keys.map(k => `
     <div class="key-item" data-i="${k.index}" data-id="${esc(k.id)}">
       <span class="key-val" data-masked="${esc(k.masked)}">${esc(k.masked)}</span>
       ${keyBadgeHTML(k.status, k.retryIn)}
@@ -920,43 +1026,32 @@ function renderKeyPool() {
         <button class="icon-btn" data-act="reveal" title="إظهار المفتاح">${ICON.eye}</button>
         <button class="icon-btn del" data-act="remove" title="مسح">${ICON.trash}</button>
       </span>
-    </div>`).join("");
+    </div>`).join("") : `<div class="key-empty">مفيش مفاتيح محفوظة للمزوّد ده</div>`;
 }
-function renderKeyHint() {
-  const p = curProv();
-  const n = (S.keyPool.keys || []).length;
-  let base = p.hasKey ? `${p.keyHint} · فيه مفتاح محفوظ — سيب الخانة فاضية عشان تفضل عليه`
-                      : `${p.keyHint} · لازم مفتاح قبل الحفظ`;
-  if (n > 1) base += " · المفاتيح الإضافية بتتدار من القايمة تحت";
-  $("#setKeyHint").textContent = base;
-}
-function applyKeyPool(r) {
-  S.keyPool.keys = (r && r.keys) || [];
-  renderKeyPool();
-  renderKeyHint();
+function applyKeyPool(pid, r) {
+  S.keyPools[pid] = (r && r.keys) || [];
+  renderKeyPool(pid);
 }
 // soft (تحديث الحالة الدوري): لو القايمة نفسها متغيّرتش بنحدّث الشارات بس — إعادة رسم
 // كاملة كانت بتخفي المفتاح المعروض وبتلغي «متأكد؟» في نص التأكيد
-function softKeyPool(r) {
+function softKeyPool(pid, r) {
   const keys = (r && r.keys) || [];
-  const rows = $$("#keyList .key-item");
-  const same = rows.length === keys.length &&
-    keys.every((k, i) => rows[i].dataset.id === k.id);
-  if (!same) { applyKeyPool(r); return; }
-  S.keyPool.keys = keys;
+  const block = keyBlock(pid);
+  const rows = block ? $$(".key-item", block) : [];
+  const same = rows.length === keys.length && keys.every((k, i) => rows[i].dataset.id === k.id);
+  if (!same) { applyKeyPool(pid, r); return; }
+  S.keyPools[pid] = keys;
   keys.forEach((k, i) => { rows[i].querySelector(".key-badge").outerHTML = keyBadgeHTML(k.status, k.retryIn); });
 }
-async function refreshKeyPool(soft = false) {
-  const pid = S.provider;
-  S.keyPool.pid = pid;
-  const r = await api().key_pool(pid);
-  if (S.provider !== pid) return r;   // المستخدم غيّر المزوّد في النص — تجاهل الرد القديم
-  if (soft) softKeyPool(r); else applyKeyPool(r);
-  return r;
+async function refreshKeyPools(soft = false) {
+  await Promise.all(S.boot.providers.map(async p => {
+    const r = await api().key_pool(p.id);
+    if (soft) softKeyPool(p.id, r); else applyKeyPool(p.id, r);
+  }));
 }
 function startKeyPoolTimer() {
   stopKeyPoolTimer();
-  keyPoolTimer = setInterval(() => { if (S.page === "settings") refreshKeyPool(true); }, 15000);
+  keyPoolTimer = setInterval(() => { if (S.page === "settings") refreshKeyPools(true); }, 15000);
 }
 function stopKeyPoolTimer() {
   if (keyPoolTimer) { clearInterval(keyPoolTimer); keyPoolTimer = null; }
@@ -966,28 +1061,20 @@ function keyTrashDisarm(btn) {
   btn.classList.remove("confirm");
   if (btn.dataset.orig) { btn.innerHTML = btn.dataset.orig; delete btn.dataset.orig; }
 }
-function collapseKeyAdd() {
-  $("#keyAddRow").hidden = true;
-  const err = $("#keyAddErr");
+function collapseKeyAdd(block) {
+  $(".key-add-row", block).hidden = true;
+  const err = $(".key-add-err", block);
   err.hidden = true; err.textContent = "";
-  $("#keyAddInput").value = "";
+  $(".key-add-input", block).value = "";
 }
-$("#keyAdd").addEventListener("click", () => {
-  $("#keyAddRow").hidden = false;
-  $("#keyAddInput").focus();
-});
-$("#keyAddCancel").addEventListener("click", collapseKeyAdd);
-$("#keyAddGo").addEventListener("click", async () => {
-  const inp = $("#keyAddInput");
-  const key = inp.value.trim();
+async function keyAddGo(block) {
+  const pid = block.dataset.pid;
+  const key = $(".key-add-input", block).value.trim();
   if (!key) return;
-  const btn = $("#keyAddGo");
-  const errEl = $("#keyAddErr");
+  const btn = $(".key-add-go", block), errEl = $(".key-add-err", block);
   btn.disabled = true;
   btn.textContent = "بيتأكد…";
   errEl.hidden = true;
-  // المزوّد وقت الطلب: لو المستخدم غيّره والتحقق شغّال، الرد ده مش بتاع القايمة اللي ظاهرة
-  const pid = S.keyPool.pid;
   let r;
   try { r = await api().key_add(pid, key); }
   catch (e) { r = { ok: false, err: "مقدرتش أضيف المفتاح" }; }
@@ -998,15 +1085,13 @@ $("#keyAddGo").addEventListener("click", async () => {
     errEl.hidden = false;
     return;
   }
-  collapseKeyAdd();
-  if (S.provider === pid) applyKeyPool(r); else refreshKeyPool();
-  refreshBoot().then(renderKeyHint);
+  collapseKeyAdd(block);
+  applyKeyPool(pid, r);
+  refreshCatalog();
   toast("اتضاف المفتاح ✓");
-});
-$("#keyPool").addEventListener("click", async e => {
-  const act = e.target.closest("[data-act]");
-  const item = e.target.closest(".key-item");
-  if (!act || !item) return;
+}
+async function keyItemAction(block, act, item) {
+  const pid = block.dataset.pid;
   const i = Number(item.dataset.i);
   // بصمة المفتاح اللي في الصف: السيرفر بيرفض لو الفهرس بقى بيشاور على مفتاح تاني
   const id = item.dataset.id;
@@ -1019,32 +1104,44 @@ $("#keyPool").addEventListener("click", async e => {
       act.title = "إظهار المفتاح";
       return;
     }
-    const r = await api().key_reveal(S.keyPool.pid, i, id);
-    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أعرض المفتاح"); refreshKeyPool(); return; }
+    const r = await api().key_reveal(pid, i, id);
+    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أعرض المفتاح"); refreshKeyPools(); return; }
     val.textContent = r.key;
     val.dataset.revealed = "1";
     act.innerHTML = ICON.eyeOff;
     act.title = "إخفاء المفتاح";
     return;
   }
-  if (act.dataset.act === "remove") {
-    if (act.dataset.armed !== "1") {
-      act.dataset.armed = "1";
-      act.classList.add("confirm");
-      act.dataset.orig = act.innerHTML;
-      act.innerHTML = "<span>متأكد؟</span>";
-      clearTimeout(act._t);
-      act._t = setTimeout(() => keyTrashDisarm(act), 3000);
-      return;
-    }
-    keyTrashDisarm(act);
-    const r = await api().key_remove(S.keyPool.pid, i, id);
-    if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أمسح المفتاح"); refreshKeyPool(); return; }
-    applyKeyPool(r);
-    refreshBoot().then(renderKeyHint);
+  if (act.dataset.armed !== "1") {
+    act.dataset.armed = "1";
+    act.classList.add("confirm");
+    act.dataset.orig = act.innerHTML;
+    act.innerHTML = "<span>متأكد؟</span>";
+    clearTimeout(act._t);
+    act._t = setTimeout(() => keyTrashDisarm(act), 3000);
+    return;
+  }
+  keyTrashDisarm(act);
+  const r = await api().key_remove(pid, i, id);
+  if (!r || !r.ok) { toast((r && r.err) || "مقدرتش أمسح المفتاح"); refreshKeyPools(); return; }
+  applyKeyPool(pid, r);
+  refreshCatalog();
+}
+$("#keysSection").addEventListener("click", e => {
+  const block = e.target.closest(".key-block");
+  if (!block) return;
+  if (e.target.closest(".key-add")) {
+    $(".key-add-row", block).hidden = false;
+    $(".key-add-input", block).focus();
+  } else if (e.target.closest(".key-add-cancel")) {
+    collapseKeyAdd(block);
+  } else if (e.target.closest(".key-add-go")) {
+    keyAddGo(block);
+  } else {
+    const act = e.target.closest("[data-act]"), item = e.target.closest(".key-item");
+    if (act && item) keyItemAction(block, act, item);
   }
 });
-$("#getKey").addEventListener("click", () => api().open_url(curProv().keyUrl));
 $("#sStyle").addEventListener("change", e => { $("#styleBox").hidden = !e.target.checked; });
 $("#styleAdd").addEventListener("click", () => {
   const empty = $("#styleList .dict-empty");
@@ -1066,30 +1163,28 @@ $("#styleList").addEventListener("click", e => {
   }
 });
 $("#saveBtn").addEventListener("click", async () => {
-  const hk = [$("#hkNormal").value, $("#hkPrompt").value, $("#hkTranslate").value, $("#hkEdit").value];
   const msg = $("#saveMsg");
-  const used = hk.filter(Boolean);
-  if (new Set(used).size < used.length) {
-    msg.className = "save-msg err";
-    msg.textContent = "كل وضع لازم يبقى ليه زرار مختلف";
-    return;
-  }
   const btn = $("#saveBtn");
   btn.disabled = true;
   msg.className = "save-msg";
-  msg.textContent = $("#setKey").value.trim() ? "بتأكد من المفتاح…" : "بحفظ…";
-  const r = await api().save_settings({
-    provider: S.provider, key: $("#setKey").value.trim(), model: S.model,
-    hotkey_normal: hk[0], hotkey_prompt: hk[1], hotkey_translate: hk[2], hotkey_edit: hk[3],
+  msg.textContent = "بحفظ…";
+  let r;
+  try {
+    r = await api().save_settings({
+    features: S.features,
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
     auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
-    offline_mode: $("#offlineMode").value, offline_model: $("#offlineModel").value,
-  });
-  btn.disabled = false;
+    offline_model: $("#offlineModel").value,
+    });
+  } catch (e) {
+    r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" };
+  } finally {
+    btn.disabled = false;
+  }
   if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
   S.boot = r.boot;
   setLang(S.boot.cfg.lang);
@@ -1103,7 +1198,7 @@ $("#saveBtn").addEventListener("click", async () => {
 /* ═══════════ أول مرة ═══════════ */
 function fillWelcome() {
   S.provider = S.boot.cfg.provider || S.boot.providers[0].id;
-  const hint = () => { $("#welHint").textContent = curProv().keyHint; renderGuide($("#welGuide")); };
+  const hint = () => { $("#welHint").textContent = curProv().keyHint; renderGuide($("#welGuide"), curProv()); };
   provCards($("#welProviders"), hint);
   hint();
   // نسخة الـStore: مفيش تفريغ من غير إنترنت — بنخبّي الزرار زي قسم الـoffline
@@ -1265,7 +1360,7 @@ window.emlaa = {
     if (r.ok) {
       toast("اتنزّل ✓");
       refreshOffline(true);
-      refreshBoot();
+      refreshCatalog();
     } else {
       toast(r.err || "مقدرتش أنزّل الموديل");
     }
