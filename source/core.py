@@ -1280,6 +1280,10 @@ class Operation:
     probe: dict = field(default_factory=dict, compare=False)
 
 
+# قايمة معالجة فاضية = اختيار (خصوصية): الكلام اتكتب زي ما اتقال، والتعديل مايشتغلش
+NO_AI_MSG = "اتفرّغ بس — الميزة دي مالهاش موديل معالجة (ضيفه من الإعدادات)"
+EDIT_NO_AI_MSG = "التعديل محتاج موديل معالجة — ضيفه من تاب «تعديل» في الإعدادات"
+
 CAPTURE_TIMEOUT_ERR = "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار"
 
 
@@ -1475,6 +1479,10 @@ class App:
         # F5: اسم البرنامج بيتقعد على العملية قبل القفل — هو اللي هيحدد أسلوب
         # السياق (dev/chat/formal) وقت التنظيف، ومبيغادرش يتغيّر في نص الدورة.
         target_app = (_foreground_app() or "").strip().lower()
+        if mode == "edit" and not feature("edit").get("ai") and not (self.recording or self.busy):
+            # من غير موديل مفيش تعديل — منسجّلش ولا نلمس التحديد على الفاضي
+            self.on_state("err", EDIT_NO_AI_MSG)
+            return
         with self._state_lock:
             # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
             # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
@@ -1737,6 +1745,9 @@ class App:
                 # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
                 # يندسّ في خانة باسورد.
                 out = text
+            elif not feature(cur_mode).get("ai") and cur_mode in ("prompt", "translate"):
+                # قايمة المعالجة فاضية: الكلام زي ما اتقال — ولا نداء لأي موديل
+                out = text
             elif cur_mode == "prompt":
                 self.on_state("prompt", "بجهّز البرومبت…")
                 out = cl.to_prompt(text)
@@ -1821,8 +1832,13 @@ class App:
             if res == "placed" or res == "handoff" or (not secure and res == "failed"):
                 # البرومبت/الترجمة ومفيش ولا عنصر معالجة رد (نت/كوتا/مفاتيح): الكلام اتكتب
                 # زي ما اتقال — الحالة لازم تقول كده بدل ما تدّعي إن التحويل حصل
-                ai_failed = cur_mode in ("prompt", "translate") and not early_secure and not cl.ai_ok
-                self.on_state("done", "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال" if ai_failed else cur_mode)
+                converting = cur_mode in ("prompt", "translate") and not early_secure
+                if converting and not feature(cur_mode).get("ai"):
+                    self.on_state("done", NO_AI_MSG)
+                elif converting and not cl.ai_ok:
+                    self.on_state("done", "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال")
+                else:
+                    self.on_state("done", cur_mode)
             elif secure and res == "failed":
                 self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:

@@ -569,8 +569,9 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
     pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS else "groq"
     local = {"provider": LOCAL, "model": ""}
 
-    # «من غير إنترنت دايمًا» كان اختيار خصوصية: النص عمره ما راح لموديل — فالعادي بيفضل
-    # خام. البرومبت/الترجمة/التعديل مايشتغلوش من غير معالجة أصلًا، فبياخدوا القايمة
+    # «من غير إنترنت دايمًا» كان اختيار خصوصية: لا الصوت ولا النص عمرهم خرجوا من الجهاز —
+    # فولا ميزة بتاخد موديل معالجة (البرومبت/الترجمة بيكتبوا الكلام زي ما اتقال والتعديل
+    # بيرفض، زي قبل كده). المستخدم هو اللي يضيف موديل لو عايز.
     local_only = cfg.get("offline_mode") == "always"
     if local_only:
         stt = [local]
@@ -593,8 +594,8 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
             "hotkey": [vk] if vk else [],
             "stt": [dict(i) for i in stt],
             # من غير ولا مفتاح شات: العادي بيفضل خام زي النهارده؛ الباقي محتاج معالجة
-            # فبياخد أول مزوّد شات — التشغيل هيقول إن المفتاح ناقص بدل ما الحفظ يترفض
-            "ai": [dict(i) for i in ai] if ((keyed and not local_only) or mode != "normal") else [],
+            # فبياخد أول مزوّد شات — التشغيل هيقول إن المفتاح ناقص
+            "ai": [dict(i) for i in ai] if not local_only and (keyed or mode != "normal") else [],
         }
     return out
 
@@ -609,8 +610,8 @@ def validate_features(features, known=KNOWN_PROVIDERS):
         stt, ai, hk = f.get("stt"), f.get("ai"), f.get("hotkey")
         if not isinstance(stt, list) or not stt:
             return "لازم يبقى فيه مزوّد تفريغ واحد على الأقل في كل ميزة"
-        if not isinstance(ai, list) or (not ai and mode != "normal"):
-            return "لازم يبقى فيه موديل معالجة واحد على الأقل (غير التسجيل العادي)"
+        if not isinstance(ai, list):     # فاضية مسموحة: العادي خام، والباقي من غير تحويل
+            return "إعدادات الميزات ناقصة"
         for item in stt:
             if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,):
                 return "مزوّد تفريغ مش معروف"

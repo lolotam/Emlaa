@@ -1352,6 +1352,28 @@ class TestFeatureWiring(unittest.TestCase):
         self.assertEqual(fake.calls, [("transcribe", None)])
         self.assertEqual(paste.call_args.args[0], "Yes.")
 
+    def test_prompt_and_translate_without_ai_items_type_raw_text_and_call_no_model(self):
+        for mode in ("prompt", "translate"):
+            with self.subTest(mode=mode):
+                cfg = dict(core.DEFAULTS)
+                cfg["features"] = json.loads(json.dumps(core.DEFAULTS["features"]))
+                cfg["features"][mode]["ai"] = []
+                app, fake, _, _, _, _, paste = self.run_process(mode, fake=FakeClient(text="عايز صفحة"), cfg=cfg)
+                self.assertEqual(fake.calls, [("transcribe", None)])
+                self.assertEqual(paste.call_args.args[0], "عايز صفحة")
+                self.assertEqual(app.events[-1], ("done", core.NO_AI_MSG))
+
+    def test_edit_without_ai_items_refuses_before_recording(self):
+        app = make_app()
+        cfg = dict(core.DEFAULTS)
+        cfg["features"] = json.loads(json.dumps(core.DEFAULTS["features"]))
+        cfg["features"]["edit"]["ai"] = []
+        with mock.patch.object(core, "CFG", cfg), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            app.begin("edit")
+        self.assertFalse(app.recording)
+        self.assertEqual(app.events[-1], ("err", core.EDIT_NO_AI_MSG))
+
     def test_prompt_ai_failure_reports_it(self):
         fake = FakeClient(text="عايز صفحة هبوط")
         fake.ai_ok = False

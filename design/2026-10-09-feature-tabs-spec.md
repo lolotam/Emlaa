@@ -62,8 +62,9 @@ five, not "no model".
 
 ### Validation (`smart.validate_features`) — on save only
 
-- all four features present; every `stt` list non-empty; `ai` non-empty for prompt, translate,
-  edit (normal may be empty = raw); providers known; STT-only providers absent from `ai`;
+- all four features present; every `stt` list non-empty; `ai` may be empty in any feature
+  (normal = raw; prompt/translate type the transcript unconverted with a "no AI model" status;
+  edit refuses before recording); providers known; STT-only providers absent from `ai`;
 - hotkey shape as above: vk ints 1–254 only; `0x1B` (Esc) never in a hotkey; a typing key
   (letters, digits, Space, Enter, Tab, Backspace, Delete, arrows, Home/End/PgUp/PgDn, numpad,
   punctuation) is refused **alone** — it would be suppressed in every app — but allowed after
@@ -90,7 +91,9 @@ features are persisted the first time the user saves settings.
 - stt (all four features): today's effective order for `provider` — the chosen model
   (`models[provider]`) followed by the remaining entries of `stt` + `stt_alt` — one item per
   model; then `local` appended when `offline_mode == "fallback"` and a pack is installed.
-  `offline_mode == "always"` → `[local]` only.
+  `offline_mode == "always"` → `[local]` only, and `ai = []` in **all four** features — before,
+  neither audio nor text left the device in that mode (prompt/translate handed back the raw
+  text, edit refused), and the migration keeps exactly that; the user adds models if wanted.
 - ai (all four features): the first of `[provider] + CHAT_HELPERS` that has a chat model and a
   key pool, expanded to one item per model of `chat` + `chat_alt`. When no chat provider has a
   key: `ai = []` for normal; prompt/translate/edit get the first chat provider's models (saving

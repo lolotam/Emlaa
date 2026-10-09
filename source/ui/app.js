@@ -722,6 +722,12 @@ const FEAT_DESC = {
   translate: "عربي ← إنجليزي والعكس",
   edit: "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد",
 };
+const AI_EMPTY = {
+  normal: "مفيش معالجة — الكلام بيتكتب زي ما اتقال",
+  prompt: "مفيش موديل — الكلام بيتكتب زي ما اتقال من غير تحويل",
+  translate: "مفيش موديل — الكلام بيتكتب زي ما اتقال من غير تحويل",
+  edit: "مفيش موديل — التعديل مش هيشتغل لحد ما تضيف واحد",
+};
 const LOCAL = "local";
 const CAPTURE_WAIT = "دوس الزرار دلوقتي… (Esc للإلغاء)";
 
@@ -770,12 +776,12 @@ function chainRowHTML(kind, item, i, n, canRemove) {
 }
 function renderChain(kind) {
   const list = feat()[kind];
-  // التفريغ لازم يفضل فيه عنصر؛ المعالجة كمان — إلا العادي (فاضية = خام)
-  const minLen = kind === "stt" || S.feat !== "normal" ? 1 : 0;
+  // التفريغ لازم يفضل فيه عنصر؛ المعالجة ممكن تفضى (اختيار خصوصية)
+  const minLen = kind === "stt" ? 1 : 0;
   const box = $(kind === "stt" ? "#sttList" : "#aiList");
   box.innerHTML = list.length
     ? list.map((it, i) => chainRowHTML(kind, it, i, list.length, list.length > minLen)).join("")
-    : `<div class="chain-empty">مفيش معالجة — الكلام بيتكتب زي ما اتقال</div>`;
+    : `<div class="chain-empty">${AI_EMPTY[S.feat]}</div>`;
 }
 function renderFeat() {
   const f = feat();
@@ -786,7 +792,7 @@ function renderFeat() {
   $("#hkClear").disabled = !!S.capturing || !f.hotkey.length;
   $("#aiHint").textContent = S.feat === "normal"
     ? "التنظيف والتصحيح — لو شلت كل الموديلات الكلام بيتكتب زي ما اتقال"
-    : "لازم موديل واحد على الأقل — بيتجرّب بالترتيب";
+    : "بيتجرّب بالترتيب — من غير موديل الميزة دي مبتحوّلش الكلام";
   renderChain("stt");
   renderChain("ai");
 }

@@ -56,9 +56,8 @@ class TestMigration(unittest.TestCase):
     def test_offline_always_is_local_only_everywhere(self):
         f = mig(local="base", offline_mode="always")
         self.assertTrue(all(f[m]["stt"] == [LOCAL] for m in smart.FEATURES))
-        # كان اختيار خصوصية: النص عمره ما راح لموديل — العادي يفضل خام
-        self.assertEqual(f["normal"]["ai"], [])
-        self.assertTrue(f["prompt"]["ai"])
+        # كان اختيار خصوصية: لا الصوت ولا النص عمرهم خرجوا من الجهاز — ولا ميزة ليها موديل
+        self.assertTrue(all(f[m]["ai"] == [] for m in smart.FEATURES))
 
     def test_ai_mirrors_hidden_chat_fallbacks(self):
         self.assertEqual(mig()["prompt"]["ai"], [{"provider": "groq", "model": m} for m in CHAT["groq"]])
@@ -87,7 +86,6 @@ class TestValidate(unittest.TestCase):
 
     def test_rules(self):
         self.bad(lambda f: f["prompt"].update(hotkey=[0xA3]))                        # مكرر
-        self.bad(lambda f: f["prompt"].update(ai=[]))                                 # معالجة فاضية
         self.bad(lambda f: f["normal"].update(ai=[{"provider": "deepgram", "model": "x"}]))
         self.bad(lambda f: f["normal"].update(ai=[LOCAL]))
         self.bad(lambda f: f["normal"].update(stt=[]))
@@ -99,9 +97,10 @@ class TestValidate(unittest.TestCase):
         self.bad(lambda f: f["normal"].update(stt=[{"provider": "groq", "model": ""}]))
         self.assertIsNone(smart.validate_features(mig()))
 
-    def test_empty_ai_allowed_for_normal_only(self):
+    def test_empty_ai_allowed_in_every_feature(self):
         f = mig()
-        f["normal"]["ai"] = []
+        for m in smart.FEATURES:
+            f[m]["ai"] = []
         self.assertIsNone(smart.validate_features(f))
 
     def test_several_empty_hotkeys_allowed(self):
