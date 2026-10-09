@@ -214,6 +214,9 @@ class _Ctrl:
     def tk_call(self, fn):
         pass
 
+    def push(self, fn, payload):
+        pass
+
 
 class _BridgeCase(unittest.TestCase):
     """CFG في الذاكرة، و.env مؤقت، والحفظ بيتسجّل بدل ما يكتب config.json."""
@@ -282,6 +285,14 @@ class TestSaveSettings(_BridgeCase):
             self.save({"provider": "openai", "key": "sk-new"})
         self.assertEqual(self.saved[-1]["features"], mig())
 
+    def test_welcome_switch_to_keyless_provider_refused_when_result_cannot_transcribe(self):
+        # PR #15 (CodeRabbit): مفتاح Groq موجود بس الميزات (مش متعدّلة) هتتحسب تاني من OpenAI
+        # اللي مالوش مفتاح — الإعدادات الناتجة مش هتفرّغ، فالحفظ لازم يترفض
+        self.write_env("GROQ_API_KEY=k\n")
+        r, _ = self.save({"provider": "openai"})
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.saved, [])
+
     def test_welcome_without_key_refused_when_nothing_can_transcribe(self):
         r, _ = self.save({"provider": "groq"})
         self.assertFalse(r["ok"])
@@ -339,6 +350,24 @@ class TestKeyAddStartsEngine(_BridgeCase):
         ctrl = self.add(engine)
         self.assertEqual(ctrl.started, 0)
         engine.reset_client.assert_called_once()
+
+
+class TestOfflineDownloadStartsEngine(_BridgeCase):
+    """PR #15 (Codex): «محلي» في قايمة التفريغ والموديل لسه بيتنزّل — بعد التنزيل المحرك يبدأ."""
+
+    def test_download_that_makes_dictation_possible_starts_the_engine(self):
+        local = {"provider": "local", "model": ""}
+        self.cfg["features"] = {m: dict(f, stt=[local]) for m, f in mig().items()}
+        ctrl = _Ctrl()
+
+        def download(model, progress=None):
+            self.local = model                      # الموديل بقى متثبّت
+
+        with mock.patch.object(core.offline, "download", side_effect=download), \
+                mock.patch.object(self.app_web.threading, "Thread",
+                                  side_effect=lambda target=None, daemon=None: mock.Mock(start=target)):
+            self.assertTrue(self.app_web.Api(ctrl).offline_download("base")["ok"])
+        self.assertEqual(ctrl.started, 1)
 
 
 class TestBootstrapFeatures(_BridgeCase):

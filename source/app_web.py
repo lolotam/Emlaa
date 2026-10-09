@@ -219,10 +219,15 @@ class Controller:
                 app.on_state = self.set_state
                 app.on_text = self.on_text
                 app.on_unplaced = self.on_unplaced
+                try:
+                    app.start_hotkey()
+                except Exception:
+                    # المحرك مايتسجّلش نص شغّال: غير كده start_engine كان هيرفض أي محاولة تانية
+                    app.shutdown()
+                    raise
                 self.engine = app
                 if self.root is not None:
                     self.root.engine = app
-                app.start_hotkey()
                 self.set_state("ready")
             except Exception as e:
                 core.log_error(e, "engine/boot")
@@ -845,7 +850,14 @@ class Api:
         if pid not in providers.PROVIDERS:
             return "مزوّد مش معروف"
         if not new_key:
-            if providers.read_key_pools(core.ENV_PATH).get(pid) or core.can_run():
+            cfg = core.CFG
+            if providers.read_key_pools(core.ENV_PATH).get(pid):
+                return None
+            # الإعدادات بعد الحفظ: الميزات اللي ماتعدّلتش بتتحسب تاني من المزوّد ده — لازم
+            # تفضل تقدر تفرّغ (مش الحالية بس)
+            after = cfg if cfg.get("features_custom") else dict(
+                cfg, features=core.migrated_features(dict(cfg, provider=pid)))
+            if core.can_run(after):
                 return None
             return "محتاج مفتاح للمزوّد ده — الصقه في الخانة"
         ok, err = providers.verify(pid, new_key)
@@ -948,7 +960,7 @@ class Api:
                 providers.add_provider_key(core.ENV_PATH, pid, key)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
-            self._keys_changed()
+            self._readiness_changed()
             return {"ok": True, **self.key_pool(pid)}
 
     def key_remove(self, pid, index, key_id=None):
@@ -976,12 +988,12 @@ class Api:
                 providers.remove_provider_key(core.ENV_PATH, pid, index)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
-            self._keys_changed()
+            self._readiness_changed()
             return {"ok": True, **self.key_pool(pid)}
 
-    def _keys_changed(self):
+    def _readiness_changed(self):
         """
-        المفاتيح اتغيّرت: عملاء الميزات المخزّنين بيتبنوا تاني بالمجمّعة الجديدة — ولو المحرك
+        المفاتيح أو الموديل المحلي اتغيّروا: عملاء الميزات المخزّنين بيتبنوا تاني — ولو المحرك
         لسه مابدأش (اتفتحت الإعدادات من الترحيب) وبقى فيه حاجة تفرّغ، بيبدأ دلوقتي.
         """
         engine = getattr(self._c, "engine", None)
@@ -1018,6 +1030,7 @@ class Api:
         def run():
             try:
                 offline.download(model, progress=lambda f: self._c.push("onOfflineProgress", {"fraction": f}))
+                self._readiness_changed()
                 self._c.push("onOfflineDone", {"ok": True, "model": model})
             except Exception as e:
                 core.log_error(e, "offline/download")
