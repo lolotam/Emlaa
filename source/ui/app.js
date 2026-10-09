@@ -977,6 +977,7 @@ function fillSettings() {
   renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
+  SAVE.err = null;                // الفورم اتملى من المحفوظ — الغلط القديم مبقاش قايم
   refreshOffline();
 }
 // المفاتيح أو الموديل المحلي اتغيّروا: الكتالوج (مين ليه مفتاح) بيتحدّث من غير ما نلمس
@@ -1221,9 +1222,11 @@ async function flushSave() {
   if (SAVE.timer) { clearTimeout(SAVE.timer); await saveSettings(); }
   while (SAVE.running) await new Promise(r => setTimeout(r, 50));
 }
-function leaveSettings() {
-  if (SAVE.timer) flushSave();
-  else if (SAVE.err) toast("الإعدادات ماتحفظتش: " + SAVE.err);
+// الخروج من الصفحة: بنستنى الحفظة الأخيرة — لو اترفضت (زرار مكرر مثلًا) الرسالة تحت بقت
+// مستخبية، فالتنبيه هو اللي بيقول للمستخدم إن الإعدادات ماتحفظتش
+async function leaveSettings() {
+  await flushSave();
+  if (SAVE.err) toast("الإعدادات ماتحفظتش: " + SAVE.err);
 }
 (() => {
   const page = $('.page[data-page="settings"]');
