@@ -353,7 +353,6 @@ tr.open .clip-text { -webkit-line-clamp: unset; user-select: text; }
 .switch input:checked + i::after { background: var(--cta-fg); transform: translateX(-16px); }
 .save-bar { position: sticky; bottom: -24px; display: flex; align-items: center; gap: 14px; justify-content: flex-end;
             padding: 14px 0 0; margin-top: 4px; background: linear-gradient(to top, var(--bg) 70%, transparent); }
-.save-bar .cta { width: 200px; }
 .save-msg { font-size: 12.5px; color: var(--muted); }
 .save-msg.ok { color: var(--green); }
 .save-msg.err { color: var(--danger-fg); }
@@ -500,7 +499,7 @@ label.srow:hover { background: var(--hover); }
 .main { padding-bottom: 80px; }
 
 /* شريط الحفظ: شريط صلب بحد علوي بدل التدرّج اللي كان بيغطي الصفوف */
-.save-bar { background: var(--bg); border-top: 1px solid var(--line); padding: 12px 0; margin-top: 16px; bottom: -80px; }
+.save-bar { background: var(--bg); border-top: 1px solid var(--line); padding: 12px 0; margin-top: 16px; bottom: -80px; min-height: 45px; }
 .chart-total { font-family: var(--font); }
 
 /* ═══════════ الوضعين: غامق (الافتراضي) وفاتح ═══════════ */

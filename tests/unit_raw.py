@@ -208,3 +208,29 @@ class TestEngineStartsOnce(unittest.TestCase):
             app.shutdown.assert_called_once()
             c.start_engine()
         self.assertEqual(len(threads), 2)
+
+
+class TestQuitFlushesSettings(unittest.TestCase):
+    """PR #16 (Codex): «خروج» من التراي بيستنى الواجهة تخلّص حفظ الإعدادات قبل ما يقفل."""
+
+    def controller(self, window):
+        c = object.__new__(app_web.Controller)
+        c._quitting, c.tray, c.engine, c._open_hk, c.clip, c.root = False, None, None, None, None, None
+        c.window = window
+        return c
+
+    def test_quit_waits_for_the_ui_flush_before_destroying_the_window(self):
+        order = []
+        window = mock.Mock()
+        window.evaluate_js.side_effect = lambda script, callback: (order.append("flush"), callback(None))
+        window.destroy.side_effect = lambda: order.append("destroy")
+        self.controller(window).quit()
+        self.assertEqual(order, ["flush", "destroy"])
+        self.assertIn("flushSave", window.evaluate_js.call_args.args[0])
+
+    def test_quit_still_closes_when_the_ui_cannot_flush(self):
+        window = mock.Mock()
+        window.evaluate_js.side_effect = RuntimeError("window gone")
+        with mock.patch.object(app_web.core, "log_error"):
+            self.controller(window).quit()
+        window.destroy.assert_called_once()

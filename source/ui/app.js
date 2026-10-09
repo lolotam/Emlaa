@@ -107,6 +107,9 @@ async function setTheme(pref) {
 function go(page) {
   if (!S.boot) return;
   if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
+  // نفس الصفحة: إعادة ملء الإعدادات من المحفوظ كانت هتمسح تغيير لسه بيستنى الحفظ
+  if (page === S.page && page === "settings") return;
+  if (S.page === "settings" && page !== "settings") leaveSettings();
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
   $$(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.go === page));
@@ -114,7 +117,15 @@ function go(page) {
   if (page === "history") renderHistory();
   if (page === "clipboard") loadClips();
   if (page === "dictionary") { renderDict(); renderSnippets(); }
-  if (page === "settings") { fillSettings(); startKeyPoolTimer(); }
+  // الفورم بيتملى من المحفوظ بعد ما أي حفظة شغّالة تخلص — غير كده كان هيتملى بالقيم
+  // القديمة والتعديل الجاي يرجّعها
+  if (page === "settings") {
+    // الصفحة مقفولة للمس لحد ما تتملى — كتابة في الفورم القديم وقت الانتظار كانت هتتمسح بالملء
+    const settingsPage = $('.page[data-page="settings"]');
+    settingsPage.inert = true;
+    flushSave().then(() => { if (S.page === "settings") fillSettings(); settingsPage.inert = false; });
+    startKeyPoolTimer();
+  }
   else stopKeyPoolTimer();
   updateBulk();
 }
@@ -826,6 +837,7 @@ function chainEdit(kind, e) {
     return;
   }
   renderChain(kind);
+  scheduleSave();
 }
 ["stt", "ai"].forEach(kind => {
   const box = $(kind === "stt" ? "#sttList" : "#aiList");
@@ -836,6 +848,7 @@ function chainEdit(kind, e) {
     if (!item) return;
     feat()[kind].push({ ...item });
     renderChain(kind);
+    scheduleSave();
   });
 });
 $("#featTabs").addEventListener("click", e => {
@@ -849,7 +862,6 @@ $("#featTabs").addEventListener("click", e => {
 function setCapturing(on) {
   S.capturing = on;
   $$("#featTabs [data-feat], #hkRec1, #hkRec2").forEach(b => { b.disabled = on; });
-  $("#saveBtn").disabled = on;
   renderFeat();
 }
 async function captureHotkey(count) {
@@ -859,6 +871,7 @@ async function captureHotkey(count) {
   catch (e) { r = { ok: false, err: "مقدرتش أسجّل الزرار — جرّب تاني" }; }
   if (r && r.ok) Object.assign(S.features[r.feature], { hotkey: r.keys, label: r.label });
   setCapturing(false);
+  if (r && r.ok) scheduleSave(0);
   if (!r || !r.ok) toast((r && r.err) || "مقدرتش أسجّل الزرار — جرّب تاني");
 }
 $("#hkRec1").addEventListener("click", () => captureHotkey(1));
@@ -867,6 +880,7 @@ $("#hkClear").innerHTML = ICON.x;
 $("#hkClear").addEventListener("click", () => {
   Object.assign(feat(), { hotkey: [], label: "" });
   renderFeat();
+  scheduleSave();
 });
 
 /* ── أساليب السياق F5: override لكل برنامج (اسم exe بدون امتداد ← dev/chat/formal) ── */
@@ -973,6 +987,7 @@ function fillSettings() {
   renderStyleRows();
   $("#saveMsg").textContent = "";
   $("#saveMsg").className = "save-msg";
+  SAVE.err = null;                // الفورم اتملى من المحفوظ — الغلط القديم مبقاش قايم
   refreshOffline();
 }
 // المفاتيح أو الموديل المحلي اتغيّروا: الكتالوج (مين ليه مفتاح) بيتحدّث من غير ما نلمس
@@ -1156,21 +1171,19 @@ $("#styleList").addEventListener("click", e => {
   const b = e.target.closest(".style-del");
   if (!b) return;
   b.closest(".style-row").remove();
+  scheduleSave();
   // آخر صف اتشال: اعرض placeholder فاضي من غير ما تعيد البناء من S.boot.cfg —
   // (renderStyleRows كانت هترجّع الاستثناء المحذوف تاني، فما كنش ممكن يتشال)
   if (!$("#styleList .style-row")) {
     $("#styleList").innerHTML = `<div class="dict-empty">مفيش استثناءات — البرامج المعروفة (VS Code، واتساب، Outlook…) ليها أسلوب جاهز.</div>`;
   }
 });
-$("#saveBtn").addEventListener("click", async () => {
-  const msg = $("#saveMsg");
-  const btn = $("#saveBtn");
-  btn.disabled = true;
-  msg.className = "save-msg";
-  msg.textContent = "بحفظ…";
-  let r;
-  try {
-    r = await api().save_settings({
+/* ── الحفظ التلقائي: أي تغيير في الإعدادات بيتحفظ لوحده بعد لحظة (من غير زرار) ──
+   حفظ واحد في نفس الوقت؛ تغيير جه وهو شغّال بيعمل حفظة تانية بعده بالقيم الأحدث.
+   الفورم مبيتعادش بناؤه بعد الحفظ — المستخدم ممكن يكون لسه بيعدّل. */
+const SAVE = { timer: null, running: false, again: false, err: null, closeWarned: false };
+function settingsPayload() {
+  return {
     features: S.features,
     open_hotkey: $("#hkOpen").value, mode: $("#recMode").value, insert_method: $("#sInsert").value,
     polish: $("#sPolish").checked, context_styles: $("#sStyle").checked, app_profiles: collectStyles(),
@@ -1178,22 +1191,62 @@ $("#saveBtn").addEventListener("click", async () => {
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
     lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
-    offline_model: $("#offlineModel").value,
-    });
-  } catch (e) {
-    r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" };
-  } finally {
-    btn.disabled = false;
+    // قايمة الموديل المحلي بتتملى بعد ما offline_status يرجع — قبلها مانبعتهاش، غير كده
+    // حفظة بدري كانت هتمسح الموديل اللي المستخدم اختاره قبل كده
+    ...($("#offlineModel").options.length ? { offline_model: $("#offlineModel").value } : {}),
+  };
+}
+// delay صفر: الدوسة/الاختيار بيتبعتوا علطول — مفيش تغيير بيفضل مستني في تايمر وقت ما
+// البرنامج يتقفل. الكتابة (اسم برنامج) بس اللي ليها مهلة. حفظتين ورا بعض بيتسلسلوا
+function scheduleSave(delay = 0) {
+  if (!S.features) return;
+  SAVE.closeWarned = false;       // تعديل جديد = تنبيه القفل القديم مبقاش ليه لازمة
+  clearTimeout(SAVE.timer);
+  SAVE.timer = setTimeout(saveSettings, delay);
+}
+async function saveSettings() {
+  SAVE.timer = null;
+  if (SAVE.running) { SAVE.again = true; return; }
+  SAVE.running = true;
+  const msg = $("#saveMsg");
+  msg.className = "save-msg";
+  msg.textContent = "بيتحفظ…";
+  let r;
+  try { r = await api().save_settings(settingsPayload()); }
+  catch (e) { r = { ok: false, err: "مقدرتش أحفظ — جرّب تاني" }; }
+  SAVE.running = false;
+  if (r.ok) {
+    SAVE.err = null;
+    S.boot = r.boot;
+    applyBoot();                    // المظهر واللغة والزراير في الرئيسية
+    loadHistory();                  // لو «آخر 10» اتفعّل، القديم اتمسح
+    msg.className = "save-msg ok";
+    msg.textContent = "اتحفظ ✓";
+  } else {
+    // الغلط (زي زرار مكرر) بيفضل ظاهر لحد التعديل الجاي — اللي بيحفظ تاني لوحده
+    SAVE.err = r.err;
+    msg.className = "save-msg err";
+    msg.textContent = r.err;
   }
-  if (!r.ok) { msg.className = "save-msg err"; msg.textContent = r.err; return; }
-  S.boot = r.boot;
-  setLang(S.boot.cfg.lang);
-  applyBoot();
-  fillSettings();
-  loadHistory();                                                  // لو «آخر 10» اتفعّل، القديم اتمسح
-  msg.className = "save-msg ok";
-  msg.textContent = "اتحفظ ✓ — التغييرات شغّالة دلوقتي";
-});
+  if (SAVE.again) { SAVE.again = false; saveSettings(); }
+}
+// الحفظ اللي لسه مستني (أو شغّال) يخلص — قبل الخروج من الصفحة أو قفل البرنامج
+async function flushSave() {
+  if (SAVE.timer) { clearTimeout(SAVE.timer); await saveSettings(); }
+  while (SAVE.running) await new Promise(r => setTimeout(r, 50));
+}
+// الخروج من الصفحة: بنستنى الحفظة الأخيرة — لو اترفضت (زرار مكرر مثلًا) الرسالة تحت بقت
+// مستخبية، فالتنبيه هو اللي بيقول للمستخدم إن الإعدادات ماتحفظتش
+async function leaveSettings() {
+  await flushSave();
+  if (SAVE.err) toast("الإعدادات ماتحفظتش: " + SAVE.err);
+}
+(() => {
+  const page = $('.page[data-page="settings"]');
+  // المفاتيح بتتحفظ من أزرارها (تحقق وأضف) — ومش جزء من الإعدادات دي
+  page.addEventListener("change", e => { if (!e.target.closest("#keysSection")) scheduleSave(); });
+  page.addEventListener("input", e => { if (e.target.matches(".style-exe")) scheduleSave(600); });
+})();
 
 /* ═══════════ أول مرة ═══════════ */
 function fillWelcome() {
@@ -1240,7 +1293,18 @@ async function switchLang(lang) {
 }
 $("#btnTheme").addEventListener("click", () =>
   setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
-$("#btnClose").addEventListener("click", () => api().close());
+// القفل والحفظ اترفض: مرة أولى بننبّه ومابنقفلش (النافذة هتستخبّى والرسالة تحت مش هتبان) —
+// دوسة تانية بتقفل
+$("#btnClose").addEventListener("click", async () => {
+  await flushSave();
+  if (SAVE.err && !SAVE.closeWarned) {
+    SAVE.closeWarned = true;
+    toast("الإعدادات ماتحفظتش: " + SAVE.err);
+    return;
+  }
+  SAVE.closeWarned = false;
+  api().close();
+});
 $("#promo").addEventListener("click", e => { e.preventDefault(); api().open_url(e.currentTarget.dataset.url); });
 $("#checkUpdate").addEventListener("click", async e => {
   const b = e.currentTarget;
@@ -1366,6 +1430,7 @@ window.emlaa = {
     }
   },
   go(page) { go(page); },
+  flushSave() { return flushSave(); },   // Python بيناديها قبل الخروج من التراي
 };
 
 /* ═══════════ البداية ═══════════ */
