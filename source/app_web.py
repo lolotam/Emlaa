@@ -598,9 +598,7 @@ class Api:
                                keyHint=providers.PROVIDERS[p]["key_hint"],
                                hasKey=bool(pools.get(p)),
                                keyCount=len(pools.get(p, [])),
-                               sttOnly=not providers.PROVIDERS[p].get("chat"),
-                               guide=providers.GUIDES.get(p, {}),
-                               models=providers.MODELS.get(p, []))
+                               guide=providers.GUIDES.get(p, {}))
                           for p in providers.ORDER],
             # الواجهة بتعرض الاسم بس — save_settings بيرمي label لو رجعت معاها
             "features": {m: dict(core.feature(m), label=smart.hotkey_label(core.feature(m).get("hotkey"), lang))
@@ -612,16 +610,8 @@ class Api:
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
                 "context_styles", "app_profiles", "snippets")},
-            "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if pools.get(h)), None),
             "stats": core.history_stats(),
         }
-
-    # ── موديلات التفريغ المتاحة (key فاضي = المفتاح المحفوظ) ──
-    def models(self, pid, key=""):
-        if pid not in providers.PROVIDERS:
-            return {"models": [], "live": False}
-        key = (key or "").strip() or providers.read_keys(core.ENV_PATH).get(pid, "")
-        return providers.list_models(pid, key)
 
     # ── السجل ──
     def history(self):
@@ -990,7 +980,6 @@ class Api:
             "installed": offline.installed(),
             "residual": offline.residual(),   # ملفات باقية من تثبيت بايظ — الإزالة تفضل متاحة
             "verified": offline.cached_verification(),   # True/False بعد الفحص، None لو لسه متفحصش
-            "mode": core.CFG.get("offline_mode", "fallback"),
             "model": core.CFG.get("offline_model", ""),
             "models": [{"id": m, "size": round(sz / 1_000_000)}
                        for m, (_u, _h, sz) in offline.MODELS.items()],

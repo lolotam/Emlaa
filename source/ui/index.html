@@ -271,44 +271,34 @@
         </div>
       </div>
 
-      <h3 class="group-h">مزوّد التفريغ</h3>
-      <div class="group">
-        <div class="srow"><span class="srow-text"><b>المزوّد</b><small>اللي بيفرّغ الصوت وينضّف النص</small></span><select class="select" id="setProvider"></select></div>
-        <div class="srow srow-stack"><span class="srow-text"><b>المفتاح (API key)</b><small id="setKeyHint"></small></span>
-          <div class="key-row">
-            <input class="input" id="setKey" type="password" placeholder="سيبها فاضية لو مش عايز تغيّر المفتاح المحفوظ" autocomplete="off" spellcheck="false">
-            <button class="ghost-btn" id="getKey" type="button">هات مفتاح ↗</button>
-          </div>
-          <div class="key-pool" id="keyPool">
-            <div class="key-list" id="keyList"></div>
-            <button class="ghost-btn key-add" id="keyAdd" type="button">+ إضافة مفتاح إضافي</button>
-            <div class="key-add-row" id="keyAddRow" hidden>
-              <div class="key-add-line">
-                <input class="input" id="keyAddInput" type="password" placeholder="الصق المفتاح الإضافي هنا" autocomplete="off" spellcheck="false">
-                <button class="cta cta-sm" id="keyAddGo" type="button">تحقق وأضف</button>
-                <button class="ghost-btn" id="keyAddCancel" type="button">إلغاء</button>
-              </div>
-              <div class="key-add-err" id="keyAddErr" hidden></div>
-            </div>
-          </div>
-          <details class="guide" id="setGuide"></details>
-        </div>
-        <div class="srow srow-model"><span class="srow-text"><b>موديل التفريغ</b><small id="modelSrc"></small></span>
-          <div class="msel" id="modelPick">
-            <button type="button" class="msel-btn" aria-haspopup="listbox"><span class="msel-val"></span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
-            <div class="msel-list" role="listbox" hidden></div>
-          </div>
-        </div>
-        <div class="srow-note" id="sttOnlyNote" hidden></div>
+      <h3 class="group-h">الميزات</h3>
+      <div class="seg feat-tabs" id="featTabs" role="tablist">
+        <button type="button" class="active" data-feat="normal"><i class="dot normal"></i>تسجيل عادي</button>
+        <button type="button" data-feat="prompt"><i class="dot prompt"></i>تحويل لبرومبت</button>
+        <button type="button" data-feat="translate"><i class="dot translate"></i>ترجمة</button>
+        <button type="button" data-feat="edit"><i class="dot edit"></i>تعديل النص المحدد</button>
       </div>
+      <div class="group" id="featPanel">
+        <div class="srow"><span class="srow-text"><b>زرار التسجيل</b><small id="featDesc"></small></span>
+          <div class="hk-box">
+            <span class="kbd" id="hkLabel">—</span>
+            <button class="ghost-btn" id="hkRec1" type="button" title="زرار واحد زي F8">سجّل زرار</button>
+            <button class="ghost-btn" id="hkRec2" type="button" title="Ctrl أو Alt أو Shift أو Win مع زرار — زي Ctrl + F8">سجّل تركيبة</button>
+            <button class="icon-btn del" id="hkClear" type="button" title="من غير زرار"></button>
+          </div></div>
+        <div class="srow srow-stack"><span class="srow-text"><b>التفريغ (الصوت ← نص)</b><small>بيجرّب بالترتيب — لو واحد فشل بيروح للي بعده</small></span>
+          <div class="chain-list" id="sttList"></div>
+          <button class="ghost-btn chain-add" id="sttAdd" type="button">+ إضافة بديل</button></div>
+        <div class="srow srow-stack"><span class="srow-text"><b>المعالجة بالـAI</b><small id="aiHint"></small></span>
+          <div class="chain-list" id="aiList"></div>
+          <button class="ghost-btn chain-add" id="aiAdd" type="button">+ إضافة بديل</button></div>
+      </div>
+
+      <h3 class="group-h">المفاتيح (API keys)</h3>
+      <div class="group" id="keysSection"></div>
 
       <h3 class="group-h">الاختصارات</h3>
       <div class="group">
-        <div class="srow"><span class="srow-text"><b><i class="dot normal"></i>تسجيل عادي</b><small>بيكتب كلامك زي ما هو بعد التنظيف</small></span><select class="select" id="hkNormal"></select></div>
-        <div class="srow"><span class="srow-text"><b><i class="dot prompt"></i>تحويل لبرومبت</b><small>بيرتّب كلامك كطلب واضح للـAI</small></span><select class="select" id="hkPrompt"></select></div>
-        <div class="srow"><span class="srow-text"><b><i class="dot translate"></i>ترجمة</b><small>عربي ← إنجليزي والعكس</small></span><select class="select" id="hkTranslate"></select></div>
-        <div class="srow"><span class="srow-text"><b><i class="dot edit"></i>تعديل النص المحدد</b><small>حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد. الأفضل زرار F-keys: زرار فيه Ctrl/Alt/Shift بيخلّي خطة الحافظة الاحتياطية مش شغّالة في وضع الامساك</small></span><select class="select" id="hkEdit"></select></div>
         <div class="srow"><span class="srow-text"><b>طريقة التسجيل</b><small>في وضع الدوسة الزرار لازم يتداس لوحده — Shift+حرف مش بيبدأ تسجيل</small></span>
           <select class="select" id="recMode">
             <option value="toggle">دوسة تبدأ · دوسة توقف</option>
@@ -346,11 +336,6 @@
           <button class="cta cta-sm" id="offlineDownload" type="button">تنزيل</button>
           <div class="upd-bar" id="offlineBar" hidden><i></i></div>
         </div>
-        <div class="srow"><span class="srow-text"><b>وضع التفريغ</b><small>إمتى تستخدم التفريغ المحلي</small></span>
-          <select class="select" id="offlineMode">
-            <option value="fallback">لما النت يقطع بس</option>
-            <option value="always">دايمًا — الصوت مايطلعش من الجهاز</option>
-          </select></div>
       </div>
 
       <h3 class="group-h">البرنامج</h3>

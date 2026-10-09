@@ -1385,76 +1385,11 @@ def verify(provider_id, key):
         return False, ("معرفناش نتأكد من المفتاح" + (" — " + detail if detail else ""))
 
 
-# ── موديلات التفريغ المتاحة للمفتاح ─────────────────────────────────────────
 def _get_json(url, headers, timeout=12):
     # Groq (Cloudflare) بيرفض الـUser-Agent الافتراضي بتاع بايثون بـ403
     req = urllib.request.Request(url, headers={"User-Agent": "Emlaa", **headers}, method="GET")
     with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         return json.loads(r.read().decode("utf-8"))
-
-
-def _is_stt(pid, mid):
-    """هل ده موديل تفريغ صوت؟ (بنستبعد موديلات الشات والصور والنطق)."""
-    s = mid.lower()
-    if pid in ("groq", "openai"):
-        return ("whisper" in s or "transcribe" in s) and "tts" not in s and "diarize" not in s
-    if pid == "gemini":
-        bad = ("image", "tts", "live", "embed", "native-audio", "thinking", "robotics", "computer", "lite")
-        return s.startswith("gemini-") and "flash" in s and not any(b in s for b in bad)
-    if pid == "deepgram":
-        return not any(x in s for x in ("whisper-tiny", "whisper-base", "whisper-small"))
-    return True
-
-
-def _live_ids(pid, key):
-    """أسماء الموديلات اللي المفتاح شايفها فعلاً (أو None لو معرفناش نسأل)."""
-    if pid == "gemini":
-        d = _get_json(GEMINI_API + "/models?pageSize=200", {"x-goog-api-key": key})
-        return [m["name"].split("/", 1)[-1] for m in d.get("models", [])
-                if "generateContent" in (m.get("supportedGenerationMethods") or [])]
-    if pid == "deepgram":
-        d = _get_json(DEEPGRAM_API + "/models", {"Authorization": "Token " + key})
-        out = []
-        for m in d.get("stt", []):
-            langs = [str(l).lower() for l in (m.get("languages") or [])]
-            name = m.get("canonical_name") or m.get("name")
-            if name and any(l == "ar" or l.startswith("ar-") or l == "multi" for l in langs):
-                # nova-3-general → nova-3 (الاسم اللي بيتبعت في الطلب)
-                out.append(name.replace("-general", "") if name.startswith("nova") else name)
-        return out
-    base = meta(pid)["base_url"] or "https://api.openai.com/v1"
-    d = _get_json(base + "/models", {"Authorization": "Bearer " + key})
-    return [m.get("id") for m in d.get("data", []) if m.get("id")]
-
-
-def list_models(pid, key=None):
-    """
-    موديلات التفريغ بس للمزوّد ده، مرتّبة بنسبة الترشيح.
-    لو فيه مفتاح: بنسأل المزوّد ونخفي اللي مش متاح ونضيف موديلات تفريغ جديدة (من غير نسبة).
-    بيرجّع {"models": [...], "live": هل اتأكدنا من المزوّد}.
-    """
-    catalog = [dict(m) for m in MODELS.get(pid, [])]
-    live = None
-    if key:
-        try:
-            live = [x for x in _live_ids(pid, key.strip()) if _is_stt(pid, x)]
-        except Exception as e:
-            try:
-                import core
-                core.log_error(e, f"models/{pid} (رجّعنا القايمة الثابتة)")
-            except Exception:
-                pass
-    if live is None:
-        return {"models": catalog, "live": False}
-    known = {m["id"] for m in catalog}
-    out = [m for m in catalog if m["id"] in live]
-    for x in sorted(set(live) - known):
-        out.append({"id": x, "score": None, "note": ""})
-    # «latest» aliases مش بتظهر في الليستة أحيانًا — نسيبها لو المزوّد Gemini
-    if pid == "gemini":
-        out += [m for m in catalog if m["id"].endswith("-latest") and m not in out]
-    out.sort(key=lambda m: -(m["score"] if m["score"] is not None else -1))
-    return {"models": out or catalog, "live": bool(out)}
 
 
 # ── قراءة/كتابة المفاتيح في .env (مفصولة بفواصل — Task 22) ────────────────────

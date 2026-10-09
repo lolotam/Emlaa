@@ -318,6 +318,26 @@ class TestStaticUiChecks(unittest.TestCase):
         ]:
             self.assertIn('"%s": "%s"' % (ar, en), self.i18n, ar)
 
+    def test_every_arabic_text_in_index_html_has_an_en_entry(self):
+        import re
+        no_dict = re.sub(r"<script[\s\S]*?</script>", "", self.html)
+        texts = {t.strip() for t in re.findall(r">([^<>]+)<", no_dict)}
+        texts |= {t.strip() for t in re.findall(r'(?:title|placeholder|aria-label)="([^"]+)"', no_dict)}
+        # «ع» = زرار اللغة نفسه؛ «0 تسجيل» وأمثالها عدّادات بتترجمها EN_PATTERNS
+        arabic = {t for t in texts if re.search(r"[\u0600-\u06FF]", t) and not re.match(r"[\d,.]+ ", t)} - {"ع"}
+        missing = sorted(t for t in arabic if '"%s":' % t not in self.i18n)
+        self.assertEqual(missing, [])
+
+    def test_feature_settings_strings_written_by_js_have_en_entries(self):
+        for ar in ("دوس الزرار دلوقتي… (Esc للإلغاء)", "مش متثبّت — نزّله من تحت",
+                   "مفيش معالجة — الكلام بيتكتب زي ما اتقال", "لازم موديل واحد على الأقل — بيتجرّب بالترتيب",
+                   "التنظيف والتصحيح — لو شلت كل الموديلات الكلام بيتكتب زي ما اتقال",
+                   "مقدرتش أسجّل الزرار — جرّب تاني", "+ إضافة مفتاح", "لفوق", "لتحت",
+                   "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد",
+                   app_web.LAST_STT_KEY_ERR, core.CAPTURE_TIMEOUT_ERR):
+            self.assertIn(ar, self.js + self.html + app_web.LAST_STT_KEY_ERR + core.CAPTURE_TIMEOUT_ERR, ar)
+            self.assertIn('"%s":' % ar, self.i18n, ar)
+
     def test_app_js_never_uses_browser_dialogs(self):
         import re
         for fn in ("alert", "confirm", "prompt"):
