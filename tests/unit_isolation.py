@@ -34,11 +34,12 @@ def _read_bytes(path):
         return f.read()
 
 
-# التلات اختبارات اللي كانت بتوصل لملفات المستخدم الحقيقية (قبل الإصلاح).
+# اختبارات بتعدّي على مسار السجل/الحفظ — أول واحد كان بيوصل لملفات المستخدم الحقيقية
+# (قبل الإصلاح)، واختبارات save_settings خدت مكان اختبارات حفظ الزراير القديمة.
 _TARGETS = (
     "unit_process.TestHistoryBypassFlag.test_bypass_key_stored_only_when_true",
-    "unit_edit.TestSaveSettingsHotkey.test_duplicate_hotkey_rejected",
-    "unit_edit.TestSaveSettingsHotkey.test_edit_hotkey_can_be_off_without_conflict",
+    "unit_features.TestSaveSettings.test_invalid_features_rejected_and_nothing_saved",
+    "unit_features.TestSaveSettings.test_valid_features_stored_without_display_fields",
 )
 
 
@@ -70,7 +71,7 @@ class TestUserFilesUntouched(unittest.TestCase):
                     mock.patch.object(core, "RECORDINGS_DIR", recs):
                 result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(suite)
 
-            self.assertTrue(result.wasSuccessful(), "التلات اختبارات لازم ينجحوا جوّه فحص العزل")
+            self.assertTrue(result.wasSuccessful(), "الاختبارات لازم تنجح جوّه فحص العزل")
             self.assertEqual(_read_bytes(hist), hist_before,
                              "اختبار لمس history السينتيل — راجع ترقيع HISTORY_PATH")
             self.assertEqual(os.listdir(recs), ["999.mp3"],

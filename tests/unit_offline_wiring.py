@@ -253,22 +253,25 @@ class _Ctrl:
 
 
 class TestApiOffline(unittest.TestCase):
-    def test_save_settings_no_key_always_installed_ok(self):
+    def test_welcome_without_key_ok_when_local_model_transcribes(self):
         api = app_web.Api(_Ctrl())
-        with mock.patch.object(providers, "read_keys", return_value={}), \
+        cfg = dict(core.DEFAULTS, features={m: {"hotkey": [], "stt": [{"provider": "local", "model": ""}],
+                                                "ai": []} for m in ("normal", "prompt", "translate", "edit")},
+                   features_custom=True)
+        with mock.patch.object(providers, "read_key_pools", return_value={}), \
                 mock.patch.object(offline, "installed", return_value="base"), \
                 mock.patch.object(core, "save_config"), \
                 mock.patch.object(core, "history_prune"), \
                 mock.patch.object(core, "history_stats",
                                   return_value={"words": 0, "count": 0, "wpm": None, "saved_min": 0.0}), \
                 mock.patch.object(core, "_is_packaged", return_value=False), \
-                mock.patch.object(core, "CFG", dict(core.DEFAULTS)):
-            r = api.save_settings({"provider": "groq", "offline_mode": "always"})
+                mock.patch.object(core, "CFG", cfg):
+            r = api.save_settings({"provider": "groq"})
         self.assertTrue(r["ok"])
 
     def test_save_settings_no_key_no_offline_requires_key(self):
         api = app_web.Api(_Ctrl())
-        with mock.patch.object(providers, "read_keys", return_value={}), \
+        with mock.patch.object(providers, "read_key_pools", return_value={}), \
                 mock.patch.object(offline, "installed", return_value=None), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)):
             r = api.save_settings({"provider": "groq"})

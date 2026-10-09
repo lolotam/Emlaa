@@ -716,12 +716,12 @@ def load_config():
     if not isinstance(raw.get("features"), dict):
         # الترحيل بيتحسب بس — عمره ما بيتكتب هنا: ملف اتقرا غلط ميتكتبش فوقه، واستيراد
         # core (في الاختبارات) ميلمسش الملف. أول «حفظ» من الإعدادات هو اللي بيحفظه.
-        cfg["features"] = _migrated_features(cfg)
+        cfg["features"] = migrated_features(cfg)
         cfg["features_custom"] = False
     return cfg
 
 
-def _migrated_features(cfg):
+def migrated_features(cfg):
     try:
         pools = providers.read_key_pools(ENV_PATH)
     except Exception:

@@ -33,6 +33,12 @@ class _Ctrl:
     hotkeys = []
 
 
+def _features(*stt):
+    """نفس قايمة التفريغ في الأربع ميزات — الحماية من شيل آخر مفتاح بتبص على التفريغ بس."""
+    return {m: {"hotkey": [], "stt": [dict(i) for i in stt], "ai": []}
+            for m in ("normal", "prompt", "translate", "edit")}
+
+
 def _cfg(**over):
     c = dict(core.DEFAULTS)
     c.update(over)
@@ -243,18 +249,29 @@ class TestKeyPoolApi(unittest.TestCase):
     def test_key_remove_refuses_last_key_of_selected_provider(self):
         self._write("GROQ_API_KEY=k1\n")
         api = self._api()
-        with mock.patch.object(core, "CFG", _cfg(provider="groq", offline_mode="fallback")), \
+        with mock.patch.object(core, "CFG", _cfg(provider="groq")), \
                 mock.patch.object(offline, "installed", return_value=None):
             r = api.key_remove("groq", 0)
         self.assertFalse(r["ok"])
         self.assertIn("آخر مفتاح", r["err"])
         self.assertEqual(providers.read_key_pools(self.env_path).get("groq"), ["k1"])
 
-    def test_key_remove_last_key_allowed_when_offline_always_installed(self):
+    def test_key_remove_last_key_allowed_when_local_model_transcribes(self):
         self._write("GROQ_API_KEY=k1\n")
         api = self._api()
-        with mock.patch.object(core, "CFG", _cfg(provider="groq", offline_mode="always")), \
+        with mock.patch.object(core, "CFG", _cfg(features=_features({"provider": "groq", "model": "m"},
+                                                                    {"provider": "local", "model": ""}))), \
                 mock.patch.object(offline, "installed", return_value="base"):
+            r = api.key_remove("groq", 0)
+        self.assertTrue(r["ok"])
+        self.assertNotIn("groq", providers.read_key_pools(self.env_path))
+
+    def test_key_remove_old_provider_allowed_when_features_use_another(self):
+        self._write("GROQ_API_KEY=k1\nOPENAI_API_KEY=sk-1\n")
+        api = self._api()
+        with mock.patch.object(core, "CFG", _cfg(provider="groq",
+                                                 features=_features({"provider": "openai", "model": "whisper-1"}))), \
+                mock.patch.object(offline, "installed", return_value=None):
             r = api.key_remove("groq", 0)
         self.assertTrue(r["ok"])
         self.assertNotIn("groq", providers.read_key_pools(self.env_path))

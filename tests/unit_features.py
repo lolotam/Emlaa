@@ -176,5 +176,146 @@ class TestCanRun(unittest.TestCase):
         self.assertFalse(core.can_run({"features": mig()}, pools={"gemini": ["k"]}, local="base"))
 
 
+class _Ctrl:
+    """وحدة تحكم مزيّفة لـApi: المحرك (لو موجود) مزيّف وبيتعد كام مرة اتشغّل."""
+    version = "0"
+    brand = {"name": "x", "url": "y"}
+    state = "ready"
+    last_text = ""
+    update_info = None
+    hotkeys = []
+
+    def __init__(self, engine=None):
+        self.engine = engine
+        self.started = 0
+
+    def apply_lang(self):
+        pass
+
+    def start_engine(self):
+        self.started += 1
+
+    def start_open_hotkey(self):
+        pass
+
+    def tk_call(self, fn):
+        pass
+
+
+class _BridgeCase(unittest.TestCase):
+    """CFG في الذاكرة، و.env مؤقت، والحفظ بيتسجّل بدل ما يكتب config.json."""
+
+    def setUp(self):
+        import app_web
+        self.app_web = app_web
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env_path = os.path.join(self.tmp.name, ".env")
+        self.write_env("")
+        self.cfg = dict(core.DEFAULTS, features=mig(), features_custom=False)
+        self.saved = []
+        self.local = None
+        stats = {"words": 0, "count": 0, "wpm": None, "saved_min": 0.0}
+        for p in (mock.patch.object(core, "CFG", self.cfg),
+                  mock.patch.object(core, "ENV_PATH", self.env_path),
+                  mock.patch.object(core, "save_config",
+                                    side_effect=lambda c: self.saved.append(json.loads(json.dumps(c)))),
+                  mock.patch.object(core, "history_prune"),
+                  mock.patch.object(core, "history_stats", return_value=stats),
+                  mock.patch.object(core, "_is_packaged", return_value=False),
+                  mock.patch.object(core.offline, "installed", side_effect=lambda: self.local),
+                  mock.patch.dict(os.environ, {})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def write_env(self, text):
+        with open(self.env_path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def save(self, data, engine=None):
+        ctrl = _Ctrl(engine)
+        return self.app_web.Api(ctrl).save_settings(data), ctrl
+
+
+class TestSaveSettings(_BridgeCase):
+    def test_invalid_features_rejected_and_nothing_saved(self):
+        f = mig()
+        f["prompt"]["hotkey"] = [0xA3]          # نفس زرار العادي
+        r, _ = self.save({"features": f})
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self.cfg["features"], mig())
+
+    def test_valid_features_stored_without_display_fields(self):
+        self.write_env("GROQ_API_KEY=k\n")
+        f = mig()
+        f["normal"].update(hotkey=[0xA2, 0x76], ai=[], label="Left Ctrl + F7")
+        r, _ = self.save({"features": f})
+        self.assertTrue(r["ok"])
+        stored = self.saved[-1]
+        self.assertTrue(stored["features_custom"])
+        self.assertEqual(stored["features"]["normal"], {"hotkey": [0xA2, 0x76], "stt": mig()["normal"]["stt"],
+                                                        "ai": []})
+
+    def test_welcome_recomputes_features_that_were_never_customized(self):
+        with mock.patch.object(self.app_web.providers, "verify", return_value=(True, "")):
+            r, _ = self.save({"provider": "openai", "key": "sk-new"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.saved[-1]["features"]["normal"]["stt"][0]["provider"], "openai")
+
+    def test_welcome_keeps_customized_features(self):
+        self.cfg["features_custom"] = True
+        with mock.patch.object(self.app_web.providers, "verify", return_value=(True, "")):
+            self.save({"provider": "openai", "key": "sk-new"})
+        self.assertEqual(self.saved[-1]["features"], mig())
+
+    def test_welcome_without_key_refused_when_nothing_can_transcribe(self):
+        r, _ = self.save({"provider": "groq"})
+        self.assertFalse(r["ok"])
+        self.assertIn("محتاج مفتاح", r["err"])
+
+    def test_partial_save_needs_no_key(self):
+        r, ctrl = self.save({"theme": "light"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(ctrl.started, 0)        # مفيش حاجة تفرّغ — المحرك مايشتغلش
+
+    def test_engine_starts_after_save_once_something_can_transcribe(self):
+        self.write_env("GROQ_API_KEY=k\n")
+        _, ctrl = self.save({"theme": "light"})
+        self.assertEqual(ctrl.started, 1)
+
+    def test_listener_restarts_only_when_hotkeys_or_mode_change(self):
+        self.write_env("GROQ_API_KEY=k\n")
+        hotkey = mig()
+        hotkey["edit"]["hotkey"] = [0x77]
+        models_only = mig()
+        models_only["prompt"]["ai"] = models_only["prompt"]["ai"][:1]
+        for data, restarts in (({"features": hotkey}, 1), ({"mode": "hold"}, 1),
+                               ({"features": models_only}, 0)):
+            with self.subTest(data=list(data)):
+                self.cfg.update(features=mig(), mode="toggle")
+                engine = mock.Mock()
+                self.save(data, engine)
+                self.assertEqual(engine.restart_hotkey.call_count, restarts)
+                engine.reset_client.assert_called_once()
+
+
+class TestBootstrapFeatures(_BridgeCase):
+    def test_features_carry_labels_and_catalog_reports_keys_and_local(self):
+        self.write_env("GROQ_API_KEY=k\n")
+        self.local = "base"
+        self.cfg["features"]["normal"]["hotkey"] = [0xA2, 0x76]
+        boot = self.app_web.Api(_Ctrl()).bootstrap()
+        self.assertIn("F7", boot["features"]["normal"]["label"])
+        self.assertEqual(boot["features"]["edit"]["label"], "")
+        cat = boot["catalog"]
+        self.assertEqual((cat["groq"]["hasKey"], cat["openai"]["hasKey"]), (True, False))
+        self.assertTrue(cat["deepgram"]["sttOnly"])
+        self.assertEqual(cat["groq"]["chatModels"], core.providers.chat_models("groq"))
+        self.assertEqual(cat["local"]["installed"], "base")
+        self.assertTrue(boot["canRun"])
+        self.assertFalse(any(k.startswith("hotkey_") for k in boot["cfg"]))
+
+
 if __name__ == "__main__":
     unittest.main()

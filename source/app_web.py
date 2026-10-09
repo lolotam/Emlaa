@@ -489,7 +489,6 @@ class Controller:
         self._tk_ready.wait(5)
 
         api = Api(self)
-        keys = providers.read_keys(core.ENV_PATH)
         self.window = webview.create_window(
             "Emlaa" if core.CFG.get("lang") == "en" else "إملاء", url=ui_path("index.html"), js_api=api,
             width=1080, height=720, min_size=(960, 640),
@@ -504,8 +503,7 @@ class Controller:
             self.start_open_hotkey()
             self.watch_show_request()
             _warm_offline_check()
-            if keys.get(core.CFG.get("provider", providers.DEFAULT)) or (
-                    core.CFG.get("offline_mode") == "always" and offline.installed()):
+            if core.can_run():
                 self.start_engine()
             self.watch_updates()
 
@@ -518,6 +516,43 @@ class Controller:
                 self.root.quit()
         except Exception:
             pass
+
+
+LAST_STT_KEY_ERR = ("ده آخر مفتاح بيفرّغ — لو اتشال مفيش ولا ميزة هتقدر تفرّغ. "
+                    "ضيف مفتاح تاني أو نزّل الموديل المحلي الأول")
+LOCAL_NAME = "محلي · Whisper"
+
+
+def _feature_catalog(pools, local):
+    """اللي ينفع يتختار في قوايم الميزات: موديلات كل مزوّد وهل ليه مفتاح، والموديل المحلي."""
+    catalog = {p: {"name": providers.PROVIDERS[p]["name"],
+                   "sttModels": providers.stt_catalog(p),
+                   "chatModels": providers.chat_models(p),
+                   "hasKey": bool(pools.get(p)),
+                   "sttOnly": not providers.PROVIDERS[p].get("chat")}
+               for p in providers.ORDER}
+    catalog[smart.LOCAL] = {"name": LOCAL_NAME, "installed": local or None}
+    return catalog
+
+
+def _clean_features(features):
+    """
+    نسخة بالحقول المعروفة بس (بعد validate_features): الواجهة بترجّع الميزات زي ما
+    bootstrap بعتها، و«label» وأي حقل عرض تاني مالهمش مكان في config.json.
+    """
+    def items(lst):
+        return [{"provider": str(i["provider"]), "model": str(i.get("model") or "")[:80]} for i in lst]
+    return {m: {"hotkey": [int(v) for v in features[m]["hotkey"]],
+                "stt": items(features[m]["stt"]),
+                "ai": items(features[m]["ai"])}
+            for m in smart.FEATURES}
+
+
+def _hotkey_state(cfg):
+    """اللي لو اتغيّر مستمع الزراير لازم يتعاد: زرار كل ميزة + toggle/hold."""
+    feats = cfg.get("features") or {}
+    return (tuple(tuple((feats.get(m) or {}).get("hotkey") or ()) for m in smart.FEATURES),
+            cfg.get("mode"))
 
 
 class Api:
@@ -538,21 +573,21 @@ class Api:
     def bootstrap(self):
         c = self._c
         cfg = core.CFG
-        keys = providers.read_keys(core.ENV_PATH)
         pools = providers.read_key_pools(core.ENV_PATH)
+        local = offline.installed()
         pid = cfg.get("provider", providers.DEFAULT)
+        lang = cfg.get("lang", "ar")
         return {
             "version": c.version,
             "brand": c.brand,
-            "hasKey": bool(keys.get(pid)),
-            "canRun": bool(keys.get(pid)) or (
-                cfg.get("offline_mode") == "always" and bool(offline.installed())),
+            "hasKey": bool(pools.get(pid)),
+            "canRun": core.can_run(pools=pools, local=local),
             "state": c.state,
             "lastText": c.last_text,
             "update": c.update_info,
             "store": core.STORE,
             "offline": {
-                "installed": offline.installed(),
+                "installed": local,
                 "packaged": core._is_packaged(),
                 "models": [{"id": m, "size": round(sz / 1_000_000)}
                            for m, (_u, _h, sz) in offline.MODELS.items()],
@@ -561,21 +596,23 @@ class Api:
                                tag=providers.PROVIDERS[p]["tag"], desc=providers.PROVIDERS[p]["desc"],
                                keyUrl=providers.PROVIDERS[p]["key_url"],
                                keyHint=providers.PROVIDERS[p]["key_hint"],
-                               hasKey=bool(keys.get(p)),
+                               hasKey=bool(pools.get(p)),
                                keyCount=len(pools.get(p, [])),
                                sttOnly=not providers.PROVIDERS[p].get("chat"),
                                guide=providers.GUIDES.get(p, {}),
                                models=providers.MODELS.get(p, []))
                           for p in providers.ORDER],
-            "hotkeys": [{"id": k, "label": v} for k, v in c.hotkeys],
+            # الواجهة بتعرض الاسم بس — save_settings بيرمي label لو رجعت معاها
+            "features": {m: dict(core.feature(m), label=smart.hotkey_label(core.feature(m).get("hotkey"), lang))
+                         for m in smart.FEATURES},
+            "catalog": _feature_catalog(pools, local),
             "openHotkeys": [{"id": k, "label": v} for k, v in OPEN_HOTKEYS],
             "cfg": {k: cfg.get(k) for k in (
-                "provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit", "open_hotkey",
-                "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
+                "provider", "open_hotkey", "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
                 "context_styles", "app_profiles", "snippets")},
-            "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if keys.get(h)), None),
+            "chatHelper": next((providers.PROVIDERS[h]["name"] for h in providers.CHAT_HELPERS if pools.get(h)), None),
             "stats": core.history_stats(),
         }
 
@@ -719,47 +756,38 @@ class Api:
 
     # ── الإعدادات ──
     def save_settings(self, data):
-        """data = الإعدادات + (اختياري) key جديد للمزوّد. بيتأكد من المفتاح قبل الحفظ."""
+        """
+        data = الإعدادات اللي اتغيّرت بس. features بتتفحص كلها قبل أي حفظ (غلط = مفيش حاجة
+        اتغيّرت). شاشة الترحيب بس اللي بتبعت provider (+ key): المفتاح بيتفحص قبل ما يتكتب،
+        والميزات اللي المستخدم ماعدّلهاش بتتحسب تاني من المزوّد الجديد.
+        """
         c, cfg = self._c, core.CFG
-        pid = data.get("provider") or cfg.get("provider", providers.DEFAULT)
-        new_key = (data.get("key") or "").strip()
-        keys = providers.read_keys(core.ENV_PATH)
-        # F9: وضع offline دايمًا + موديل مثبّت = مفيش حاجة لمفتاح — بنقبل الحفظ من غير مفتاح
-        offline_ok = ((data.get("offline_mode") or cfg.get("offline_mode")) == "always"
-                      and bool(offline.installed()))
-        if new_key:
-            ok, err = providers.verify(pid, new_key)
-            if not ok:
+        features = None
+        if "features" in data:
+            err = smart.validate_features(data["features"])
+            if err:
                 return {"ok": False, "err": err}
-            with self._key_lock:
-                try:
-                    providers.write_key(core.ENV_PATH, pid, new_key)
-                except OSError:
-                    return {"ok": False, "err": KEY_WRITE_ERR}
-        elif not keys.get(pid) and not offline_ok:
-            return {"ok": False, "err": "محتاج مفتاح للمزوّد ده — الصقه في الخانة"}
+            features = _clean_features(data["features"])
+        welcome = "provider" in data
+        if welcome:
+            err = self._store_welcome_key(data.get("provider"), (data.get("key") or "").strip())
+            if err:
+                return {"ok": False, "err": err}
 
-        old_hk = (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
-                  cfg.get("hotkey_edit"), cfg.get("mode"))
+        old_hk = _hotkey_state(cfg)
         old_open = cfg.get("open_hotkey")
-        for k in ("provider", "hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit",
-                  "open_hotkey", "mode", "insert_method"):
+        for k in ("open_hotkey", "mode", "insert_method"):
             if k in data:
                 cfg[k] = data[k]
-        # F9: وضع وموديل offline — القيم اللي معروفة لنا بس
-        if "offline_mode" in data:
-            cfg["offline_mode"] = data["offline_mode"] if data["offline_mode"] in ("always", "fallback") else "fallback"
         if "offline_model" in data:
             cfg["offline_model"] = str(data["offline_model"] or "").strip()[:60]
-        # F6: ممنوع يبقى زرارين أوضاع لنفس المفتاح (غير الفاضي) — دوسة واحدة
-        # هتشتغل وضعين فوق بعض. بنفحص بعد ما القيم الجديدة اتطبّقت على cfg.
-        _hk_seen = set()
-        for k in ("hotkey_normal", "hotkey_prompt", "hotkey_translate", "hotkey_edit"):
-            v = str(cfg.get(k) or "").strip()
-            if v:
-                if v in _hk_seen:
-                    return {"ok": False, "err": "كل وضع لازم يبقى ليه زرار مختلف — ظبّط الاختصارات"}
-                _hk_seen.add(v)
+        if features is not None:
+            cfg["features"] = features
+            cfg["features_custom"] = True
+        if welcome:
+            cfg["provider"] = data["provider"]
+            if not cfg.get("features_custom"):
+                cfg["features"] = core.migrated_features(cfg)
         for k in ("polish", "prompt_mode", "auto_paste", "beep", "minimize_to_tray",
                   "check_updates", "auto_update", "floating_button", "clipboard_history", "history_keep_last10",
                   "context_styles"):
@@ -781,12 +809,6 @@ class Api:
         old_lang = cfg.get("lang", "ar")
         if data.get("lang") in ("ar", "en"):
             cfg["lang"] = data["lang"]
-        cfg["provider"] = pid
-        if data.get("model"):
-            models = dict(cfg.get("models") or {})
-            models[pid] = str(data["model"]).strip()[:80]
-            cfg["models"] = models
-        cfg["hotkey"] = cfg.get("hotkey_normal")
         core.save_config(cfg)
         if cfg.get("history_keep_last10", True):
             core.history_prune()
@@ -795,10 +817,9 @@ class Api:
 
         if c.engine:
             c.engine.reset_client()
-            if old_hk != (cfg.get("hotkey_normal"), cfg.get("hotkey_prompt"), cfg.get("hotkey_translate"),
-                          cfg.get("hotkey_edit"), cfg.get("mode")):
-                c.engine.restart_hotkey()
-        else:
+            if old_hk != _hotkey_state(cfg):
+                c.engine.restart_hotkey()     # وقت تسجيل/تفريغ بيتأجل لآخر العملية
+        elif core.can_run():
             c.start_engine()
         if old_open != cfg.get("open_hotkey"):
             c.start_open_hotkey()
@@ -812,6 +833,28 @@ class Api:
                 w.hide()
         c.tk_call(wave_setting)
         return {"ok": True, "boot": self.bootstrap()}
+
+    def _store_welcome_key(self, pid, new_key):
+        """
+        مفتاح شاشة الترحيب: بيتفحص (verify) وبعدين يتكتب. من غير مفتاح جديد الحفظ بيعدّي
+        بس لو المزوّد ليه مفتاح أو فيه حاجة تانية تفرّغ (الموديل المحلي مثلًا).
+        بيرجّع رسالة الغلط أو None.
+        """
+        if pid not in providers.PROVIDERS:
+            return "مزوّد مش معروف"
+        if not new_key:
+            if providers.read_key_pools(core.ENV_PATH).get(pid) or core.can_run():
+                return None
+            return "محتاج مفتاح للمزوّد ده — الصقه في الخانة"
+        ok, err = providers.verify(pid, new_key)
+        if not ok:
+            return err
+        with self._key_lock:
+            try:
+                providers.write_key(core.ENV_PATH, pid, new_key)
+            except OSError:
+                return KEY_WRITE_ERR
+        return None
 
     # ── تسجيل زرار ميزة من الكيبورد ──
     def capture_hotkey(self, feature, count):
@@ -908,25 +951,25 @@ class Api:
 
     def key_remove(self, pid, index, key_id=None):
         """
-        يشيل مفتاح بفهرسه. key_id = بصمة المفتاح اللي الواجهة شايفاه في الفهرس ده. بيمنع شيل آخر مفتاح للمزوّد المختار — إلا لو وضع offline
-        "always" والموديل مثبّت (فالمفتاح مش ضروري للاشتغال).
+        يشيل مفتاح بفهرسه. key_id = بصمة المفتاح اللي الواجهة شايفاه في الفهرس ده.
+        بيرفض بس لو بعد الشيل مفيش ولا ميزة تقدر تفرّغ (مفيش مزوّد تفريغ بمفتاح ولا موديل
+        محلي متثبّت) — مفتاح مزوّد مفيش ميزة بتستخدمه بيتشال عادي.
         """
         if pid not in providers.PROVIDERS:
             return {"ok": False, "err": "مزوّد مش معروف"}
         if isinstance(index, bool) or not isinstance(index, int):
             return {"ok": False, "err": "المفتاح مش موجود"}
         with self._key_lock:
-            pool = providers.read_key_pools(core.ENV_PATH).get(pid, [])
+            pools = providers.read_key_pools(core.ENV_PATH)
+            pool = pools.get(pid, [])
             if not (0 <= index < len(pool)):
                 return {"ok": False, "err": "المفتاح مش موجود"}
             # لو .env اتغيّر من ورا القايمة (الفهرس بقى بيشاور على مفتاح تاني) منمسحش حاجة.
             # البصمة مش الشكل المقنّع: مفتاحين ممكن يبقوا بنفس البداية والنهاية
             if key_id is not None and providers.key_id(pool[index]) != key_id:
                 return {"ok": False, "err": KEY_STALE_ERR}
-            selected = core.CFG.get("provider", providers.DEFAULT) == pid
-            offline_ok = (core.CFG.get("offline_mode") == "always" and bool(offline.installed()))
-            if selected and len(pool) == 1 and not offline_ok:
-                return {"ok": False, "err": "ده آخر مفتاح للمزوّد المختار — ضيف مفتاح تاني الأول أو غيّر المزوّد"}
+            if not core.can_run(pools=dict(pools, **{pid: pool[:index] + pool[index + 1:]})):
+                return {"ok": False, "err": LAST_STT_KEY_ERR}
             try:
                 providers.remove_provider_key(core.ENV_PATH, pid, index)
             except OSError:
