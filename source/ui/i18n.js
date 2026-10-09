@@ -106,6 +106,9 @@ const EN = {
   "زرار التسجيل مش مظبوط — زرار واحد، أو Ctrl/Alt/Shift/Win مع زرار": "Invalid hotkey — use one key, or Ctrl/Alt/Shift/Win with a key",
   "كل ميزة لازم يبقى ليها زرار مختلف": "Each feature needs a different hotkey",
   "زرار لوحده مينفعش يبقى أول زرار في تركيبة ميزة تانية": "A single-key hotkey can't start another feature's combo",
+  "الزرار ده مينفعش يبقى زرار تسجيل — اختار زرار زي F8 أو تركيبة زي Ctrl + زرار":
+    "That key can't be a hotkey — pick a key like F8 or a combo like Ctrl + a key",
+  "اختار موديل لكل مزوّد تفريغ": "Pick a model for every transcription provider",
   "محتاج مفتاح للمزوّد ده — الصقه في الخانة": "This provider needs a key — paste it in the box",
   "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال": "Couldn't convert it — the text was typed as spoken",
   "Ctrl الشمال": "Left Ctrl", "Alt الشمال": "Left Alt", "Shift الشمال": "Left Shift",

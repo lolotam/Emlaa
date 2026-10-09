@@ -770,7 +770,8 @@ class Api:
                 cfg[k] = data[k]
         if "offline_model" in data:
             cfg["offline_model"] = str(data["offline_model"] or "").strip()[:60]
-        if features is not None:
+        # «متعدّلة» بس لو اتغيّرت فعلًا — الواجهة بتبعت features مع أي حفظة (حتى تغيير المظهر)
+        if features is not None and features != cfg.get("features"):
             cfg["features"] = features
             cfg["features_custom"] = True
         if welcome:

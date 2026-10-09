@@ -29,6 +29,21 @@ class TestHotkeyModel(unittest.TestCase):
         self.assertFalse(smart.hotkey_shape_ok([LCTRL, RALT]))    # موديفايرين
         self.assertFalse(smart.hotkey_shape_ok([F7, LCTRL]))      # الموديفاير لازم الأول
         self.assertFalse(smart.hotkey_shape_ok([0x1B]))           # Esc للإلغاء
+
+    def test_typing_keys_alone_are_refused_but_allowed_after_a_modifier(self):
+        # زرار بيتكتب بيه لوحده كان هيتمنع عن كل البرامج — الكتابة كانت هتبوظ
+        for vk in (0x41, 0x35, 0x20, 0x0D, 0x08, 0x09, 0x25, 0x2E, 0xBE):
+            with self.subTest(vk=hex(vk)):
+                self.assertFalse(smart.hotkey_shape_ok([vk]))
+                self.assertTrue(smart.hotkey_shape_ok([LCTRL, vk]))
+        for vk in (F7, 0x14, 0x91, 0x13, 0x2D, 0xB3, 0x5B):
+            with self.subTest(vk=hex(vk)):
+                self.assertTrue(smart.hotkey_shape_ok([vk]))
+
+    def test_non_vk_values_are_refused(self):
+        for bad in ([True], [0], [0x100], ["F7"], [LCTRL, 7.0]):
+            with self.subTest(bad=bad):
+                self.assertFalse(smart.hotkey_shape_ok(bad))
         self.assertFalse(smart.hotkey_shape_ok([LCTRL, 0x1B]))
         self.assertFalse(smart.hotkey_shape_ok([1, 2, 3]))
 

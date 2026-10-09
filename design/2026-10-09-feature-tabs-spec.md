@@ -64,7 +64,11 @@ five, not "no model".
 
 - all four features present; every `stt` list non-empty; `ai` non-empty for prompt, translate,
   edit (normal may be empty = raw); providers known; STT-only providers absent from `ai`;
-- hotkey shape as above; `0x1B` (Esc) never in a hotkey;
+- hotkey shape as above: vk ints 1–254 only; `0x1B` (Esc) never in a hotkey; a typing key
+  (letters, digits, Space, Enter, Tab, Backspace, Delete, arrows, Home/End/PgUp/PgDn, numpad,
+  punctuation) is refused **alone** — it would be suppressed in every app — but allowed after
+  a modifier (Ctrl + A);
+- every non-local `stt` item names a model;
 - no two features with the same **non-empty** hotkey (several features may have `[]`); a
   **single modifier hotkey** may not be the modifier of another feature's combo (Right Ctrl
   alone + Right Ctrl+F8 would make the Ctrl press start one mode and the F8 cancel it).
@@ -189,8 +193,10 @@ used. The filter:
    press**: the decision taken at the first keydown of a vk is latched until its keyup, so
    auto-repeat keydowns and the keyup reuse it (suppress the press of a matched non-modifier
    trigger and its repeats and release, even if the modifier was let go first). The held set
-   starts from Windows' state (`GetAsyncKeyState` for the modifier vks) when the listener
-   starts or resumes, so a Ctrl already held is known. Enqueues
+   starts from Windows' state (`GetAsyncKeyState` for the **side-specific** modifier vks —
+   the hook never releases the generic 0x10–0x12) when the listener starts or resumes, so a
+   Ctrl already held is known; before each new press, modifiers Windows no longer reports as
+   down are dropped (a release lost on the secure desktop). Enqueues
    `(generation, vk, is_press, time, held_mods)` to the dispatcher;
 3. raises `listener.suppress_event()` when suppressing, else `return False`.
 
@@ -199,7 +205,8 @@ the generation so stale events are dropped. Actions run through the same `guard`
 the error, reset `recording`/`_active_key`, report `err`) and the thread survives exceptions.
 `restart_hotkey`, `pause_hotkey`, and app shutdown stop listener and dispatcher together.
 Caps/Scroll Lock as a suppressed trigger never toggles, so the lock-restore code is removed;
-bare Alt triggers keep the `VK_MASK` press.
+a press that matches a hotkey whose trigger or modifier is Alt or Win sends one `VK_MASK`
+press, so the app never sees a bare Alt/Win tap (menu bar / Start menu).
 
 ### Capture — `Api.capture_hotkey(feature, count)`
 

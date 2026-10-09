@@ -1400,6 +1400,21 @@ class TestHotkeyRestartDeferred(unittest.TestCase):
         app._apply_pending_hotkeys()
         app.start_hotkey.assert_called_once()
 
+    def test_mic_failure_at_begin_applies_pending_restart(self):
+        app = make_app()
+        app.start_hotkey = mock.Mock()
+
+        def mic_fails_while_settings_are_saved():
+            app.restart_hotkey()                 # الإعدادات اتحفظت وهو بيحاول يفتح الميك
+            return False
+
+        app.rec = mock.Mock(ensure_open=mock.Mock(side_effect=mic_fails_while_settings_are_saved))
+        with mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "_probe_password"):
+            app.begin("normal")
+        self.assertFalse(app.recording)
+        app.start_hotkey.assert_called_once()
+
     def test_too_short_recording_applies_pending_restart(self):
         app = make_app()
         app.start_hotkey = mock.Mock()

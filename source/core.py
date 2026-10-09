@@ -1508,6 +1508,7 @@ class App:
                 self.recording = False
                 self._op = None
             self.on_state("err", "الميكروفون مش متاح — وصّله وجرّب، أو غيّره من الإعدادات")
+            self._apply_pending_hotkeys()
             return
         # F1: فتح الميك ممكن ياخد وقت (ريكونكت)، وجوّه الوقت ده end()/cancel()
         # بيقدروا يقفلوا recording ويشيلوا _op. بنفحص تاني جوّه القفل إن الدورة
@@ -1552,6 +1553,7 @@ class App:
             self.recording = False
             self._op = None
         self.on_state("err", msg)
+        self._apply_pending_hotkeys()
 
     def _begin_edit(self, op):
         """
@@ -1913,9 +1915,7 @@ class App:
         feats = CFG.get("features") or DEFAULTS["features"]
         matcher = smart.HotkeyMatcher({m: smart.hotkey_from_vks(feats[m].get("hotkey"))
                                        for m in smart.FEATURES if m in feats})
-        # زراير Alt بتاعة التسجيل: «mask» بعد دوستها عشان سيبانها مايفتحش قايمة البرنامج
-        alt_keys = {t for t in matcher.triggers() if t in (0x12, 0xA4, 0xA5)}
-        logic = smart.HotkeyLogic(matcher, CFG.get("mode", "toggle"), alt_keys=alt_keys,
+        logic = smart.HotkeyLogic(matcher, CFG.get("mode", "toggle"), alt_keys=smart.MASKED_MODIFIER_VKS,
                                   cancel_keys={smart.VK_ESCAPE})
         # Ctrl الماسك من قبل ما المستمع يبدأ لازم يتحسب: غير كده F7 يتقري F7 مش Ctrl+F7
         filt = smart.HotkeyFilter(matcher, initially_down=winput.keys_down(smart.SIDE_MODIFIER_VKS),

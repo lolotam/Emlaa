@@ -96,6 +96,7 @@ class TestValidate(unittest.TestCase):
         self.bad(lambda f: f["edit"].update(hotkey=[0x41, 0x42]))
         self.bad(lambda f: f["edit"].update(hotkey=[0xA3, 0x77]))   # Ctrl اليمين لوحده زرار العادي
         self.bad(lambda f: f.pop("translate"))
+        self.bad(lambda f: f["normal"].update(stt=[{"provider": "groq", "model": ""}]))
         self.assertIsNone(smart.validate_features(mig()))
 
     def test_empty_ai_allowed_for_normal_only(self):
@@ -286,6 +287,14 @@ class TestSaveSettings(_BridgeCase):
         r, _ = self.save({"provider": "groq"})
         self.assertFalse(r["ok"])
         self.assertIn("محتاج مفتاح", r["err"])
+
+    def test_unchanged_features_do_not_mark_settings_customized(self):
+        self.write_env("GROQ_API_KEY=k\n")
+        f = mig()
+        f["normal"]["label"] = "Ctrl اليمين"         # الواجهة بترجّع اللي bootstrap بعته
+        r, _ = self.save({"features": f, "theme": "light"})
+        self.assertTrue(r["ok"])
+        self.assertFalse(self.saved[-1]["features_custom"])
 
     def test_partial_save_needs_no_key(self):
         r, ctrl = self.save({"theme": "light"})

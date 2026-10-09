@@ -215,6 +215,14 @@ MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 
 # الـhook دايمًا بيبعت الكود اليمين/الشمال — العام (0x10–0x12) عمره ما بييجي له تسيب، فلو
 # اتحسب ماسك وقت بداية المستمع كان هيفضل ماسك للأبد ويبوّظ كل الزراير
 SIDE_MODIFIER_VKS = MODIFIER_VKS - {0x10, 0x11, 0x12}
+# Alt/Win لو اتداسوا واتسابوا والبرنامج ماشافش زرار في النص بيفتحوا قايمة البرنامج أو
+# Start — فدوسة زرار تسجيل فيها واحد منهم بتبعت «mask» (زرار وهمي) وهو لسه ماسك
+MASKED_MODIFIER_VKS = frozenset({0x12, 0xA4, 0xA5, 0x5B, 0x5C})
+# زراير بنكتب بيها: لوحدها مينفعش تبقى زرار تسجيل (كانت هتتمنع عن كل البرامج) — مع
+# موديفاير عادي (Ctrl + A)
+TYPING_VKS = frozenset({0x08, 0x09, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2E}
+                       | set(range(0x30, 0x3A)) | set(range(0x41, 0x5B)) | set(range(0x60, 0x70))
+                       | set(range(0xBA, 0xC1)) | set(range(0xDB, 0xE0)) | {0xE2})
 
 # أسماء الإعدادات القديمة (قايمة الزراير الثابتة) ← رقمها — للترحيل بس
 LEGACY_HOTKEY_VKS = {
@@ -226,13 +234,16 @@ Hotkey = namedtuple("Hotkey", "mods trigger")
 
 
 def hotkey_shape_ok(vks):
-    """[] أو [أي زرار] أو [موديفاير، زرار مش موديفاير] — وEsc ممنوع (هو الإلغاء)."""
+    """
+    [] أو [زرار مش بيتكتب بيه] أو [موديفاير، زرار مش موديفاير] — أرقام vk بس (1–254)،
+    وEsc ممنوع (هو الإلغاء).
+    """
     vks = list(vks or [])
-    if VK_ESCAPE in vks or len(vks) > 2:
+    if len(vks) > 2 or not all(type(v) is int and 0 < v < 0xFF for v in vks) or VK_ESCAPE in vks:
         return False
     if len(vks) == 2:
         return vks[0] in MODIFIER_VKS and vks[1] not in MODIFIER_VKS
-    return True
+    return not vks or vks[0] not in TYPING_VKS
 
 
 def hotkey_from_vks(vks):
@@ -348,28 +359,29 @@ class HotkeyLogic:
             return []
         mode = self._matcher.match(key, held)
         if self._hold:
-            return self._press_hold(key, mode, recording, busy)
-        return self._press_toggle(key, now, mode)
+            return self._press_hold(key, mode, recording, busy, held)
+        return self._press_toggle(key, now, mode, held)
 
     def release(self, key, now, recording, busy):
         if self._hold:
             return self._release_hold(key, now)
         return self._release_toggle(key, now, recording, busy)
 
-    def _mask(self, key):
-        # أول دوسة على زرار Alt (لو هو زرار تسجيل) بتطلّع "mask" قبل أي إجراء —
-        # حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt مايفتحش قايمة البرنامج.
+    def _mask(self, key, mode, held):
+        # أول دوسة على زرار Alt/Win (لو هو زرار تسجيل)، أو زرار تسجيل Alt/Win ماسك معاه،
+        # بتطلّع "mask" قبل أي إجراء — حتى لو اتحولت لكورد بعد كده، عشان سيبان Alt/Win
+        # (والزرار نفسه اتمنع) مايفتحش قايمة البرنامج أو Start.
         # التكرار التلقائي وهو ماسك ملوش mask (المتصل بيتأكد قبل ما ينادي).
-        if key in self._triggers and key in self._alt:
+        if (key in self._triggers and key in self._alt) or (mode is not None and self._alt & set(held)):
             return ["mask"]
         return []
 
     # ── hold ──
 
-    def _press_hold(self, key, mode, recording, busy):
+    def _press_hold(self, key, mode, recording, busy, held):
         if self._active is not None and key == self._active:
             return []                  # تكرار تلقائي — مفيش mask ولا إجراء
-        acts = self._mask(key)
+        acts = self._mask(key, mode, held)
         if self._active is not None:
             if key == self._active:
                 # التكرار التلقائي لزرار التسجيل نفسه وهو لسه ماسك:
@@ -395,10 +407,10 @@ class HotkeyLogic:
 
     # ── toggle ──
 
-    def _press_toggle(self, key, now, mode):
+    def _press_toggle(self, key, now, mode, held):
         if key in self._held:
             return []                  # تكرار تلقائي وهو ماسك — مفيش mask ولا إجراء
-        acts = self._mask(key)
+        acts = self._mask(key, mode, held)
         for k in self._held:
             if k != key:
                 self._spoiled.add(k)
@@ -432,8 +444,9 @@ class HotkeyFilter:
     في النص (غير كده البرنامج كان ممكن يستلم تسيب من غير دوسة أو العكس).
     الموديفاير لوحده (Ctrl/Alt/Shift/Win) عمره ما بيتمنع — Ctrl+C وأخواتها تفضل شغّالة.
     initially_down: الزراير الماسكة وقت ما المستمع بدأ (من ويندوز) — عشان Ctrl الماسك
-    من قبل يتحسب. is_down(vk): حالة الزرار الفعلية — قبل أي زرار عادي بنشيل الموديفاير اللي
-    مبقاش ماسك (تسيبه ضاع، زي Ctrl+Alt+Del أو Win+L) عشان مايفضلش يبوّظ المطابقة.
+    من قبل يتحسب. is_down(vk): حالة الزرار الفعلية — قبل أي دوسة جديدة بنشيل الموديفاير اللي
+    مبقاش ماسك (تسيبه ضاع، زي Ctrl+Alt+Del أو Win+L) عشان مايفضلش يبوّظ المطابقة — حتى
+    لو الدوسة نفسها موديفاير (Ctrl اليمين لوحده زرار تسجيل).
     """
 
     def __init__(self, matcher, initially_down=frozenset(), is_down=None):
@@ -448,7 +461,7 @@ class HotkeyFilter:
             return False, False
         if is_press:
             if vk not in self._down:
-                if self._is_down is not None and vk not in MODIFIER_VKS:
+                if self._is_down is not None:
                     self._down = {k for k in self._down if k not in MODIFIER_VKS or self._is_down(k)}
                 matched = self._matcher.match(vk, frozenset(self._down)) is not None
                 self._latched[vk] = matched and vk not in MODIFIER_VKS
@@ -463,6 +476,7 @@ class HotkeyFilter:
 
 
 CAPTURE_PAIR_ERR = "لازم زرار منهم يبقى Ctrl أو Alt أو Shift أو Win"
+CAPTURE_KEY_ERR = "الزرار ده مينفعش يبقى زرار تسجيل — اختار زرار زي F8 أو تركيبة زي Ctrl + زرار"
 
 
 class CaptureSession:
@@ -532,7 +546,7 @@ class CaptureSession:
         if hotkey_shape_ok(vks):
             self.result = vks
         else:
-            self.error = "الزرار ده مينفعش يبقى زرار تسجيل"
+            self.error = CAPTURE_KEY_ERR
 
 
 # ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
@@ -600,11 +614,13 @@ def validate_features(features, known=KNOWN_PROVIDERS):
         for item in stt:
             if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,):
                 return "مزوّد تفريغ مش معروف"
+            if item["provider"] != LOCAL and not item.get("model"):
+                return "اختار موديل لكل مزوّد تفريغ"
         for item in ai:
             if not isinstance(item, dict) or item.get("provider") not in known \
                     or item.get("provider") in STT_ONLY or not item.get("model"):
                 return "المعالجة محتاجة مزوّد بيعرف يكتب (مش Deepgram ولا الموديل المحلي)"
-        if not isinstance(hk, list) or not all(isinstance(v, int) for v in hk) or not hotkey_shape_ok(hk):
+        if not isinstance(hk, list) or not hotkey_shape_ok(hk):
             return "زرار التسجيل مش مظبوط — زرار واحد، أو Ctrl/Alt/Shift/Win مع زرار"
         if hk:
             if tuple(hk) in seen:

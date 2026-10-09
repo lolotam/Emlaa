@@ -421,6 +421,34 @@ class TestStartHotkeyWiring(unittest.TestCase):
         self.drain()
         self.app.begin.assert_called_once_with(mode="normal")
 
+    def test_lost_modifier_release_does_not_block_a_modifier_only_hotkey(self):
+        # Win+L وبعده فتح القفل: تسيب Win ماوصلش — Ctrl اليمين لوحده لازم يفضل شغّال
+        self.wire("toggle", normal=(self.RCTRL,))
+        self.key(0x5B, True)
+        self.physical.discard(0x5B)
+        self.key(self.RCTRL, True)
+        self.key(self.RCTRL, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
+
+    def test_alt_and_win_combos_and_bare_win_send_the_mask_key(self):
+        # من غير الـmask البرنامج بيشوف Alt/Win لوحده (F8 اتمنع) فبيفتح القايمة أو Start
+        import winput
+        for hotkey in ((0xA4, self.F8), (0x5B, self.F8), (0x5B,)):
+            with self.subTest(hotkey=hotkey):
+                self.wire("toggle", normal=hotkey)
+                for vk in hotkey:
+                    self.key(vk, True)
+                self.drain()
+                self.assertIn(winput.VK_MASK, self.sent)
+
+    def test_ctrl_combo_sends_no_mask_key(self):
+        self.wire("toggle", normal=(self.LCTRL, self.F8))
+        self.key(self.LCTRL, True)
+        self.key(self.F8, True)
+        self.drain()
+        self.assertEqual(self.sent, [])
+
     def test_initially_held_ctrl_makes_f7_a_different_hotkey(self):
         app = self.wire("toggle", normal=(self.F7,), held=(self.LCTRL,))
         self.assertFalse(self.key(self.F7, True))                   # Ctrl+F7 مش زرار حد
