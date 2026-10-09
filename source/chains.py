@@ -9,6 +9,8 @@ import offline
 import providers
 import smart
 
+LOCAL_MISSING = "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات"
+
 
 class FeatureClient(providers.TextOps):
     """
@@ -55,7 +57,7 @@ class FeatureClient(providers.TextOps):
                 if pid == smart.LOCAL:
                     pack = offline.installed()
                     if not pack:
-                        raise RuntimeError("الموديل المحلي مش متثبّت")
+                        raise RuntimeError(LOCAL_MISSING)
                     text = offline.transcribe(wav_path, language)
                     self.stt_local, self.last_stt_name = True, "offline"
                     self.last_stt_model = "whisper.cpp " + pack

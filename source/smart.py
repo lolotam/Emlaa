@@ -544,7 +544,10 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
     pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS else "groq"
     local = {"provider": LOCAL, "model": ""}
 
-    if cfg.get("offline_mode") == "always":
+    # «من غير إنترنت دايمًا» كان اختيار خصوصية: النص عمره ما راح لموديل — فالعادي بيفضل
+    # خام. البرومبت/الترجمة/التعديل مايشتغلوش من غير معالجة أصلًا، فبياخدوا القايمة
+    local_only = cfg.get("offline_mode") == "always"
+    if local_only:
         stt = [local]
     else:
         stt = [{"provider": pid, "model": m} for m in stt_orders.get(pid) or []]
@@ -566,7 +569,7 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
             "stt": [dict(i) for i in stt],
             # من غير ولا مفتاح شات: العادي بيفضل خام زي النهارده؛ الباقي محتاج معالجة
             # فبياخد أول مزوّد شات — التشغيل هيقول إن المفتاح ناقص بدل ما الحفظ يترفض
-            "ai": [dict(i) for i in ai] if (keyed or mode != "normal") else [],
+            "ai": [dict(i) for i in ai] if ((keyed and not local_only) or mode != "normal") else [],
         }
     return out
 

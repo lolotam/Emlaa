@@ -141,6 +141,10 @@ class FailingEnsureRec:
 class FakeClient:
     """مزوّد وهمي: بيرجّع نصوص ثابتة وسجل بكل نداء."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, text="مرحبا بالعالم"):
         self.vocab = []
         self.text = text
@@ -337,7 +341,7 @@ class TestBeginEnd(unittest.TestCase):
         # بتنفتح قدامنا — والتسجيل الجديد لازم يترفض فيها.
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         gate = threading.Event()
         in_stop = threading.Event()
         rec = app.rec
@@ -508,7 +512,7 @@ class TestProcess(unittest.TestCase):
     def test_process_reads_mode_from_operation(self):
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -533,7 +537,7 @@ class TestProcess(unittest.TestCase):
         # وضع الترجمة: التفريغ بيطلّع عربي أو إنجليزي — مش مجبر على العربي
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -562,7 +566,7 @@ class TestProcess(unittest.TestCase):
     def test_process_empty_transcript_clears_busy(self):
         # أي early return جوّه process لازم يفكّ الحجز (user ممكن يسجّل تاني)
         app = make_app()
-        app.client = lambda: FakeClient(text="")
+        app.client = lambda *a, **k: FakeClient(text="")
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
@@ -576,7 +580,7 @@ class TestProcess(unittest.TestCase):
         # «مرحبا بالعالم» كلمة منها مش في قايمة التخطّي (العالم) → polish عادي
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -599,7 +603,7 @@ class TestProcess(unittest.TestCase):
     def test_process_unpasted_text_reports_unplaced(self):
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -621,7 +625,7 @@ class TestProcessDoneState(unittest.TestCase):
         # «clip_failed» ناشر "err" فوق — مينفعش يتغطى بـ"done" بعده
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -638,7 +642,7 @@ class TestProcessDoneState(unittest.TestCase):
         # خانة آمنة فشل كتابتها: "err" من غير "done" ومن غير on_unplaced
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -658,7 +662,7 @@ class TestProcessDoneState(unittest.TestCase):
         # الكتابة نجحت → «done» زي ما هي
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -675,7 +679,7 @@ class TestProcessDoneState(unittest.TestCase):
         # خطأ بدل ما الواجهة تفضل واقفة على "work".
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         cfg = dict(core.DEFAULTS)
         cfg["auto_paste"] = False
@@ -710,7 +714,7 @@ class TestBypassProcess(unittest.TestCase):
         # رد يومي قصير: مفيش أي نداء chat — المخرج هو الكلمة نفسها
         app = make_app()
         fake = FakeClient(text="تمام")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -730,7 +734,7 @@ class TestBypassProcess(unittest.TestCase):
     def test_short_reply_trailing_period_cleaned_locally(self):
         app = make_app()
         fake = FakeClient(text="تمام.")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -747,7 +751,7 @@ class TestBypassProcess(unittest.TestCase):
         # 4 كلمات = فوق الحد 3 → الـLLM زي ما هي
         app = make_app()
         fake = FakeClient(text="تمام شكرا يا رب")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -764,7 +768,7 @@ class TestBypassProcess(unittest.TestCase):
     def test_bypass_disabled_by_config(self):
         app = make_app()
         fake = FakeClient(text="تمام")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg(bypass_short=False)), \
@@ -781,7 +785,7 @@ class TestBypassProcess(unittest.TestCase):
         # فرع البرومبت ماشي على الـLLM حتى لو النص قصير من القايمة
         app = make_app()
         fake = FakeClient(text="تمام")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -798,7 +802,7 @@ class TestBypassProcess(unittest.TestCase):
     def test_translate_mode_unaffected_by_bypass(self):
         app = make_app()
         fake = FakeClient(text="Yes please")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -820,7 +824,7 @@ class TestSecurePrivacy(unittest.TestCase):
         # بييجي من نفس معلومات الفوكس (مفيش نداء focused_info تاني).
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -844,7 +848,7 @@ class TestSecurePrivacy(unittest.TestCase):
         # قبل التصنيف → النتيجة بتتعامل آمنة: مفيش سجل/عرض/حافظة/صوت، كتابة بس
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -873,7 +877,7 @@ class TestSecurePrivacy(unittest.TestCase):
         # الفوكس اتساب لمكان من غير خانة كتابة قبل التصنيف → handoff مش كتابة
         app = make_app()
         fake = FakeClient(text="نص")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
                 mock.patch("winput.focused_info", side_effect=[
@@ -894,7 +898,7 @@ class TestSecurePrivacy(unittest.TestCase):
         # ممن نكتب كلمة السر في أي مكان، والموديل عمره ما اشتغل.
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
                 mock.patch("winput.focused_info", side_effect=[
@@ -919,7 +923,7 @@ class TestSecurePrivacy(unittest.TestCase):
     def _run_secure(self, mode, early, late, text="s3cret!"):
         app = make_app()
         fake = FakeClient(text=text)
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -972,7 +976,7 @@ class TestSecurePrivacy(unittest.TestCase):
         # ما بيلمسش الحافظة (type بس) ولا سجل ولا صوت.
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         log = []
         with mock.patch.object(core, "log_error"), \
@@ -1002,7 +1006,7 @@ class TestSecurePrivacy(unittest.TestCase):
         fake = FakeClient(text="مرحبا")
         order = []
         fake.transcribe = lambda wav, lang: order.append("transcribe") or "مرحبا"
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
 
         def focused():
@@ -1029,7 +1033,7 @@ class TestProbePrivacy(unittest.TestCase):
         # مفيش موديل ولا سجل ولا حافظة ولا صوت، ورفض بخطأ الحركة.
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         op = core.Operation(mode="normal")
         op.probe["begin"] = True
@@ -1053,7 +1057,7 @@ class TestProbePrivacy(unittest.TestCase):
         # probe["end"]=True (باسورد لحظة الإيقاف) وبعدين الفوكس عادي — نفس الرفض.
         app = make_app()
         fake = FakeClient(text="s3cret!")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         op = core.Operation(mode="normal")
         op.probe["end"] = True
@@ -1120,8 +1124,10 @@ class TestContextStyles(unittest.TestCase):
     def test_process_passes_builtin_profile_for_target_app(self):
         app = make_app()
         fake = FakeClient(text="الكود ده فيه مشكلة في الـ API")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
+        # CFG صريح: قايمة المعالجة الافتراضية (مش ملف ومفاتيح الجهاز اللي بيشغّل الاختبار)
         with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
                 mock.patch("winput.focused_info", return_value=GUI_FOCUS), \
                 mock.patch.object(core, "_foreground_app", return_value=""), \
                 mock.patch.object(core, "history_add", return_value=None) as hist, \
@@ -1162,6 +1168,10 @@ class FakeIdentityClient:
     """مزوّد وهمي الهوية: polish/prompt/translate بيرجّع النص زي ما هو —
     فأي تعديل في المخرج لازم يكون من fix_mixed مش من الموديل."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, text=MIXED_RAW):
         self.text = text
         self.vocab = []
@@ -1198,7 +1208,7 @@ class TestFixMixedProcess(unittest.TestCase):
     def _run(self, mode="normal", text=MIXED_RAW, focus=GUI_FOCUS, target_app="", cfg=None):
         app = make_app()
         fake = FakeIdentityClient(text)
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", cfg or dict(core.DEFAULTS)), \
@@ -1307,6 +1317,101 @@ class TestRecordingSaveTmpCleanup(unittest.TestCase):
                     mock.patch.object(core, "log_error"):
                 core.recordings_prune()
             self.assertFalse(os.path.exists(stray))
+
+
+class TestFeatureWiring(unittest.TestCase):
+    """كل وضع بيمشي على عميل ميزته (FeatureClient)، والخام، ورسالة فشل المعالجة، والكاش."""
+
+    def run_process(self, mode="normal", fake=None, cfg=None, focus=GUI_FOCUS):
+        app = make_app()
+        fake = fake or FakeClient(text="الكلام ده جملة طويلة شوية.")
+        seen = []
+        app.client = lambda m="normal": seen.append(m) or fake
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", cfg or dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=dict(focus)), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "history_add", return_value=7) as hist, \
+                mock.patch.object(core, "recording_save") as rsave, \
+                mock.patch.object(core, "_copy_to_clipboard") as clip, \
+                mock.patch.object(core, "paste_text", return_value="placed") as paste:
+            app.process("WAV", core.Operation(mode=mode))
+        return app, fake, seen, hist, rsave, clip, paste
+
+    def test_each_mode_uses_its_client(self):
+        for mode in ("normal", "prompt", "translate"):
+            _, _, seen, *_ = self.run_process(mode)
+            self.assertEqual(seen, [mode])
+
+    def test_empty_ai_list_is_fully_raw(self):
+        # «Yes.» كانت هتبقى «Yes» من light_clean — قايمة المعالجة الفاضية = خام بالكامل
+        cfg = dict(core.DEFAULTS)
+        cfg["features"] = json.loads(json.dumps(core.DEFAULTS["features"]))
+        cfg["features"]["normal"]["ai"] = []
+        app, fake, _, hist, _, _, paste = self.run_process(fake=FakeClient(text="Yes."), cfg=cfg)
+        self.assertEqual(fake.calls, [("transcribe", None)])
+        self.assertEqual(paste.call_args.args[0], "Yes.")
+
+    def test_prompt_ai_failure_reports_it(self):
+        fake = FakeClient(text="عايز صفحة هبوط")
+        fake.ai_ok = False
+        fake.to_prompt = lambda t: t
+        app, *_ = self.run_process("prompt", fake=fake)
+        self.assertEqual(app.events[-1], ("done", "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال"))
+
+    def test_password_transcript_never_reaches_ai_history_or_clipboard(self):
+        secure = {"is_password": True, "class": "Edit", "editable": True}
+        for mode in ("normal", "prompt", "translate"):
+            app, fake, _, hist, rsave, clip, paste = self.run_process(mode, focus=secure)
+            self.assertEqual(fake.calls, [("transcribe", None)], mode)
+            hist.assert_not_called()
+            rsave.assert_not_called()
+            clip.assert_not_called()
+            self.assertEqual(app.unplaced, [])
+            self.assertEqual(paste.call_args.args[1][0], "secure")
+
+
+class TestClientCache(unittest.TestCase):
+    def test_rebuilt_when_keys_change_for_the_same_provider(self):
+        app = make_app()
+        with mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("providers.read_key_pools", return_value={"groq": ["a"]}):
+            first = app.client("normal")
+            self.assertIs(app.client("normal"), first)
+        with mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("providers.read_key_pools", return_value={"groq": ["a", "b"]}):
+            self.assertIsNot(app.client("normal"), first)
+
+    def test_one_client_per_mode(self):
+        app = make_app()
+        with mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("providers.read_key_pools", return_value={"groq": ["a"]}):
+            self.assertIsNot(app.client("normal"), app.client("prompt"))
+
+
+class TestHotkeyRestartDeferred(unittest.TestCase):
+    def test_restart_waits_until_operation_ends(self):
+        app = make_app()
+        app.start_hotkey = mock.Mock()
+        app.busy = True
+        app.restart_hotkey()
+        app.start_hotkey.assert_not_called()
+        app.busy = False
+        app._apply_pending_hotkeys()
+        app.start_hotkey.assert_called_once()
+
+    def test_process_applies_pending_restart_on_exit(self):
+        app = make_app()
+        app.start_hotkey = mock.Mock()
+        app.client = lambda m="normal": FakeClient(text="")
+        app.busy = True
+        app.restart_hotkey()
+        with mock.patch.object(core, "log_error"), \
+                mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
+                mock.patch("winput.focused_info", return_value=dict(GUI_FOCUS)), \
+                mock.patch.object(core, "_foreground_app", return_value=""):
+            app.process("WAV", core.Operation(mode="normal"))
+        app.start_hotkey.assert_called_once()
 
 
 if __name__ == "__main__":

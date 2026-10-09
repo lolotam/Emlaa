@@ -871,6 +871,7 @@ class Api:
                 providers.add_provider_key(core.ENV_PATH, pid, key)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
+            self._reset_engine_client()
             return {"ok": True, **self.key_pool(pid)}
 
     def key_remove(self, pid, index, key_id=None):
@@ -898,7 +899,14 @@ class Api:
                 providers.remove_provider_key(core.ENV_PATH, pid, index)
             except OSError:
                 return {"ok": False, "err": KEY_WRITE_ERR}
+            self._reset_engine_client()
             return {"ok": True, **self.key_pool(pid)}
+
+    def _reset_engine_client(self):
+        """المفاتيح اتغيّرت: عملاء الميزات المخزّنين بيتبنوا تاني بالمجمّعة الجديدة."""
+        engine = getattr(self._c, "engine", None)
+        if engine is not None:
+            engine.reset_client()
 
     # ── التفريغ من غير إنترنت (F9) ──
     def offline_status(self):

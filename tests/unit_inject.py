@@ -484,6 +484,10 @@ class TestFocusedInfoFailure(unittest.TestCase):
 class FakeClient:
     """مزوّد وهمي: بيرجّع نص ثابت — زي unit_process."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, text="مرحبا بالعالم"):
         self.vocab = []
         self.text = text
@@ -530,7 +534,7 @@ class TestSecureOrdering(unittest.TestCase):
     def test_secure_target_writes_nothing_but_types(self):
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
@@ -560,7 +564,7 @@ class TestSecureOrdering(unittest.TestCase):
         # UIA كله None = سلوك اليوم «gui»: كل الأثار العادية بترجع مكانها
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
 
         def on_text_with_log(t):
@@ -592,7 +596,7 @@ class TestSecureOrdering(unittest.TestCase):
     def test_secure_with_auto_paste_off_skips_typing_and_copy(self):
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
@@ -617,7 +621,7 @@ class TestSecureOrdering(unittest.TestCase):
         # الخانة الآمنة: الدقات فشلت → "err" (اكتبها بنفسك) من غير "done" ومن غير عرض النص
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
@@ -641,7 +645,7 @@ class TestSecureOrdering(unittest.TestCase):
     def test_gui_type_failure_shows_unplaced(self):
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -661,7 +665,7 @@ class TestSecureOrdering(unittest.TestCase):
         # مفيش حقن ولا نسخة على الحافظة → رسالة خطأ، مش toast "انسخه بنفسك"
         app = make_app()
         fake = FakeClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         with mock.patch.object(core, "beep"), \
                 mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", _cfg()), \
@@ -680,7 +684,7 @@ class TestSecureOrdering(unittest.TestCase):
         # متعدد لحد الترمنال: toast بزرار نسخ، ومفيش حقن ولا نسخ (R1 #4)
         app = make_app()
         fake = FakeClient(text="سطر\nسطر")
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         log = []
 
         def on_text_with_log(t):

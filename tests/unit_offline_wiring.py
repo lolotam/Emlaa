@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-اختبارات Task 16 — توصيل التفريغ بدون إنترنت بخط process في core.App + Api الإعدادات.
-مفيش شبكة ولا مفاتيح ولا BASE الحقيقي: offline.installed/transcribe مزيّفين،
-والعميل مزيّف، والحافظة والحقن stubs — بنختبر القرار الفعلي مش الاستدعاءات.
+التفريغ من غير إنترنت كعنصر في قايمة التفريغ («محلي») — من خلال App.process و
+chains.FeatureClient الحقيقيين. مفيش شبكة ولا مفاتيح ولا BASE الحقيقي: offline.installed/
+transcribe والمزوّد الصارم (chains._strict_client) مزيّفين، والحافظة والحقن stubs.
 """
 import os
 import sys
@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import core       # noqa: E402
 import offline    # noqa: E402
 import providers  # noqa: E402
+import chains     # noqa: E402
 import app_web    # noqa: E402
 
 
@@ -45,25 +46,39 @@ def cfg(**over):
     return c
 
 
-class NetworkFailingClient:
-    """عميل مزوّد وهمي: transcribe بيرمي الخطأ اللي نحطّه (NetworkError افتراضيًا)."""
+FEATURES = ("normal", "prompt", "translate", "edit")
+LOCAL = {"provider": "local", "model": ""}
+GROQ_STT = {"provider": "groq", "model": "w"}
+GROQ_AI = {"provider": "groq", "model": "q"}
 
-    def __init__(self, err=None):
-        self.vocab = []
-        self.vocab_extra = []
-        self.err = err or providers.NetworkError("انقطاع في النت")
+
+class FakeProvider:
+    """عميل مزوّد صارم وهمي: transcribe ممكن يرمي (stt_err)، و_chat_raw بيرجّع ai_out أو بيرمي."""
+
+    def __init__(self, stt_err=None, ai_out=None, ai_err=None):
+        self.vocab, self.vocab_extra, self.last_stt_model = [], [], None
+        self.stt_err, self.ai_out, self.ai_err = stt_err, ai_out, ai_err
 
     def transcribe(self, wav, lang):
-        raise self.err
+        if self.stt_err:
+            raise self.stt_err
+        self.last_stt_model = "w"
+        return "من المزوّد"
+
+    def _chat_raw(self, system, text, temperature=0.2):
+        if self.ai_err:
+            raise self.ai_err
+        return self.ai_out
 
 
 # معلومات فوكس ثابتة: هدف عادي (مش باسورد) — عشان منعتمدش على النافذة الحقيقية
 GUI_FOCUS = {"is_password": False, "class": "Edit", "editable": True}
 
 
-def _wire(tc, offline_mode="fallback", installed="base", offline_text="النص المحلي"):
+def _wire(tc, stt, ai=(), installed="base", offline_text="النص المحلي", provider=None):
     """
-    بيشغّل كل الـpatches المشتركة ويرجّع dict فيه الموكس اللي بنأكّد عليها.
+    App حقيقي بـFeatureClient حقيقي على قايمة التفريغ/المعالجة اللي في الاختبار — الموديل
+    المحلي والمزوّد (عن طريق chains._strict_client) والحقن والسجل بس هما المزيّفين.
     بيسجّل p.stop كـcleanup — مش نتيجة start() — عشان الترقيعة تتفك فعلًا بعد الاختبار.
     """
     m = {
@@ -72,13 +87,18 @@ def _wire(tc, offline_mode="fallback", installed="base", offline_text="النص 
         "clip": mock.Mock(return_value=True),
         "transcribe": mock.Mock(return_value=offline_text),
         "installed": mock.Mock(return_value=installed),
+        "factory": mock.Mock(return_value=provider or FakeProvider()),
     }
+    features = {f: {"hotkey": [], "stt": [dict(i) for i in stt], "ai": [dict(i) for i in ai]}
+                for f in FEATURES}
 
     def start(patcher):
         patcher.start()
         tc.addCleanup(patcher.stop)
 
-    start(mock.patch.object(core, "CFG", cfg(offline_mode=offline_mode)))
+    start(mock.patch.object(core, "CFG", cfg(features=features)))
+    start(mock.patch.object(providers, "read_key_pools", return_value={"groq": ["k"]}))
+    start(mock.patch.object(chains, "_strict_client", m["factory"]))
     start(mock.patch("winput.focused_info", return_value=dict(GUI_FOCUS)))
     start(mock.patch.object(core, "_foreground_app", return_value=""))
     start(mock.patch.object(core, "log_error"))
@@ -91,167 +111,108 @@ def _wire(tc, offline_mode="fallback", installed="base", offline_text="النص 
     return m
 
 
-class TestAlwaysOffline(unittest.TestCase):
-    """offline_mode="always" + موديل مثبّت = مفيش بناء Client ولا نداء موديل."""
+class TestLocalFirst(unittest.TestCase):
+    """«محلي» أول قايمة التفريغ: الصوت عمره ما بيروح لمزوّد، وقايمة المعالجة بتشتغل عادي."""
 
-    def test_normal_uses_offline_and_never_builds_client(self):
+    def test_normal_local_only_never_builds_provider_client(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="كلام محلي")
+        m = _wire(self, [LOCAL], offline_text="كلام محلي")
         app.process("WAV", core.Operation(mode="normal"))
-        app.client.assert_not_called()
+        m["factory"].assert_not_called()
         m["transcribe"].assert_called_once_with("WAV", None)
         m["paste"].assert_called_once_with("كلام محلي", ("gui", "type", "كلام محلي"))
-        self.assertEqual(app.texts, ["كلام محلي"])
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ من غير إنترنت (من غير تحسين)"))
+        self.assertEqual(app.events[-1], ("done", "normal"))
 
-    def test_snippet_expands_offline(self):
-        # توسيع الاختصار محلي بالكامل — offline بيشيل لفة الموديل بس، مش الاختصارات
+    def test_snippet_expands_with_local_stt(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="العنوان بتاعي")
+        m = _wire(self, [LOCAL], offline_text="العنوان بتاعي")
         core.CFG["snippets"] = [{"trigger": "العنوان بتاعي", "text": "١٢ شارع النيل"}]
         app.process("WAV", core.Operation(mode="normal"))
-        app.client.assert_not_called()
         self.assertEqual(m["paste"].call_args.args[0], "١٢ شارع النيل")
         self.assertEqual(m["history"].call_args.args[2], "[اختصار] العنوان بتاعي")
 
-    def test_snippet_not_expanded_into_password_field_offline(self):
+    def test_snippet_not_expanded_into_password_field(self):
         app = make_app()
-        m = _wire(self, offline_mode="always", offline_text="العنوان بتاعي")
+        m = _wire(self, [LOCAL], offline_text="العنوان بتاعي")
         core.CFG["snippets"] = [{"trigger": "العنوان بتاعي", "text": "١٢ شارع النيل"}]
         with mock.patch("winput.focused_info", return_value=dict(GUI_FOCUS, is_password=True)):
             app.process("WAV", core.Operation(mode="normal"))
         for call in m["paste"].call_args_list:
             self.assertNotIn("١٢ شارع النيل", call.args[0])
 
-    def test_prompt_shows_raw_text_without_inserting_or_copying(self):
+    def test_translate_after_local_runs_the_ai_list(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="طلب محلي")
-        app.process("WAV", core.Operation(mode="prompt"))
-        app.client.assert_not_called()
-        m["paste"].assert_not_called()
-        m["clip"].assert_not_called()
-        self.assertEqual(app.unplaced, ["طلب محلي"])
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ بس — التحويل محتاج إنترنت"))
-        self.assertEqual(m["history"].call_args.args[2], "طلب محلي")
-
-    def test_auto_paste_off_copies_raw_text(self):
-        # الكتابة التلقائية مقفولة = المستخدم عايز النص على الحافظة
-        app = make_app()
-        m = _wire(self, offline_mode="always", offline_text="طلب محلي")
-        core.CFG["auto_paste"] = False
-        with mock.patch.object(core, "mark_clip_owned"), \
-                mock.patch("winput._clipboard_sequence", return_value=1), \
-                mock.patch("winput._read_clipboard_text", return_value="طلب محلي"):
-            app.process("WAV", core.Operation(mode="prompt"))
-        m["clip"].assert_called_once()
-        self.assertEqual(m["clip"].call_args.args[0], "طلب محلي")
-        self.assertEqual(app.unplaced, ["طلب محلي"])
-
-    def test_translate_shows_raw_text_and_keeps_raw_history(self):
-        app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="نص عربي")
+        m = _wire(self, [LOCAL], ai=[GROQ_AI], offline_text="نص عربي",
+                  provider=FakeProvider(ai_out="English text"))
         app.process("WAV", core.Operation(mode="translate"))
-        app.client.assert_not_called()
-        self.assertEqual(app.unplaced, ["نص عربي"])
-        self.assertEqual(m["history"].call_args.args[1], "نص عربي")  # raw
-        self.assertEqual(m["history"].call_args.args[2], "نص عربي")  # result = raw
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ بس — التحويل محتاج إنترنت"))
+        # المزوّد اتبنى للمعالجة بس (chat_model) — مش للتفريغ
+        self.assertEqual(m["factory"].call_args_list, [mock.call("groq", ["k"], None, "q")])
+        self.assertEqual(m["paste"].call_args.args[0], "English text")
+        self.assertEqual(app.events[-1], ("done", "translate"))
+
+    def test_prompt_after_local_with_ai_down_types_raw_and_says_so(self):
+        app = make_app()
+        m = _wire(self, [LOCAL], ai=[GROQ_AI], offline_text="طلب محلي",
+                  provider=FakeProvider(ai_err=providers.NetworkError("dns")))
+        app.process("WAV", core.Operation(mode="prompt"))
+        self.assertEqual(m["paste"].call_args.args[0], "طلب محلي")
+        self.assertEqual(m["history"].call_args.args[2], "طلب محلي")
+        self.assertEqual(app.events[-1], ("done", "مقدرتش أحوّله — اتكتب الكلام زي ما اتقال"))
 
     def test_history_engine_is_offline(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", installed="small-q5_1", offline_text="نص")
+        m = _wire(self, [LOCAL], installed="small-q5_1", offline_text="نص")
         app.process("WAV", core.Operation(mode="normal"))
         engine = m["history"].call_args.kwargs["engine"]
         self.assertEqual(engine, {"stt": "offline", "stt_model": "whisper.cpp small-q5_1"})
 
-    def test_edit_mode_offline_rejects_without_insert(self):
+    def test_edit_with_local_stt_and_no_ai_answer_leaves_selection(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always")
-        app.process("WAV", core.Operation(mode="edit"))
-        app.client.assert_not_called()
+        m = _wire(self, [LOCAL], ai=[GROQ_AI], provider=FakeProvider(ai_out=None))
+        app.process("WAV", core.Operation(mode="edit", selection="نص محدد"))
         m["paste"].assert_not_called()
         m["history"].assert_not_called()
-        self.assertEqual(app.events[-1], ("err", "التعديل محتاج إنترنت"))
+        self.assertEqual(app.events[-1], ("err", "معرفتش أعدّل النص — جرّب تاني"))
 
-    def test_always_not_installed_refuses_without_client(self):
-        # N1: وضع "always" ومفيش موديل مثبّت — منبنيش Client ولا ننادي أي مزوّد،
-        # نرفض بـ"مش متثبّت" من غير سجل ولا حافظة
+    def test_local_only_not_installed_refuses_without_provider(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", installed=None)
+        m = _wire(self, [LOCAL], installed=None)
         app.process("WAV", core.Operation(mode="normal"))
-        app.client.assert_not_called()
+        m["factory"].assert_not_called()
         m["transcribe"].assert_not_called()
         m["paste"].assert_not_called()
         m["history"].assert_not_called()
-        m["clip"].assert_not_called()
         self.assertEqual(app.events[-1], ("err", "التفريغ من غير إنترنت مش متثبّت — نزّله من الإعدادات"))
 
-    def test_edit_always_not_installed_refuses_without_client(self):
-        # N1: تعديل + "always" + مفيش موديل — رفض "التعديل محتاج إنترنت" برضه
-        # من غير ما نبني Client (سواء الموديل متثبّت ولا لأ)
+
+class TestFallbackToLocal(unittest.TestCase):
+    """مزوّد ← محلي: أي فشل للمزوّد (نت، 401، كوتا) بينقل للعنصر اللي بعده."""
+
+    def test_normal_falls_back_to_local_after_network_error(self):
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", installed=None)
-        app.process("WAV", core.Operation(mode="edit"))
-        app.client.assert_not_called()
-        m["paste"].assert_not_called()
-        m["history"].assert_not_called()
-        self.assertEqual(app.events[-1], ("err", "التعديل محتاج إنترنت"))
-
-
-class TestFallbackOffline(unittest.TestCase):
-    """offline_mode="fallback" = العميل الأول؛ لو النت وقع والموديل مثبّت → offline."""
-
-    def test_normal_falls_back_after_network_error(self):
-        app = make_app()
-        app.client = lambda: NetworkFailingClient()
-        m = _wire(self, offline_mode="fallback", offline_text="اتفرّغ محليًا")
+        m = _wire(self, [GROQ_STT, LOCAL], offline_text="اتفرّغ محليًا",
+                  provider=FakeProvider(stt_err=providers.NetworkError("انقطاع")))
         app.process("WAV", core.Operation(mode="normal"))
         m["transcribe"].assert_called_once_with("WAV", None)
         m["paste"].assert_called_once_with("اتفرّغ محليًا", ("gui", "type", "اتفرّغ محليًا"))
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ من غير إنترنت (من غير تحسين)"))
+        self.assertEqual(app.events[-1], ("done", "normal"))
 
-    def test_prompt_falls_back_and_copies(self):
+    def test_http_401_also_falls_back_to_local(self):
         app = make_app()
-        app.client = lambda: NetworkFailingClient()
-        m = _wire(self, offline_mode="fallback", offline_text="كلام")
-        app.process("WAV", core.Operation(mode="prompt"))
-        self.assertEqual(app.unplaced, ["كلام"])
-        m["paste"].assert_not_called()
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ بس — التحويل محتاج إنترنت"))
-
-    def test_translate_falls_back(self):
-        app = make_app()
-        app.client = lambda: NetworkFailingClient()
-        m = _wire(self, offline_mode="fallback", offline_text="كلام")
-        app.process("WAV", core.Operation(mode="translate"))
-        self.assertEqual(app.unplaced, ["كلام"])
-        self.assertEqual(app.events[-1], ("done", "اتفرّغ بس — التحويل محتاج إنترنت"))
-
-    def test_http_401_does_not_fall_back(self):
-        app = make_app()
-        app.client = lambda: NetworkFailingClient(RuntimeError("401 invalid api key"))
-        m = _wire(self, offline_mode="fallback", offline_text="مينفعش يتفرّغ")
+        m = _wire(self, [GROQ_STT, LOCAL], offline_text="محلي",
+                  provider=FakeProvider(stt_err=RuntimeError("401 invalid api key")))
         app.process("WAV", core.Operation(mode="normal"))
-        m["transcribe"].assert_not_called()
-        self.assertEqual(app.events[-1][0], "err")
-        self.assertIn("المفتاح", app.events[-1][1])
+        m["transcribe"].assert_called_once_with("WAV", None)
+        self.assertEqual(app.events[-1], ("done", "normal"))
 
-    def test_edit_mode_fallback_network_error_rejects(self):
+    def test_network_error_with_no_other_item_is_reported(self):
         app = make_app()
-        app.client = lambda: NetworkFailingClient()
-        m = _wire(self, offline_mode="fallback")
-        app.process("WAV", core.Operation(mode="edit"))
+        m = _wire(self, [GROQ_STT], provider=FakeProvider(stt_err=providers.NetworkError("انقطاع")))
+        app.process("WAV", core.Operation(mode="edit", selection="نص"))
         m["paste"].assert_not_called()
         m["history"].assert_not_called()
-        self.assertEqual(app.events[-1], ("err", "التعديل محتاج إنترنت"))
+        self.assertEqual(app.events[-1][0], "err")
+        self.assertIn("مفيش اتصال بالنت", app.events[-1][1])
 
 
 class TestFriendlyErrorOffline(unittest.TestCase):
@@ -344,38 +305,19 @@ class TestApiOffline(unittest.TestCase):
         self.assertIs(r["verified"], True)
 
 
-
-class TestOfflineHandoffNeverCopiesPasswords(unittest.TestCase):
-    def test_prompt_offline_in_password_field_copies_nothing(self):
-        # برومبت offline والتسجيل كان في خانة باسورد: النص ممنوع يروح للحافظة أو السجل
+class TestLocalPasswordFields(unittest.TestCase):
+    def test_prompt_in_password_field_skips_ai_history_and_clipboard(self):
+        # برومبت والتسجيل كان في خانة باسورد: النص بيتكتب زي ما اتفرّغ — مفيش موديل ولا سجل ولا حافظة
         app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="كلمة السر")
+        m = _wire(self, [LOCAL], ai=[GROQ_AI], offline_text="كلمة السر")
         with mock.patch("winput.focused_info",
                         return_value={"is_password": True, "class": "", "editable": True}):
             app.process("WAV", core.Operation(mode="prompt"))
+        m["factory"].assert_not_called()
         m["clip"].assert_not_called()
         m["history"].assert_not_called()
         self.assertEqual(app.unplaced, [])
-        self.assertEqual(app.events[-1][0], "err")
-
-    def test_late_password_focus_copies_nothing(self):
-        # N2: الفوكس وقت التفريغ مش باسورد، بس وقت التسليم اتنقل لخانة باسورد —
-        # الفحص المتأخر لازم يرفض من غير نسخ ولا سجل ولا on_unplaced
-        app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="كلمة السر")
-        focus = [dict(GUI_FOCUS), {"is_password": True, "class": "", "editable": True}]
-
-        def focused():
-            return focus.pop(0) if focus else {"is_password": True, "class": "", "editable": True}
-
-        with mock.patch("winput.focused_info", side_effect=focused):
-            app.process("WAV", core.Operation(mode="prompt"))
-        m["clip"].assert_not_called()
-        m["history"].assert_not_called()
-        self.assertEqual(app.unplaced, [])
-        self.assertEqual(app.events[-1][1], "مينفعش أنسخ نص خانة باسورد — التحويل محتاج إنترنت")
+        self.assertEqual(m["paste"].call_args.args[0], "كلمة السر")
 
 
 class TestClassicKeylessSave(unittest.TestCase):
@@ -410,7 +352,8 @@ class TestClassicKeylessSave(unittest.TestCase):
     def test_apply_never_writes_an_empty_key(self):
         import emlaa
         ui = emlaa.EmlaaClassic.__new__(emlaa.EmlaaClassic)
-        with mock.patch.object(providers, "write_key") as wk,                 mock.patch.object(core, "save_config", side_effect=RuntimeError("stop")):
+        with mock.patch.object(providers, "write_key") as wk, \
+                mock.patch.object(core, "save_config", side_effect=RuntimeError("stop")):
             ui.cfg = cfg()
             for name in ("hk_norm_var", "hk_prmt_var", "hk_trns_var", "polish_var", "prompt_var",
                          "paste_var", "tray_var", "upd_var", "float_var"):
@@ -421,30 +364,19 @@ class TestClassicKeylessSave(unittest.TestCase):
 
 
 class TestOfflineSilenceMarkers(unittest.TestCase):
-    """F1: offline بيرجّع "" لما whisper يسمع سكوت/علامات بس — process يعرض «مطلعش نص»
-    من غير سجل ولا حافظة ولا handoff في الوضع العادي والترجمة."""
+    """F1: المحلي بيرجّع "" لما whisper يسمع سكوت/علامات بس — process يعرض «مطلعش نص»
+    من غير سجل ولا حافظة ولا كتابة."""
 
-    def test_normal_marker_only_shows_no_text_without_history_or_clipboard(self):
-        app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="")
-        app.process("WAV", core.Operation(mode="normal"))
-        m["paste"].assert_not_called()
-        m["history"].assert_not_called()
-        m["clip"].assert_not_called()
-        self.assertEqual(app.texts, [])
-        self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
-
-    def test_translate_marker_only_shows_no_text_without_handoff(self):
-        app = make_app()
-        app.client = mock.Mock(side_effect=AssertionError("Client اتبنى رغم وضع offline"))
-        m = _wire(self, offline_mode="always", offline_text="")
-        app.process("WAV", core.Operation(mode="translate"))
-        m["paste"].assert_not_called()
-        m["history"].assert_not_called()
-        m["clip"].assert_not_called()
-        self.assertEqual(app.unplaced, [])
-        self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
+    def test_marker_only_shows_no_text_in_every_mode(self):
+        for mode in ("normal", "translate"):
+            app = make_app()
+            m = _wire(self, [LOCAL], ai=[GROQ_AI], offline_text="")
+            app.process("WAV", core.Operation(mode=mode))
+            m["paste"].assert_not_called()
+            m["history"].assert_not_called()
+            m["clip"].assert_not_called()
+            self.assertEqual(app.unplaced, [])
+            self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
 
 
 if __name__ == "__main__":

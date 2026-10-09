@@ -95,6 +95,10 @@ def make_app():
 class FakeEditClient:
     """مزوّد وهمي: transcribe بيرجّع التعليمات، edit بيرجّع النتيجة (أو None)."""
 
+    # زي chains.FeatureClient: مين فرّغ (محلي؟) وهل المعالجة ردّت
+    stt_local = False
+    ai_ok = True
+
     def __init__(self, instruction="حط عنوان", result="النص المعدل"):
         self.instruction = instruction
         self.result = result
@@ -222,7 +226,7 @@ class TestProcessEdit(unittest.TestCase):
     def _run(self, op, fake=None, same=True, paste="placed"):
         app = make_app()
         fake = fake or FakeEditClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", dict(core.DEFAULTS)), \
@@ -265,7 +269,7 @@ class TestProcessEdit(unittest.TestCase):
         app = make_app()
         cfg = dict(core.DEFAULTS, auto_paste=auto_paste)
         fake = fake or FakeEditClient()
-        app.client = lambda: fake
+        app.client = lambda *a, **k: fake
         app.busy = True
         with mock.patch.object(core, "log_error"), \
                 mock.patch.object(core, "CFG", cfg), \

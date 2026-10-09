@@ -56,6 +56,9 @@ class TestMigration(unittest.TestCase):
     def test_offline_always_is_local_only_everywhere(self):
         f = mig(local="base", offline_mode="always")
         self.assertTrue(all(f[m]["stt"] == [LOCAL] for m in smart.FEATURES))
+        # كان اختيار خصوصية: النص عمره ما راح لموديل — العادي يفضل خام
+        self.assertEqual(f["normal"]["ai"], [])
+        self.assertTrue(f["prompt"]["ai"])
 
     def test_ai_mirrors_hidden_chat_fallbacks(self):
         self.assertEqual(mig()["prompt"]["ai"], [{"provider": "groq", "model": m} for m in CHAT["groq"]])
