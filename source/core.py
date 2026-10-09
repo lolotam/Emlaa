@@ -21,6 +21,7 @@ import wave
 import tempfile
 import threading
 import collections
+import queue
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -1279,6 +1280,78 @@ class Operation:
     probe: dict = field(default_factory=dict, compare=False)
 
 
+class HotkeyDispatcher:
+    """
+    بيشغّل قرارات زراير التسجيل بترتيب وصول الأحداث، على ثريد لوحده برّه الـhook.
+    كل start_hotkey بيعمل واحد جديد؛ stop() بيقفل القديم فأي حدث فاضل في طابوره
+    مبيتنفّذش (إعادة تشغيل الزراير مبتشغّلش دوسة اتداست على الإعدادات القديمة).
+    غلط في أي إجراء بيتسجّل ويتعرض والثريد بيكمّل — الـhook لسه بيمنع زراير فلازم
+    حد يفضل يشغّلها.
+    """
+    _STOP = object()
+
+    def __init__(self, logic, app):
+        self._logic = logic
+        self._app = app
+        self._queue = queue.Queue()
+        self._stopped = False
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def put(self, vk, is_press, now, held):
+        if not self._stopped:
+            self._queue.put((vk, is_press, now, held))
+
+    def stop(self):
+        self._stopped = True
+        self._queue.put(self._STOP)
+
+    def drain(self):
+        """للاختبارات: بيفضّي الطابور في نفس الثريد."""
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            if item is self._STOP or self._stopped:
+                return
+            self._apply(*item)
+
+    def _run(self):
+        while True:
+            item = self._queue.get()
+            if item is self._STOP or self._stopped:
+                return
+            self._apply(*item)
+
+    def _apply(self, vk, is_press, now, held):
+        import winput
+        app = self._app
+        try:
+            if is_press:
+                acts = self._logic.press(vk, now, app.recording, app.busy, held=held)
+            else:
+                acts = self._logic.release(vk, now, app.recording, app.busy)
+            for act in acts:
+                if act == "mask":
+                    winput.send_vk(winput.VK_MASK)
+                elif act == "end":
+                    app.end()
+                elif act == "cancel":
+                    app.cancel()
+                elif act.startswith("begin:"):
+                    app.begin(mode=act[len("begin:"):])
+        except Exception as e:
+            log_error(e, "hotkey")
+            try:
+                app.recording = False
+                app._active_key = None
+                app.on_state("err", friendly_error(e))
+            except Exception:
+                pass
+
+
 class App:
     """
     الواجهة بترث منه وبتعمل override لـ on_state / on_text عشان تعرض الحالة.
@@ -1298,8 +1371,11 @@ class App:
         self._client = None
         self._client_sig = None
         self._listener = None
+        self._dispatcher = None
+        self.capturing = False                  # بنسجّل زرار من الإعدادات — مفيش تسجيل صوت
+        self._hotkey_restart_pending = False
 
-    # ── العميل بيتبني حسب المزوّد المختار، وبيتعاد بناؤه لو اتغيّر ──
+    # ── عميل كل ميزة (قايمة التفريغ + قايمة المعالجة)، وبيتعاد بناؤه لو اتغيّر ──
     def client(self, mode="normal"):
         """
         عميل الميزة (قايمة التفريغ + قايمة المعالجة) — واحد لكل وضع ومخزّن. التوقيع فيه
@@ -1348,7 +1424,7 @@ class App:
         with self._state_lock:
             # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
             # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
-            if self.recording or self.busy:
+            if self.recording or self.busy or getattr(self, "capturing", False):
                 return
             self.recording = True
             self.active_mode = mode
@@ -1768,120 +1844,67 @@ class App:
 
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
+        """
+        زراير التسجيل من features: الـhook (win32_event_filter) بيقرر في نفس اللحظة نمنع
+        الحدث ولا لأ (HotkeyFilter — نفس مطابقة التشغيل)، وبيحط الحدث في طابور. ثريد
+        الـdispatcher بيشغّل المنطق بالترتيب برّه الـhook (الـhook ليه وقت قليل جدًا من
+        ويندوز). callbacks بتاعة pynput مش مستخدمة: الطابور هو المسار الوحيد المرتّب.
+        """
         from pynput import keyboard
-        import winput   # آثار جانبية Win32 (mask/مفاتيح القفل) — جوّه الدالة عشان
+        import winput   # آثار جانبية Win32 (mask/حالة الزراير) — جوّه الدالة عشان
                        # ماتستورداش في مستوى موديول core (وsmart مالمسهاش خالص)
 
-        def _parse_key(val):
-            if not val:
-                return None
-            s = str(val).lower().strip()
-            try:
-                return keyboard.Key[s]
-            except KeyError:
-                try:
-                    return keyboard.KeyCode.from_char(s)
-                except Exception:
-                    return None
-
-        hk_normal = CFG.get("hotkey_normal") or CFG.get("hotkey") or "ctrl_r"
-        hk_prompt = CFG.get("hotkey_prompt") or "alt_r"
-        hk_trans  = CFG.get("hotkey_translate") or "shift_r"
-        hk_edit   = CFG.get("hotkey_edit") or ""        # F6: "" = مقفول
-        mode_type = CFG.get("mode", "hold")
-
-        key_map = {}
-        k_norm = _parse_key(hk_normal)
-        k_prmt = _parse_key(hk_prompt)
-        k_trns = _parse_key(hk_trans)
-        k_edit = _parse_key(hk_edit)
-
-        if k_norm: key_map[k_norm] = "normal"
-        if k_prmt: key_map[k_prmt] = "prompt"
-        if k_trns: key_map[k_trns] = "translate"
-        if k_edit: key_map[k_edit] = "edit"
-
+        feats = CFG.get("features") or DEFAULTS["features"]
+        matcher = smart.HotkeyMatcher({m: smart.hotkey_from_vks(feats[m].get("hotkey"))
+                                       for m in smart.FEATURES if m in feats})
+        # زراير Alt بتاعة التسجيل: «mask» بعد دوستها عشان سيبانها مايفتحش قايمة البرنامج
+        alt_keys = {t for t in matcher.triggers() if t in (0x12, 0xA4, 0xA5)}
+        logic = smart.HotkeyLogic(matcher, CFG.get("mode", "toggle"), alt_keys=alt_keys,
+                                  cancel_keys={smart.VK_ESCAPE})
+        # Ctrl الماسك من قبل ما المستمع يبدأ لازم يتحسب: غير كده F7 يتقري F7 مش Ctrl+F7
+        filt = smart.HotkeyFilter(matcher, initially_down=winput.keys_down(smart.MODIFIER_VKS))
+        dispatcher = HotkeyDispatcher(logic, self)
+        dispatcher.start()
+        self._dispatcher = dispatcher
         self._active_key = None
-
-        # أي زرار من الأربعة هو Alt (بيشتغل عليه "mask") أو مفتاح قفل
-        # (بنرجّع حالته لو الدوسة قلبته) — بنسأل من اسم الإعداد مش من
-        # داخلية pynput، عشان الاسم هو اللي المستخدم فعلاً كتب.
-        ALT_NAMES = ("alt_r", "alt_l", "alt", "alt_gr")
-        LOCK_VKS = {"caps_lock": winput.VK_CAPS_LOCK,
-                    "scroll_lock": winput.VK_SCROLL_LOCK}
-        alt_keys, lock_vks = set(), {}
-        for k, raw in ((k_norm, hk_normal), (k_prmt, hk_prompt), (k_trns, hk_trans), (k_edit, hk_edit)):
-            if not k:
-                continue
-            s = str(raw).lower().strip()
-            if s in ALT_NAMES:
-                alt_keys.add(k)
-            if s in LOCK_VKS:
-                lock_vks[k] = LOCK_VKS[s]
-
-        # القرار نفسه (toggle: دوسة نضيفة / hold: دوسة-تسيب + أي زرار تاني
-        # وقت التسجيل = cancel) بقى جوّه smart.HotkeyLogic — مبسوط هنا
-        # عشان الاختبار من غير pynput ولا ويندوز.
-        logic = smart.HotkeyLogic(key_map, mode_type, alt_keys=alt_keys,
-                                  cancel_keys={keyboard.Key.esc})
-        # مفاتيح قفل اتداست ولسه ماتسابتش. كل دوسة حقيقية على Caps/Scroll Lock بتقلب
-        # الحالة مرة واحدة بالظبط (التكرار التلقائي مابيقلبهاش)، فعند التسيب بنرجّعها
-        # بدوسة واحدة. مش بنقارن GetKeyState قبل وبعد: من ثريد الـhook الحالة بتبان
-        # متقلبة من وقت الدوسة نفسها، فالمقارنة كانت دايمًا «متغيرتش» (اتجرّب فعليًا).
-        locks_down = set()
-
-        def guard(fn):
-            def wrapped(key):
-                try:
-                    fn(key)
-                except Exception as e:
-                    log_error(e, "hotkey")
-                    try:
-                        self.recording = False
-                        self._active_key = None
-                        self.on_state("err", friendly_error(e))
-                    except Exception:
-                        pass
-            return wrapped
-
-        @guard
-        def on_press(key):
-            now = time.time()
-            if key in lock_vks:
-                locks_down.add(key)
-            for act in logic.press(key, now, self.recording, self.busy):
-                if act == "mask":
-                    winput.send_vk(winput.VK_MASK)
-                elif act == "end":
-                    self.end()
-                elif act == "cancel":
-                    self.cancel()
-                elif act.startswith("begin:"):
-                    self.begin(mode=act[len("begin:"):])
-
-        @guard
-        def on_release(key):
-            for act in logic.release(key, time.time(), self.recording, self.busy):
-                if act == "end":
-                    self.end()
-                elif act == "cancel":
-                    self.cancel()
-                elif act.startswith("begin:"):
-                    self.begin(mode=act[len("begin:"):])
-            if key in locks_down:
-                locks_down.discard(key)
-                winput.send_vk(lock_vks[key])
+        box = {}
 
         def win32_event_filter(msg, data):
-            # أحداثنا التركيبية (معلّمة EMLAA_TAG) مابنسمعهاش:
-            # غير كده منطق زرار التسجيل كان هيسمع دوساته هو. بنفلتر
-            # أحداثنا إحنا بس — مفاتيح المستخدم الحقيقية مالهاش دعوة بالفلتر.
-            return data.dwExtraInfo != winput.EMLAA_TAG
+            vk = data.vkCode
+            is_press = msg in (0x100, 0x104)          # WM_KEYDOWN / WM_SYSKEYDOWN
+            injected = data.dwExtraInfo == winput.EMLAA_TAG   # أحداثنا التركيبية — مابنسمعهاش
+            fake_ctrl = vk == winput.VK_LCONTROL and bool(data.scanCode & 0x200)
+            dispatch, suppress = filt.event(vk, is_press, injected, fake_ctrl)
+            if dispatch:
+                dispatcher.put(vk, is_press, time.time(), filt.held())
+            if suppress:
+                box["listener"].suppress_event()
+            return False
 
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release,
-                                           win32_event_filter=win32_event_filter)
+        self._listener = keyboard.Listener(win32_event_filter=win32_event_filter)
+        box["listener"] = self._listener
         self._listener.daemon = True
         self._listener.start()
+
+    def _stop_hotkey(self):
+        """المستمع والـdispatcher بيقفوا مع بعض — أحداث الجيل القديم مبتتنفّذش."""
+        try:
+            if self._listener:
+                self._listener.stop()
+        except Exception:
+            pass
+        self._listener = None
+        dispatcher = getattr(self, "_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.stop()
+        self._dispatcher = None
+
+    def pause_hotkey(self):
+        self._stop_hotkey()
+
+    def resume_hotkey(self):
+        self._stop_hotkey()
+        self.start_hotkey()
 
 
     def restart_hotkey(self):
@@ -1896,20 +1919,11 @@ class App:
             self._hotkey_restart_pending = True
             return
         self._hotkey_restart_pending = False
-        try:
-            if self._listener:
-                self._listener.stop()
-        except Exception:
-            pass
-        self._listener = None
+        self._stop_hotkey()
         self.start_hotkey()
 
     def shutdown(self):
-        try:
-            if self._listener:
-                self._listener.stop()
-        except Exception:
-            pass
+        self._stop_hotkey()
         self.rec.close()
 
 
