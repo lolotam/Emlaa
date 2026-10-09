@@ -119,7 +119,13 @@ function go(page) {
   if (page === "dictionary") { renderDict(); renderSnippets(); }
   // الفورم بيتملى من المحفوظ بعد ما أي حفظة شغّالة تخلص — غير كده كان هيتملى بالقيم
   // القديمة والتعديل الجاي يرجّعها
-  if (page === "settings") { flushSave().then(() => { if (S.page === "settings") fillSettings(); }); startKeyPoolTimer(); }
+  if (page === "settings") {
+    // الصفحة مقفولة للمس لحد ما تتملى — كتابة في الفورم القديم وقت الانتظار كانت هتتمسح بالملء
+    const settingsPage = $('.page[data-page="settings"]');
+    settingsPage.inert = true;
+    flushSave().then(() => { if (S.page === "settings") fillSettings(); settingsPage.inert = false; });
+    startKeyPoolTimer();
+  }
   else stopKeyPoolTimer();
   updateBulk();
 }
