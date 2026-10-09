@@ -212,6 +212,9 @@ TAP_MAX = 0.6
 # فالمقارنة بالاسم كانت بتفشل. والزرار اللي بيتسجّل من الكيبورد بيتحفظ برقمه زي ما هو.
 VK_ESCAPE = 0x1B
 MODIFIER_VKS = frozenset({0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C})
+# الـhook دايمًا بيبعت الكود اليمين/الشمال — العام (0x10–0x12) عمره ما بييجي له تسيب، فلو
+# اتحسب ماسك وقت بداية المستمع كان هيفضل ماسك للأبد ويبوّظ كل الزراير
+SIDE_MODIFIER_VKS = MODIFIER_VKS - {0x10, 0x11, 0x12}
 
 # أسماء الإعدادات القديمة (قايمة الزراير الثابتة) ← رقمها — للترحيل بس
 LEGACY_HOTKEY_VKS = {
@@ -429,13 +432,15 @@ class HotkeyFilter:
     في النص (غير كده البرنامج كان ممكن يستلم تسيب من غير دوسة أو العكس).
     الموديفاير لوحده (Ctrl/Alt/Shift/Win) عمره ما بيتمنع — Ctrl+C وأخواتها تفضل شغّالة.
     initially_down: الزراير الماسكة وقت ما المستمع بدأ (من ويندوز) — عشان Ctrl الماسك
-    من قبل يتحسب.
+    من قبل يتحسب. is_down(vk): حالة الزرار الفعلية — قبل أي زرار عادي بنشيل الموديفاير اللي
+    مبقاش ماسك (تسيبه ضاع، زي Ctrl+Alt+Del أو Win+L) عشان مايفضلش يبوّظ المطابقة.
     """
 
-    def __init__(self, matcher, initially_down=frozenset()):
+    def __init__(self, matcher, initially_down=frozenset(), is_down=None):
         self._matcher = matcher
         self._down = set(initially_down)
         self._latched = {}
+        self._is_down = is_down
 
     def event(self, vk, is_press, injected, fake_altgr_ctrl):
         """بيرجّع (dispatch, suppress): نبعته لمنطق الزراير؟ ونمنعه عن البرامج التانية؟"""
@@ -443,6 +448,8 @@ class HotkeyFilter:
             return False, False
         if is_press:
             if vk not in self._down:
+                if self._is_down is not None and vk not in MODIFIER_VKS:
+                    self._down = {k for k in self._down if k not in MODIFIER_VKS or self._is_down(k)}
                 matched = self._matcher.match(vk, frozenset(self._down)) is not None
                 self._latched[vk] = matched and vk not in MODIFIER_VKS
                 self._down.add(vk)

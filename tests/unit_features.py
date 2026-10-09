@@ -159,6 +159,16 @@ class TestLoadConfig(unittest.TestCase):
         self.assertEqual(cfg["features"]["normal"]["hotkey"], [0xA2, 0x76])
         self.assertTrue(cfg["features_custom"])
 
+    def test_invalid_stored_features_fall_back_to_migration(self):
+        broken = mig()
+        del broken["translate"]                     # ملف اتعدّل بإيد أو اتقطع
+        self.write(json.dumps({"provider": "groq", "hotkey_normal": "f7", "features": broken,
+                               "features_custom": True}))
+        cfg = core.load_config()
+        self.assertIsNone(smart.validate_features(cfg["features"]))
+        self.assertEqual(cfg["features"]["normal"]["hotkey"], [0x76])
+        self.assertFalse(cfg["features_custom"])
+
     def test_corrupt_file_not_overwritten(self):
         self.write("{not json")
         cfg = core.load_config()

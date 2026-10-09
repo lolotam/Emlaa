@@ -100,6 +100,13 @@ class FeatureClient(providers.TextOps):
                 return out
         return None
 
+    def _prompt_lang(self, text):
+        """نداء التصنيف (TECH/OTHER) مساعد بس — نجاحه مش معناه إن الكلام اتحوّل لبرومبت."""
+        ok = self.ai_ok
+        lang = super()._prompt_lang(text)
+        self.ai_ok = ok
+        return lang
+
     def engine(self):
         e = {"stt": self.last_stt_name, "stt_model": self.last_stt_model}
         if self.last_chat:

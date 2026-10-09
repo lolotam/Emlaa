@@ -713,7 +713,7 @@ def load_config():
     # الملف القديم جدًا فيه "hotkey" بس: الافتراضي (ctrl_r) مايغطّيش على زرار المستخدم
     if raw.get("hotkey") and not raw.get("hotkey_normal"):
         cfg["hotkey_normal"] = raw["hotkey"]
-    if not isinstance(raw.get("features"), dict):
+    if smart.validate_features(raw.get("features")) is not None:
         # الترحيل بيتحسب بس — عمره ما بيتكتب هنا: ملف اتقرا غلط ميتكتبش فوقه، واستيراد
         # core (في الاختبارات) ميلمسش الملف. أول «حفظ» من الإعدادات هو اللي بيحفظه.
         cfg["features"] = migrated_features(cfg)
@@ -1437,12 +1437,14 @@ class App:
         feat = feature(mode)
         sig = (json.dumps(feat, sort_keys=True),
                tuple(sorted((pid, tuple(keys)) for pid, keys in pools.items())))
-        if self._client is None:
-            self._client, self._client_sig = {}, {}
-        if self._client_sig.get(mode) != sig:
-            self._client[mode] = chains.FeatureClient(feat, pools)
-            self._client_sig[mode] = sig
-        return self._client[mode]
+        cache, sigs = self._client, self._client_sig
+        if cache is None or sigs is None:
+            cache, sigs = {}, {}
+            self._client, self._client_sig = cache, sigs
+        if sigs.get(mode) != sig:
+            cache[mode] = chains.FeatureClient(feat, pools)
+            sigs[mode] = sig
+        return cache[mode]
 
     def reset_client(self):
         self._client = None
@@ -1638,10 +1640,12 @@ class App:
             log_error(e, "recorder/stop")
             self._set_busy(False)             # مفيش worker بدأ — الحجز اتأخد على الفاضي فبيترجّع
             self.on_state("err", "مشكلة في قراية الصوت — جرّب تاني")
+            self._apply_pending_hotkeys()
             return
         if not wav:
             self._set_busy(False)             # نفس السبب: مفيش عملية هتبدأ فالحجز بيتترجّع
             self.on_state("ready", "التسجيل كان قصير أوي — اتكلم شوية وبعدين وقّف")
+            self._apply_pending_hotkeys()
             return
         threading.Thread(target=self.process, args=(wav, op), daemon=True).start()
 
@@ -1914,7 +1918,8 @@ class App:
         logic = smart.HotkeyLogic(matcher, CFG.get("mode", "toggle"), alt_keys=alt_keys,
                                   cancel_keys={smart.VK_ESCAPE})
         # Ctrl الماسك من قبل ما المستمع يبدأ لازم يتحسب: غير كده F7 يتقري F7 مش Ctrl+F7
-        filt = smart.HotkeyFilter(matcher, initially_down=winput.keys_down(smart.MODIFIER_VKS))
+        filt = smart.HotkeyFilter(matcher, initially_down=winput.keys_down(smart.SIDE_MODIFIER_VKS),
+                                  is_down=lambda vk: bool(winput.keys_down((vk,))))
         dispatcher = HotkeyDispatcher(logic, self)
         dispatcher.start()
         self._dispatcher = dispatcher
@@ -1983,10 +1988,13 @@ class App:
         وقت تسجيل أو تفريغ بيتأجل لآخر العملية: تبديل المنطق وزرار hold ماسك كان
         هيضيّع التسيب اللي بيوقف التسجيل.
         """
-        if self.recording or self.busy:
-            self._hotkey_restart_pending = True
-            return
-        self._hotkey_restart_pending = False
+        # الفحص والتعليم تحت نفس قفل begin/end: حفظة من ثريد الواجهة مع آخر عملية بتخلص
+        # كانت ممكن تضيّع العلامة
+        with self._state_lock:
+            if self.recording or self.busy:
+                self._hotkey_restart_pending = True
+                return
+            self._hotkey_restart_pending = False
         self._stop_hotkey()
         self.start_hotkey()
 

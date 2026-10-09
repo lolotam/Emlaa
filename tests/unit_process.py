@@ -1400,6 +1400,18 @@ class TestHotkeyRestartDeferred(unittest.TestCase):
         app._apply_pending_hotkeys()
         app.start_hotkey.assert_called_once()
 
+    def test_too_short_recording_applies_pending_restart(self):
+        app = make_app()
+        app.start_hotkey = mock.Mock()
+        app.rec = mock.Mock(stop=mock.Mock(return_value=None))      # مفيش صوت كفاية
+        with app._state_lock:
+            app.recording = True
+        app.restart_hotkey()
+        app.start_hotkey.assert_not_called()
+        with mock.patch.object(core, "beep"):
+            app.end()
+        app.start_hotkey.assert_called_once()
+
     def test_process_applies_pending_restart_on_exit(self):
         app = make_app()
         app.start_hotkey = mock.Mock()

@@ -293,6 +293,7 @@ class TestStartHotkeyWiring(unittest.TestCase):
         from pynput import keyboard
         captured = {}
         test = self
+        self.physical = set(held)       # الزراير الماسكة فعلًا — key() بيحدّثها
 
         class FakeListener:
             def __init__(self, win32_event_filter=None, **kw):
@@ -321,7 +322,7 @@ class TestStartHotkeyWiring(unittest.TestCase):
         patches = [mock.patch.object(core, "CFG", cfg),
                    mock.patch.object(keyboard, "Listener", FakeListener),
                    mock.patch.object(core.HotkeyDispatcher, "start", lambda self: None),
-                   mock.patch("winput.keys_down", return_value=frozenset(held)),
+                   mock.patch("winput.keys_down", side_effect=self.keys_down),
                    mock.patch.object(core, "log_error"),
                    mock.patch("winput.send_vk", side_effect=lambda vk: sent.append(vk) or 2)]
         for p in patches:
@@ -331,9 +332,19 @@ class TestStartHotkeyWiring(unittest.TestCase):
         self.app, self.filt, self.sent, self.listener_kw = app, captured["filt"], sent, captured["kw"]
         return app
 
+    def keys_down(self, vks):
+        """GetAsyncKeyState زي ويندوز: الكود العام (Ctrl/Shift/Alt) ماسك لو أي جنب ماسك."""
+        generic = {0x10: (0xA0, 0xA1), 0x11: (0xA2, 0xA3), 0x12: (0xA4, 0xA5)}
+        state = set(self.physical) | {g for g, sides in generic.items() if self.physical & set(sides)}
+        return frozenset(v for v in vks if v in state)
+
     def key(self, vk, down, extra=0, scan=0):
         """حدث واحد من الـhook: بيرجّع True لو اتمنع عن البرامج التانية."""
         import types
+        if down:
+            self.physical.add(vk)
+        else:
+            self.physical.discard(vk)
         data = types.SimpleNamespace(vkCode=vk, scanCode=scan, dwExtraInfo=extra)
         try:
             result = self.filt(0x100 if down else 0x101, data)
@@ -390,6 +401,25 @@ class TestStartHotkeyWiring(unittest.TestCase):
         self.drain()
         app.begin.assert_called_once_with(mode="translate")
         self.assertEqual(self.sent, [0xE8])                         # VK_MASK — أبدًا Alt نفسه
+
+    def test_ctrl_held_when_listener_starts_does_not_block_hotkeys_after_release(self):
+        # ويندوز بيقول إن Ctrl العام (0x11) ماسك كمان، بس الـhook بيبعت تسيب Ctrl الشمال بس
+        self.wire("toggle", normal=(self.F7,), held=(self.LCTRL,))
+        self.key(self.LCTRL, False)
+        self.key(self.F7, True)
+        self.key(self.F7, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
+
+    def test_modifier_release_lost_on_secure_desktop_does_not_block_hotkeys(self):
+        # Ctrl+Alt+Del / Win+L: الدوسة وصلت للـhook والتسيب ماوصلش
+        self.wire("toggle", normal=(self.F7,))
+        self.key(self.LCTRL, True)
+        self.physical.discard(self.LCTRL)
+        self.key(self.F7, True)
+        self.key(self.F7, False)
+        self.drain()
+        self.app.begin.assert_called_once_with(mode="normal")
 
     def test_initially_held_ctrl_makes_f7_a_different_hotkey(self):
         app = self.wire("toggle", normal=(self.F7,), held=(self.LCTRL,))

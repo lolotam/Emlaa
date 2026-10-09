@@ -162,6 +162,23 @@ FEAT = {"hotkey": [], "stt": [{"provider": "deepgram", "model": "nova-3"}, {"pro
         "ai": [{"provider": "groq", "model": "q"}, {"provider": "gemini", "model": "g"}]}
 
 
+class TestPromptStatus(unittest.TestCase):
+    def test_language_classification_alone_does_not_count_as_converted(self):
+        # التصنيف TECH/OTHER نداء مساعد: نجاحه وفشل البرومبت نفسه = «مقدرتش أحوّله» مش «اتبعت»
+        class ClassifiesOnly(FakeProv):
+            def _chat_raw(self, system, text, temperature=0.2):
+                if system == providers.LANG_CLASSIFY_SYSTEM:
+                    return "TECH"
+                raise RuntimeError("down")
+
+        fc = chains.FeatureClient(FEAT, {"groq": ["k"], "gemini": ["k"], "deepgram": ["k"]},
+                                  client_factory=lambda pid, keys, model, chat: ClassifiesOnly(pid, model, chat),
+                                  log=lambda e, where: None)
+        text = "عايز صفحة هبوط للكورس بتاعي"
+        self.assertEqual(fc.to_prompt(text), text)
+        self.assertFalse(fc.ai_ok)
+
+
 class TestStt(unittest.TestCase):
     def test_first_item_serves(self):
         fc, _ = build(FEAT)
