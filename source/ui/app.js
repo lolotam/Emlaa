@@ -107,6 +107,8 @@ async function setTheme(pref) {
 function go(page) {
   if (!S.boot) return;
   if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
+  // نفس الصفحة: إعادة ملء الإعدادات من المحفوظ كانت هتمسح تغيير لسه بيستنى الحفظ
+  if (page === S.page && page === "settings") return;
   if (S.page === "settings" && page !== "settings") leaveSettings();
   S.page = page;
   $$(".page").forEach(p => p.classList.toggle("active", p.dataset.page === page));
@@ -1280,7 +1282,19 @@ async function switchLang(lang) {
 }
 $("#btnTheme").addEventListener("click", () =>
   setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
-$("#btnClose").addEventListener("click", async () => { await flushSave(); api().close(); });
+// القفل والحفظ اترفض: مرة أولى بننبّه ومابنقفلش (النافذة هتستخبّى والرسالة تحت مش هتبان) —
+// دوسة تانية بتقفل
+let closeWarned = false;
+$("#btnClose").addEventListener("click", async () => {
+  await flushSave();
+  if (SAVE.err && !closeWarned) {
+    closeWarned = true;
+    toast("الإعدادات ماتحفظتش: " + SAVE.err);
+    return;
+  }
+  closeWarned = false;
+  api().close();
+});
 $("#promo").addEventListener("click", e => { e.preventDefault(); api().open_url(e.currentTarget.dataset.url); });
 $("#checkUpdate").addEventListener("click", async e => {
   const b = e.currentTarget;
