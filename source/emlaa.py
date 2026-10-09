@@ -24,7 +24,7 @@ import providers
 import smart
 import winput
 
-APP_VERSION = "1.20"
+APP_VERSION = "1.21"
 BRAND_NAME  = "Walid Mohamed"
 BRAND_URL   = "https://walidmohamed.com"
 
