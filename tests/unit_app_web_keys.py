@@ -333,9 +333,11 @@ class TestStaticUiChecks(unittest.TestCase):
                    "مفيش معالجة — الكلام بيتكتب زي ما اتقال", "لازم موديل واحد على الأقل — بيتجرّب بالترتيب",
                    "التنظيف والتصحيح — لو شلت كل الموديلات الكلام بيتكتب زي ما اتقال",
                    "مقدرتش أسجّل الزرار — جرّب تاني", "+ إضافة مفتاح", "لفوق", "لتحت",
-                   "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد",
-                   app_web.LAST_STT_KEY_ERR, core.CAPTURE_TIMEOUT_ERR):
-            self.assertIn(ar, self.js + self.html + app_web.LAST_STT_KEY_ERR + core.CAPTURE_TIMEOUT_ERR, ar)
+                   "حدّد نص، دوس الزرار، واتكلم بالتعليمات — إملاء يعدّل التحديد"):
+            self.assertIn(ar, self.js + self.html, ar)
+            self.assertIn('"%s":' % ar, self.i18n, ar)
+        # رسايل بتيجي من Python وبتظهر في الواجهة زي ما هي
+        for ar in (app_web.LAST_STT_KEY_ERR, core.CAPTURE_TIMEOUT_ERR):
             self.assertIn('"%s":' % ar, self.i18n, ar)
 
     def test_app_js_never_uses_browser_dialogs(self):

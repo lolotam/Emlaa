@@ -109,10 +109,13 @@ class TestValidate(unittest.TestCase):
             f[m]["hotkey"] = []
         self.assertIsNone(smart.validate_features(f))
 
+    def test_two_modifiers_are_not_a_combo(self):
+        f = mig()
+        f["edit"]["hotkey"] = [0xA2, 0xA3]       # Ctrl الشمال + Ctrl اليمين
+        self.assertIsNotNone(smart.validate_features(f))
+
     def test_same_trigger_different_modifiers_allowed(self):
         f = mig()
-        f["edit"]["hotkey"] = [0xA2, 0xA3 + 0]   # Ctrl الشمال + Ctrl اليمين: شكل غلط
-        self.assertIsNotNone(smart.validate_features(f))
         f["edit"]["hotkey"] = [0xA2, 0x76]
         f["prompt"]["hotkey"] = [0x76]
         self.assertIsNone(smart.validate_features(f))

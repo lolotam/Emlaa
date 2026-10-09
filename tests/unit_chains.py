@@ -4,9 +4,13 @@
 قايمة المستخدم، مش stt_alt/chat_alt المخبّية)، وكتالوجات الموديلات، و FeatureClient
 اللي بيمشي على قايمة التفريغ وقايمة المعالجة بالترتيب. مفيش شبكة ولا مفاتيح حقيقية.
 """
+import io
 import os
 import sys
+import tempfile
 import unittest
+import urllib.error
+import urllib.parse
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "source"))
@@ -15,14 +19,63 @@ import providers  # noqa: E402
 import chains     # noqa: E402
 
 
-class TestStrictClient(unittest.TestCase):
-    def test_strict_stt_uses_only_the_chosen_model(self):
-        cl = providers.Client("groq", "k", model="whisper-large-v3", strict=True)
-        self.assertEqual(cl._stt_models(), ["whisper-large-v3"])
+def _feature(stt=(), ai=()):
+    return {"hotkey": [], "stt": [dict(i) for i in stt], "ai": [dict(i) for i in ai]}
 
-    def test_non_strict_keeps_todays_fallbacks(self):
-        cl = providers.Client("groq", "k", model="whisper-large-v3")
-        self.assertEqual(cl._stt_models(), ["whisper-large-v3", "whisper-large-v3-turbo"])
+
+class TestDefaultFactoryIsStrictAtTheHttpBoundary(unittest.TestCase):
+    """
+    FeatureClient من غير client_factory = العملاء الحقيقيين. البديل الوحيد هو العنصر الجاي في
+    قايمة المستخدم: الموديل اللي ردّ 404 مايتبدّلش بـstt_alt/chat_alt المخبّية.
+    """
+
+    def setUp(self):
+        providers._KEY_STATE.clear()
+        self.addCleanup(providers._KEY_STATE.clear)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.wav = os.path.join(tmp.name, "a.wav")
+        with open(self.wav, "wb") as f:
+            f.write(b"RIFF")
+
+    def deepgram_models_requested(self, client):
+        seen = []
+
+        def urlopen(req, **kw):
+            seen.append(dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(req.full_url).query))["model"])
+            raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, io.BytesIO(b"{}"))
+
+        with mock.patch.object(providers.urllib.request, "urlopen", side_effect=urlopen), \
+                mock.patch("core.log_error"), self.assertRaises(Exception):
+            client.transcribe(self.wav)
+        return seen
+
+    def test_feature_stt_tries_only_the_listed_model(self):
+        fc = chains.FeatureClient(_feature(stt=[{"provider": "deepgram", "model": "nova-3"}]), {"deepgram": ["d"]})
+        self.assertEqual(self.deepgram_models_requested(fc), ["nova-3"])
+
+    def test_non_strict_client_would_fall_back_to_hidden_models(self):
+        # المقارنة: نفس الـ404 في Client العادي بيجرّب stt_alt — يعني الاختبار اللي فوق بيفرّق فعلًا
+        cl = providers.Client("deepgram", "d", model="nova-3")
+        self.assertEqual(self.deepgram_models_requested(cl), ["nova-3", "whisper-large"])
+
+    def test_feature_ai_tries_only_the_listed_model(self):
+        fc = chains.FeatureClient(_feature(stt=[{"provider": "gemini", "model": "gemini-3.8-flash"}],
+                                           ai=[{"provider": "gemini", "model": "gemini-3.5-flash"}]),
+                                  {"gemini": ["g"]})
+        seen = []
+
+        def post(url, payload, hdr):
+            seen.append(url.split("/models/")[1].split(":")[0])
+            raise RuntimeError("HTTP 404: not found")
+
+        with mock.patch.object(providers, "_post_json", side_effect=post), mock.patch("core.log_error"):
+            fc._chat_raw("sys", "نص")
+        self.assertEqual(seen, ["gemini-3.5-flash"])
+        self.assertFalse(fc.ai_ok)
+
+
+class TestStrictClient(unittest.TestCase):
 
     def test_strict_chat_does_not_walk_chat_alt(self):
         cl = providers.Client("groq", "k", strict=True, chat_model="openai/gpt-oss-20b")

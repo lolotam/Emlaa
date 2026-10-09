@@ -396,7 +396,7 @@ class TestCaptureExclusion(unittest.TestCase):
         for _ in range(50):
             app = self.make()
             app.rec = mock.Mock(ensure_open=mock.Mock(return_value=True))
-            barrier = threading.Barrier(2)
+            barrier = threading.Barrier(2, timeout=5)
 
             def do_begin():
                 barrier.wait()
@@ -414,7 +414,9 @@ class TestCaptureExclusion(unittest.TestCase):
                     t.start()
                 for t in threads:
                     t.join(5)
-            self.assertFalse(app.recording and app.capturing)
+                    self.assertFalse(t.is_alive())
+            # واحد بس كسب: لو الاتنين عدّوا يبقى القفل مش مشترك، ولو ولا واحد يبقى فيه ثريد وقع
+            self.assertEqual(int(app.recording) + int(app.capturing), 1)
 
 
 if __name__ == "__main__":
