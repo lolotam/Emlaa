@@ -25,14 +25,15 @@
 
 | | |
 |---|---|
-| 🎙 **3 أوضاع تسجيل** | **عادي** (بيكتب كلامك بعد التنظيف) · **برومبت** (بيرتّب كلامك كطلب واضح للـAI) · **ترجمة** (عربي ⇄ إنجليزي) — لكل وضع زرار |
-| ⌨ **دوسة تبدأ ودوسة توقف** | أو «امسك واتكلم» — وبس زراير الإعدادات التلاتة هي اللي توقف التسجيل |
+| 🎙 **4 ميزات** | **عادي** (بيكتب كلامك بعد التنظيف) · **برومبت** (بيرتّب كلامك كطلب واضح للـAI) · **ترجمة** (عربي ⇄ إنجليزي) · **تعديل النص المحدد** (حدّد نص واتكلم بالتعليمات) — لكل ميزة زرارها وموديلاتها |
+| ⌨ **أي زرار تختاره** | دوس «سجّل زرار» وبعدين الزرار (أو Ctrl/Alt/Shift/Win + زرار) — والزرار ده مبيوصلش للبرامج التانية |
+| ⏯ **دوسة تبدأ ودوسة توقف** | أو «امسك واتكلم» — وبس زراير الميزات هي اللي توقف التسجيل |
 | 📋 **مفيش خانة كتابة؟ ولا يهمك** | النص بيظهر على الشاشة ٣ ثواني بزرار «نسخ»، ويتحفظ في السجل دايمًا |
 | 🌊 **موجة عائمة** | بتظهر وقت التسجيل بس — أو زرار صغير بيتحرك ظاهر طول الوقت |
 | 🕘 **السجل** | كل اللي اتكتب بصوتك — مع خيار «احتفظ بآخر 10 بس» |
 | 📎 **مدير الحافظة** | كل حاجة بتتنسخ في جدول: فلترة، بحث، نسخ، ومسح أكتر من سطر مرة واحدة |
 | 📖 **القاموس** | أسماء ومصطلحات بتاعتك عشان تتكتب صح كل مرة |
-| 🤖 **4 مزوّدين + اختيار الموديل** | Groq · OpenAI · Gemini · Deepgram — وتختار موديل التفريغ بنسبة ترشيح |
+| 🤖 **4 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · Whisper محلي — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
 | 🌗 **فاتح / غامق** · 🌐 **عربي / English** | زرارين صغيرين فوق |
 | 🔄 **تحديث تلقائي** | لما ينزل إصدار جديد: «نزّل وثبّت» بدوسة — أو لوحده خالص |
 | ⚡ **افتح البرنامج من أي مكان** | اختصار (افتراضي `Ctrl + Alt + N`) |
@@ -59,18 +60,18 @@
 | **Google Gemini** | مجاني | باقة يومية كبيرة من جوجل | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | **Deepgram** | رصيد $200 | رصيد مجاني كبير · بيدعم العامية المصرية | [console.deepgram.com](https://console.deepgram.com/) |
 
-جوّه الإعدادات تحت خانة المفتاح فيه **«إزاي أجيب مفتاح»**: 3 خطوات + زرار لصفحة المفاتيح وزرار للتوثيق.
+في الإعدادات، قسم **«المفاتيح»** فيه كل مزوّد لوحده — تقدر تحط كذا مفتاح لنفس المزوّد، وتحت كل واحد **«إزاي أجيب مفتاح»**: 3 خطوات + زرار لصفحة المفاتيح وزرار للتوثيق. المفاتيح مشتركة بين كل الميزات.
 
-**موديل التفريغ:** تحت المزوّد بتظهر **موديلات التفريغ بس** (مش موديلات الشات) المتاحة على مفتاحك، وكل موديل جنبه **نسبة ترشيح** — **100% = الموصى به**.
+**موديل التفريغ:** بتختاره لكل عنصر في قايمة التفريغ بتاعة كل ميزة (موديلات التفريغ بس، مش الشات):
 
-| المزوّد | الموصى به (100%) | بدائل |
+| المزوّد | الموصى به | بدائل |
 |---|---|---|
-| Groq | `whisper-large-v3-turbo` | `whisper-large-v3` (90%) |
-| OpenAI | `gpt-4o-transcribe` | `gpt-4o-mini-transcribe` (90%) · `whisper-1` (70%) |
-| Gemini | `gemini-3.8-flash` | `gemini-flash-latest` (95%) · `gemini-3.5-flash` (85%) |
-| Deepgram | `nova-3` | `whisper-large` (70%) · `whisper-medium` (50%) |
+| Groq | `whisper-large-v3-turbo` | `whisper-large-v3` |
+| OpenAI | `gpt-4o-transcribe` | `gpt-4o-mini-transcribe` · `whisper-1` |
+| Gemini | `gemini-3.8-flash` | `gemini-flash-latest` · `gemini-3.5-flash` |
+| Deepgram | `nova-3` | `whisper-large` · `whisper-medium` |
 
-> **Deepgram بيفرّغ بس.** التنظيف والبرومبت والترجمة بيستخدموا مفتاح Groq أو Gemini أو OpenAI لو محطوط — وإلا بيكتب الكلام زي ما اتقال.
+> **Deepgram والـWhisper المحلي بيفرّغوا بس** — مينفعش يبقوا في قايمة المعالجة. المعالجة (التنظيف والبرومبت والترجمة والتعديل) بتشتغل بـGroq أو Gemini أو OpenAI.
 
 **مين أختار؟** مجاني وسريع → Groq · أعلى دقة → OpenAI · مجاني بباقة كبيرة → Gemini · رصيد كبير ببلاش → Deepgram.
 
@@ -82,11 +83,14 @@
 2. حط المؤشر في أي خانة كتابة.
 3. **دوس مرة** على زرار الوضع اللي عايزه واتكلم… **ودوس تاني** لما تخلص:
 
-| الزرار (افتراضي) | الوضع |
+| الزرار (افتراضي) | الميزة |
 |---|---|
 | `Ctrl` اليمين | تسجيل عادي |
 | `Alt` اليمين | تحويل لبرومبت |
 | `Shift` اليمين | ترجمة عربي ⇄ إنجليزي |
+| مفيش (سجّله من الإعدادات) | تعديل النص المحدد |
+
+تقدر تغيّر أي زرار من تاب الميزة في الإعدادات.
 
 أو دوس على زرار الميك الأحمر جوّه البرنامج. **قفل النافذة مش بيقفل البرنامج** — بيستخبّى جنب الساعة. للخروج: كليك يمين على الأيقونة ← خروج.
 
@@ -111,8 +115,12 @@
 
 | الإعداد | معناه |
 |---|---|
-| **المزوّد · المفتاح · موديل التفريغ** | مين يفرّغ، ومفتاحه، وأنهي موديل (بنسبة ترشيح) |
-| **زراير الأوضاع التلاتة** | عادي / برومبت / ترجمة — كل وضع بزرار مختلف |
+| **تابات الميزات** | عادي · برومبت · ترجمة · تعديل — لكل تاب **زرار التسجيل** و**قايمة التفريغ** و**قايمة المعالجة بالـAI** |
+| **زرار التسجيل** | «سجّل زرار» (زرار واحد زي `F8`) أو «سجّل تركيبة» (`Ctrl`/`Alt`/`Shift`/`Win` + زرار، زي `Ctrl + F8`) — وبعدين دوس الزرار، و`Esc` بيلغي. كل ميزة لازم زرارها يبقى مختلف. الزرار مبيوصلش للبرامج التانية، بس `Ctrl`/`Alt`/`Shift`/`Win` بيفضلوا يوصلوا عادي |
+| **قايمة التفريغ** | مزوّد + موديل، بالترتيب: لو الأول فشل (نت، كوتا، مفتاح) بيجرّب اللي بعده. «محلي · Whisper» عنصر فيها بعد ما تنزّله |
+| **قايمة المعالجة بالـAI** | بالترتيب برضه. في التسجيل العادي ممكن تفضّيها = الكلام بيتكتب زي ما اتقال من غير تنظيف |
+| **المفاتيح** | قسم واحد لكل المزوّدين — كذا مفتاح لكل مزوّد، ومشتركة بين الميزات |
+| **التفريغ من غير إنترنت** | تنزيل أو إزالة موديل Whisper المحلي |
 | **طريقة التسجيل** | دوسة تبدأ ودوسة توقف · أو امسك واتكلم |
 | **فتح إملاء من أي مكان** | اختصار يجيب النافذة قدامك (`Ctrl+Alt+N` افتراضي) |
 | **تنظيف النص وتصحيحه** | بيصلّح الترقيم والأخطاء ويحافظ على العامية |
@@ -175,7 +183,8 @@
 |---|---|
 | «Windows protected your PC» | More info ← Run anyway |
 | الكتابة مش شغّالة في برنامج معيّن | البرنامج ده شغّال كـ Administrator — شغّل `Emlaa.exe` كـ Administrator كمان |
-| «الحد المجاني خلص» | غيّر المزوّد من الإعدادات، أو استنى شوية |
+| «الحد المجاني خلص» | ضيف بديل في قايمة التفريغ أو مفتاح تاني للمزوّد، أو استنى شوية |
+| زرار `F7`/`F8` مش شغّال على اللابتوب | اللابتوب بيبعت زرار وسائط بداله — دوس `Fn` مع الزرار وانت بتسجّله |
 | مفيش صوت بيتسجّل | Settings ← Privacy ← Microphone واتأكد إن الميك مسموح |
 | رسالة «مشكلة مش متوقّعة» | ملف `emlaa-error.log` جنب البرنامج فيه السبب |
 | التحديث التلقائي مش شغّال | البرنامج محطوط في فولدر محمي (زي Program Files) — انقله لفولدر عادي |
@@ -186,8 +195,9 @@
 
 **Emlaa** is a free Windows dictation app for Arabic (great with Egyptian dialect). Tap a hotkey in any app, speak, tap again — the text is typed at your cursor.
 
-- **3 modes**, each on its own hotkey: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English).
-- **Providers:** Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit, Egyptian Arabic). Pick the **transcription model** per provider — each one shows a recommendation score (100% = recommended).
+- **4 features**, each on its own settings tab: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English), Edit selected text (speak an instruction).
+- **Record any hotkey** — one key, or Ctrl/Alt/Shift/Win plus a key. The hotkey is blocked from other apps; Ctrl/Alt/Shift/Win themselves still pass through.
+- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.
 - **Auto-updates from GitHub Releases** — one-click "Download & install", or fully automatic (waits until you finish recording). Downloads are checked by size and SHA-256.
 - Keys, settings and history stay on your machine. Audio goes only to the provider you chose.
@@ -202,6 +212,8 @@ source/
   app_web.py     النافذة (pywebview) والتراي والاختصارات والتحديث
   core.py        التسجيل والتفريغ والكتابة مكان المؤشر والإعدادات والسجل والتحديث
   providers.py   المزوّدين وموديلات التفريغ ونسب الترشيح ودليل المفاتيح
+  chains.py      قوايم الميزات: بيجرّب المزوّد/الموديل اللي بعده لو اللي قبله فشل
+  smart.py       منطق صافي من غير ويندوز: الزراير والميزات والتحقق وتصنيف الكتابة
   ui/            الواجهة (HTML/CSS/JS) + الترجمة i18n.js
 tools/release.py        نشر إصدار جديد على GitHub بأمر واحد
 tools/store_package.py  بناء حزمة Microsoft Store (MSIX)
