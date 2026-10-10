@@ -347,6 +347,17 @@ class TestStaticUiChecks(unittest.TestCase):
         for ar in (app_web.LAST_STT_KEY_ERR, core.CAPTURE_TIMEOUT_ERR):
             self.assertIn('"%s":' % ar, self.i18n, ar)
 
+    def test_failed_recording_strings_have_en_entries(self):
+        for ar in ("فشل التفريغ", "⚠ فشل التفريغ", "تفريغ يدوي", "بيفرّغ…", "اتفرّغ ✓",
+                   "مقدرتش أفرّغ — جرّب تاني"):
+            self.assertIn(ar, self.js, ar)
+            self.assertIn('"%s":' % ar, self.i18n, ar)
+        # رسايل التفريغ اليدوي والفشل بتيجي من Python وبتظهر في السجل والتنبيه زي ما هي
+        for ar in (core.RETRY_DELETED, core.AI_FAILED_NOTE, core.EMPTY_TRANSCRIPT,
+                   "التسجيل ده مش موجود أو اتفرّغ خلاص", "التسجيل ده بيتفرّغ دلوقتي",
+                   "مقدرتش أحفظ التسجيل في السجل"):
+            self.assertIn('"%s":' % ar, self.i18n, ar)
+
     def test_app_js_never_uses_browser_dialogs(self):
         import re
         for fn in ("alert", "confirm", "prompt"):

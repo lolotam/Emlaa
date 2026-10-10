@@ -13,6 +13,7 @@ const S = {
   history: [],
   histFilter: "all",
   histSel: new Set(),
+  retrying: new Set(),   // تسجيلات فاشلة بيتعملها تفريغ يدوي دلوقتي
   clips: [],
   clipSel: new Set(),
   clipLimit: 200,
@@ -73,12 +74,21 @@ function shortTime(d) {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" }) + " " + hhmm(d);
 }
 let toastT = null;
-function toast(msg) {
+/* action = {label, run(btn)}: زرار جوّه التنبيه (زي «نسخ» نتيجة التفريغ اليدوي) — بيفضل أطول عشان يتداس */
+function toast(msg, action) {
   const t = $("#toast");
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-act";
+    b.textContent = action.label;
+    b.addEventListener("click", () => action.run(b));
+    t.append(b);
+  }
+  t.classList.toggle("has-act", !!action);
   t.classList.add("show");
   clearTimeout(toastT);
-  toastT = setTimeout(() => t.classList.remove("show"), 2200);
+  toastT = setTimeout(() => t.classList.remove("show"), action ? 6000 : 2200);
 }
 async function copyText(text, btn) {
   const ok = await api().copy(text);
@@ -106,7 +116,8 @@ async function setTheme(pref) {
 /* ═══════════ التنقل ═══════════ */
 function go(page) {
   if (!S.boot) return;
-  if (!S.boot.canRun && page !== "welcome" && page !== "settings") page = "welcome";
+  // السجل مفتوح حتى لو مفيش حاجة تفرّغ: التسجيلات الفاشلة تتسمع وتتنزّل وتتمسح
+  if (!S.boot.canRun && !["welcome", "settings", "history"].includes(page)) page = "welcome";
   // نفس الصفحة: إعادة ملء الإعدادات من المحفوظ كانت هتمسح تغيير لسه بيستنى الحفظ
   if (page === S.page && page === "settings") return;
   if (S.page === "settings" && page !== "settings") leaveSettings();
@@ -166,8 +177,9 @@ function renderKeys() {
   $("#homeKeys").innerHTML = modes.map(m => `<div class="key-line"><i class="dot ${m}"></i><span class="grow">${MODE_LABEL[m]}</span><span class="kbd">${esc(f[m].label || "—")}</span></div>`).join("")
     + `<div class="kbd-hint">${toggle ? "دوسة على أي زرار من دول تبدأ، ودوسة تانية توقف." : "امسك الزرار واتكلم، وسيبه لما تخلص."}</div>`;
 }
+const isFailed = i => i.status === "failed";
 function renderLast() {
-  const last = S.history[0];
+  const last = S.history.find(i => !isFailed(i));
   const el = $("#lastText");
   const text = (last && last.result) || S.boot.lastText || "";
   el.textContent = text || "لسه مفيش تسجيلات — جرّب دلوقتي.";
@@ -180,7 +192,7 @@ function renderLast() {
 function renderRecent() {
   const items = S.history.slice(0, 4);
   $("#recentList").innerHTML = items.length
-    ? items.map(i => `<div class="recent-row" data-go="history"><span class="r-time">${esc(hhmm(parseTime(i.time)))}</span><i class="dot ${esc(i.mode)}"></i><span class="r-text">${esc(i.result)}</span></div>`).join("")
+    ? items.map(i => `<div class="recent-row" data-go="history"><span class="r-time">${esc(hhmm(parseTime(i.time)))}</span><i class="dot ${esc(i.mode)}"></i>${isFailed(i) ? `<span class="r-fail">⚠ فشل التفريغ</span>` : `<span class="r-text">${esc(i.result)}</span>`}</div>`).join("")
     : `<div class="dict-empty">التسجيلات هتظهر هنا.</div>`;
 }
 $("#modeSeg").addEventListener("click", e => {
@@ -217,6 +229,7 @@ function renderChart() {
   }
   const byKey = Object.fromEntries(days.map(x => [x.key, x]));
   for (const i of S.history) {
+    if (isFailed(i)) continue;
     const x = byKey[dayKey(parseTime(i.time))];
     if (x) x.words += itemWords(i);
   }
@@ -314,6 +327,41 @@ function histVisible() {
   return S.history.filter(i => (S.histFilter === "all" || i.mode === S.histFilter)
     && (!q || (i.result || "").toLowerCase().includes(q) || (i.raw || "").toLowerCase().includes(q)));
 }
+/* التسجيل الفاشل: علامة «فشل التفريغ» وسببه مكان النتيجة، وزرار «تفريغ يدوي» مكان النسخ */
+function histRowHTML(i, d) {
+  const sel = S.histSel.has(i.id), failed = isFailed(i), busy = S.retrying.has(i.id);
+  const showRaw = i.raw && i.raw !== i.result;
+  const main = failed ? `<div class="row-err">${esc(i.error)}</div>` : `<div class="row-text">${esc(i.result)}</div>`;
+  const act = failed
+    ? `<button class="ghost-btn retry" data-act="retry"${busy ? " disabled" : ""}>${busy ? "بيفرّغ…" : "تفريغ يدوي"}</button>`
+    : `<button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>`;
+  return `<div class="frow${sel ? " selected" : ""}${failed ? " failed" : ""}" data-id="${i.id}">
+      <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
+      <div class="row-body">
+        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span>${failed ? `<span class="fail-tag">فشل التفريغ</span>` : engineHTML(i)}</div>
+        ${main}
+        ${showRaw ? `<div class="row-raw"><b>الكلام زي ما اتقال</b>${esc(i.raw)}</div>` : ""}
+      </div>
+      ${waveHTML(i)}
+      <div class="row-actions">
+        ${i.audio ? `<button class="icon-btn" data-act="dl" title="تنزيل MP3">${ICON.download}</button>` : ""}
+        ${act}
+        <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
+      </div></div>`;
+}
+/* التفريغ اليدوي: النتيجة بتظهر في السجل وفي تنبيه بزرار «نسخ» — عمرها ما بتتكتب لوحدها */
+async function retryRecording(id) {
+  if (S.retrying.has(id)) return;
+  S.retrying.add(id);
+  renderHistory();
+  let r;
+  try { r = await api().history_retry(id); }
+  catch (e) { r = { ok: false, err: "مقدرتش أفرّغ — جرّب تاني" }; }
+  S.retrying.delete(id);
+  await loadHistory();
+  if (!r.ok) return toast(r.err);
+  toast(r.note || "اتفرّغ ✓", { label: "نسخ", run: b => copyText(r.result, b) });
+}
 function renderHistory() {
   const items = histVisible();
   const ids = new Set(S.history.map(i => i.id));
@@ -327,21 +375,7 @@ function renderHistory() {
       html += `<div class="flat-title">${esc(dayLabel(d))}</div><div class="flat">`;
       lastDay = k;
     }
-    const sel = S.histSel.has(i.id);
-    const showRaw = i.raw && i.raw !== i.result;
-    html += `<div class="frow${sel ? " selected" : ""}" data-id="${i.id}">
-      <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
-      <div class="row-body">
-        <div class="row-meta"><span class="r-time">${esc(hhmm(d))}</span><span class="mode-tag"><i class="dot ${esc(i.mode)}"></i>${MODE_LABEL[i.mode] || ""}</span>${engineHTML(i)}</div>
-        <div class="row-text">${esc(i.result)}</div>
-        ${showRaw ? `<div class="row-raw"><b>الكلام زي ما اتقال</b>${esc(i.raw)}</div>` : ""}
-      </div>
-      ${waveHTML(i)}
-      <div class="row-actions">
-        ${i.audio ? `<button class="icon-btn" data-act="dl" title="تنزيل MP3">${ICON.download}</button>` : ""}
-        <button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>
-        <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
-      </div></div>`;
+    html += histRowHTML(i, d);
   }
   if (lastDay) html += `</div>`;
   $("#histList").innerHTML = html || `<div class="empty-state show">${S.history.length ? "مفيش نتايج للبحث ده." : "السجل فاضي — أول تسجيل هيظهر هنا."}</div>`;
@@ -379,6 +413,7 @@ $("#histList").addEventListener("click", async e => {
     return;
   }
   if (act?.dataset.act === "copy") return copyText(item.result, act);
+  if (act?.dataset.act === "retry") return retryRecording(id);
   if (act?.dataset.act === "del") {
     invalidatePlayback();
     const r = await api().history_delete([id]);
@@ -1381,7 +1416,7 @@ function applyBoot() {
   $("#promoName").textContent = b.brand.name;
   $("#promo").dataset.url = b.brand.url;
   $("#clipToggle").checked = !!b.cfg.clipboard_history;
-  $$(".nav-item").forEach(n => { n.disabled = !b.canRun; });
+  $$(".nav-item").forEach(n => { n.disabled = !b.canRun && n.dataset.go !== "history"; });
   renderKeys();
   renderStats(b.stats);
   if (!b.canRun) setState("off");
