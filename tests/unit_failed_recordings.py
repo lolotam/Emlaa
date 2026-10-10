@@ -81,7 +81,7 @@ class TestKeepFailed(_Store):
 
     def test_history_write_failure_keeps_audio_and_recovery_lists_it_later(self):
         with mock.patch.object(core, "_write_list", side_effect=OSError("locked")):
-            self.assertIsNone(self.keep())
+            self.assertIsNotNone(self.keep())
         wavs = [n for n in os.listdir(self.recs) if n.endswith(".wav")]
         self.assertEqual(len(wavs), 1)
         core.recordings_prune()
@@ -179,6 +179,30 @@ class TestExplicitRemoval(_Store):
         self.assertEqual(self.files(rid), {"wav", "json", "mp3"})
 
 
+class TestOrphanAudio(_Store):
+    """صوت تسجيل فاشل صفه مش في السجل: بيرجع لو ملف بياناته سليم، وبيتمسح لو اتمسح بإيد صاحبه."""
+
+    def orphan(self, rid, sidecar):
+        os.makedirs(self.recs, exist_ok=True)
+        with open(os.path.join(self.recs, "%d.wav" % rid), "wb") as f:
+            f.write(b"RIFF")
+        if sidecar is not None:
+            with open(os.path.join(self.recs, "%d.json" % rid), "w", encoding="utf-8") as f:
+                f.write(sidecar)
+
+    def test_wav_without_sidecar_or_with_tombstone_is_removed(self):
+        for rid, sidecar in ((11, None), (12, json.dumps({"deleted": True}))):
+            with self.subTest(sidecar=sidecar):
+                self.orphan(rid, sidecar)
+                core.recordings_prune()
+                self.assertEqual(self.files(rid), set())
+
+    def test_unreadable_sidecar_keeps_the_audio(self):
+        self.orphan(13, "{not json")
+        core.recordings_prune()
+        self.assertIn("wav", self.files(13))
+
+
 class TestResolve(_Store):
     def test_resolution_moves_entry_to_top_and_removes_failure_files(self):
         rid = self.keep(dur=2.0)
@@ -209,9 +233,13 @@ class TestResolve(_Store):
         self.assertIn(rid, [i["id"] for i in self.items()])
         self.assertTrue(os.path.exists(core.recording_path(rid)))
 
-    def test_fail_again_updates_the_error(self):
+    def test_fail_again_updates_the_error_even_after_recovery(self):
         rid = self.keep()
         self.assertTrue(core.history_fail_again(rid, "المفتاح مش مقبول"))
+        self.assertEqual(self.items()[0]["error"], "المفتاح مش مقبول")
+        with open(self.hist, "w", encoding="utf-8") as f:
+            f.write("[]")
+        core.recordings_prune()
         self.assertEqual(self.items()[0]["error"], "المفتاح مش مقبول")
 
 
@@ -345,6 +373,7 @@ class _ProcBase(_Store):
 
     def run_process(self, client, mode="normal", focus=(GUI,), paste="placed", on_text=None,
                     on_failed=None, selection=None, on_state=None):
+        # الهوك اللي بيرمي بيطلع برّه process زي ما بيحصل في ثريد التسجيل — مهمّنا اللي اتساب وراه
         app = core.App.__new__(core.App)
         app.recording, app.busy, app._op, app._active_key = False, True, None, None
         app.events, app.failed = [], []
@@ -438,6 +467,24 @@ class TestProcessKeepsFailures(_ProcBase):
         self.assertEqual(len(self.failed_entries()), 1)
         self.assertFalse(app.busy)
 
+    def test_raising_error_hook_after_empty_transcript_keeps_one_entry(self):
+        def on_state(st, msg=None):
+            if st == "err":
+                raise RuntimeError("ui gone")
+
+        app, wav = self.run_process(_ProcClient(text=""), on_state=on_state)
+        self.assertEqual(len(self.failed_entries()), 1)
+        self.assertFalse(os.path.exists(wav))
+        self.assertFalse(app.busy)
+
+    def test_history_write_failure_then_typing_error_keeps_one_entry(self):
+        def boom(text):
+            raise RuntimeError("ui gone")
+
+        with _first_history_write_fails():
+            self.run_process(_ProcClient(text="كلام اتكتب"), on_text=boom)
+        self.assertEqual([e["raw"] for e in self.failed_entries()], ["كلام اتكتب"])
+
     def test_history_write_failure_keeps_the_recording(self):
         with _first_history_write_fails():
             self.run_process(_ProcClient(text="كلام اتكتب"))
@@ -453,6 +500,15 @@ class TestEditKeepsFailures(_ProcBase):
 
     def test_instruction_transcription_error_is_kept(self):
         self.run_edit(_ProcClient(stt_error=RuntimeError("HTTP 500")))
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["mode"], "edit")
+
+    def test_failing_work_state_in_edit_still_keeps_the_audio(self):
+        def on_state(st, msg=None):
+            if st == "work":
+                raise RuntimeError("ui gone")
+
+        self.run_edit(_ProcClient(text="خليه رسمي"), on_state=on_state)
         [entry] = self.failed_entries()
         self.assertEqual(entry["mode"], "edit")
 
@@ -575,6 +631,15 @@ class TestRetranscribe(_Store):
         self.assertEqual(res, {"ok": False, "err": "التسجيل اتمسح"})
         self.assertEqual(core.history_get(), [])
         self.assertEqual(self.files(rid), set())
+
+    def test_save_failure_still_returns_the_text_and_keeps_it_failed(self):
+        rid = self.keep()
+        with _first_history_write_fails():
+            res = self.retry(rid, _RetryClient())
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["note"], core.RETRY_NOT_SAVED)
+        self.assertEqual(self.entry(rid)["status"], "failed")
+        self.assertIn("wav", self.files(rid))
 
     def test_failed_processing_keeps_the_transcript_with_a_note(self):
         rid = self.keep(mode="prompt")

@@ -389,8 +389,9 @@ def _silent_remove(*paths):
 
 def keep_failed_recording(mode, wav, error, app="", raw="", dur=None):
     """
-    تسجيل فشل تفريغه: الصوت والصف بيتحفظوا عشان يتعمله تفريغ يدوي بعدين. بيرجّع الـid،
-    أو None لو الصوت ماتأمّنش — ساعتها اللي بينده مايمسحش ملفه المؤقت.
+    تسجيل فشل تفريغه: الصوت والصف بيتحفظوا عشان يتعمله تفريغ يدوي بعدين. بيرجّع الـid أول
+    ما الصوت وملف بياناته يتنشروا (لو كتابة السجل فشلت، الاسترجاع بيرجّع الصف)، أو None لو
+    الصوت ماتأمّنش — ساعتها اللي بينده مايمسحش ملفه المؤقت.
     الترتيب: نسخ مؤقتة برّه القفل ← نشرها وكتابة الصف خطوة واحدة جوّه القفل (عشان «مسح
     الكل» مايقعش بين الاتنين) ← الـMP3 في الآخر (للسماع بس).
     """
@@ -419,11 +420,12 @@ def keep_failed_recording(mode, wav, error, app="", raw="", dur=None):
             os.replace(side_tmp, failed_sidecar_path(rid))
         except Exception as e:
             log_error(e, "recordings/keep-failed")
-            _silent_remove(wav_tmp, side_tmp)
+            # WAV من غير ملف بياناته مايترجعش — الأصل لسه في الملف المؤقت عند اللي بينده
+            _silent_remove(wav_tmp, side_tmp, failed_wav_path(rid))
             return None
-        inserted = _insert_entry(entry)
+        _insert_entry(entry)
     recording_save(rid, wav)
-    return rid if inserted else None
+    return rid
 
 
 def history_entry(rid):
@@ -454,7 +456,7 @@ def history_resolve(rid, raw, result, engine):
     """
     التفريغ اليدوي نجح: الصف بقى تسجيل عادي، بيطلع أول السجل بوقت النهارده (عشان الحد
     مايشيلوش قبل ما المستخدم ينسخه)، وملفات الفشل بتتمسح بعد ما الكتابة تنجح بس.
-    False لو الصف اتمسح أو مابقاش فاشل.
+    False لو الصف اتمسح أو مابقاش فاشل؛ فشل الكتابة بيرمي OSError ومفيش ملف بيتمسح.
     """
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
@@ -470,11 +472,7 @@ def history_resolve(rid, raw, result, engine):
         if engine:
             entry["engine"] = engine
         items.insert(0, entry)
-        try:
-            _write_list(HISTORY_PATH, _trim(items))
-        except Exception as e:
-            log_error(e, "history/write")
-            return False
+        _write_list(HISTORY_PATH, _trim(items))      # غلط الكتابة بيطلع: النتيجة لسه مع اللي بينده
         _remove_failed_files(rid, keep_mp3=True)
     return True
 
@@ -489,10 +487,16 @@ def history_fail_again(rid, error):
         entry["error"] = str(error or "")
         try:
             _write_list(HISTORY_PATH, items)
-            return True
         except Exception as e:
             log_error(e, "history/write")
             return False
+        try:
+            tmp = failed_sidecar_path(rid) + "." + uuid.uuid4().hex[:8] + ".tmp"
+            _write_json(tmp, entry)
+            os.replace(tmp, failed_sidecar_path(rid))
+        except Exception as e:
+            log_error(e, "recordings/sidecar")
+        return True
 
 
 # ── صوت آخر ١٠ تسجيلات (يتسمع ويتنزّل mp3 من السجل) ─────────────────────────
@@ -577,20 +581,25 @@ def _remove_stray_tmp():
 def _recover_failed(items):
     """
     تسجيل فاشل صوته موجود وصفه مش في السجل (السجل باظ واتعمله backup، أو كتابته فشلت):
-    بيرجع من ملف بياناته في مكانه بالترتيب. اللي اتمسح بإيد صاحبه (علامة deleted) مابيرجعش.
+    بيرجع من ملف بياناته في مكانه بالترتيب. اللي اتمسح بإيد صاحبه (ملف البيانات اتمسح أو عليه
+    علامة deleted) صوته بيتمسح؛ ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
     """
     live = {i.get("id") for i in items}
     added = False
-    for rid in sorted(_ids_with(".wav") - live, reverse=True):
+    for rid in sorted(_ids_with(".wav") - live - set(_retrying), reverse=True):
         try:
             with open(failed_sidecar_path(rid), encoding="utf-8") as f:
                 entry = json.load(f)
         except FileNotFoundError:
+            _silent_remove(failed_wav_path(rid))
             continue
         except Exception as e:
             log_error(e, "recordings/recover")
             continue
-        if not isinstance(entry, dict) or entry.get("deleted") or entry.get("id") != rid:
+        if isinstance(entry, dict) and entry.get("deleted"):
+            _silent_remove(failed_wav_path(rid), failed_sidecar_path(rid))
+            continue
+        if not isinstance(entry, dict) or entry.get("id") != rid:
             continue
         pos = next((k for k, i in enumerate(items) if (i.get("id") or 0) < rid), len(items))
         items.insert(pos, entry)
@@ -1591,6 +1600,8 @@ def convert_text(client, mode, text, app=""):
 EMPTY_TRANSCRIPT = "مطلعش نص — قرّب من الميك وجرّب تاني"
 RETRY_DELETED = "التسجيل اتمسح"
 AI_FAILED_NOTE = "مقدرتش أحوّله — ده الكلام زي ما اتقال"
+RETRY_NOT_SAVED = "اتفرّغ بس مقدرتش أحفظه في السجل — انسخه دلوقتي"
+HISTORY_WRITE_FAILED = "مقدرتش أحفظ التسجيل في السجل"
 
 
 def _set_vocab(client):
@@ -1655,8 +1666,13 @@ def _retry_text(rid, entry, wav, make_client):
     if mode == "normal" and not conv.raw and conv.snippet is None and not smart.is_dev_app(app, CFG):
         out = smart.fix_mixed(out)        # زي الإملاء الحي — من غير هدف كتابة، فقاعدة الترمنال مالهاش لازمة
     shown = "[اختصار] " + str(conv.snippet.get("trigger") or "") if conv.snippet is not None else out
-    if not history_resolve(rid, text, shown, cl.engine()):
-        return {"ok": False, "err": RETRY_DELETED}       # اتمسح أثناء التفريغ — المسح بيكسب
+    try:
+        if not history_resolve(rid, text, shown, cl.engine()):
+            return {"ok": False, "err": RETRY_DELETED}   # اتمسح أثناء التفريغ — المسح بيكسب
+    except OSError as e:
+        # التفريغ نجح والسجل مااتكتبش: النتيجة بتتعرض للنسخ، والتسجيل بيفضل فاشل يتجرّب تاني
+        log_error(e, "retranscribe/save")
+        return {"ok": True, "result": out, "note": RETRY_NOT_SAVED}
     res = {"ok": True, "result": out}
     if conv.ai_failed:
         res["note"] = AI_FAILED_NOTE                       # الكلام اتحفظ — المعالجة بس اللي فشلت
@@ -2088,8 +2104,9 @@ class App:
         # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
         cur_mode = op.mode
         # تسجيل فشل بيتحفظ عشان التفريغ اليدوي — بنتابع: اتفرّغ؟ (text) / خانة باسورد؟
-        # (protected) / اتكتب له صف؟ (rid) / صوته اتحفظ؟ (audio_saved)
+        # (protected) / اتكتب له صف؟ (rid) / صوته اتحفظ؟ (audio_saved) / اتحفظ كفاشل؟ (kept)
         text, protected, rid, audio_saved, keep_tmp = None, False, None, False, False
+        kept = False
         dur = _wav_seconds(wav)
         try:
             if cur_mode == "edit":
@@ -2124,6 +2141,7 @@ class App:
             text = cl.transcribe(wav, lang)
             if not text:
                 # التفريغ الفاضي فشل: الصوت بيتحفظ عشان التفريغ اليدوي (ممكن الموديل اللي بعده يسمعه)
+                kept = True
                 keep_tmp = not self._keep_failure(cur_mode, wav, EMPTY_TRANSCRIPT, op, dur)
                 self.on_state("err", EMPTY_TRANSCRIPT)
                 return
@@ -2178,9 +2196,10 @@ class App:
                 engine = cl.engine()
                 rid = history_add(cur_mode, text, history_result, dur, engine=engine,
                                   bypass=bypass, app=op.target_app)
-                if rid is None:
+                if rid is None and history_result.strip():
                     # كتابة السجل فشلت: الكلام مايضيعش — بيتحفظ كتسجيل فاشل بالنص اللي اتقال
-                    keep_tmp = not self._keep_failure(cur_mode, wav, "مقدرتش أحفظ التسجيل في السجل",
+                    kept = True
+                    keep_tmp = not self._keep_failure(cur_mode, wav, HISTORY_WRITE_FAILED,
                                                       op, dur, raw=text)
                 self.on_text(out)
             res = None
@@ -2218,11 +2237,14 @@ class App:
             msg = friendly_error(e)
             if rid and not audio_saved:
                 recording_save(rid, wav)       # الصف اتكتب — صوته لازم يتحفظ مهما حصل بعده
-            elif rid is None and cur_mode != "edit" and (text is None or not protected):
+            elif rid is None and not kept and cur_mode != "edit" and (text is None or not protected):
                 # التفريغ فشل (في أي خانة) أو حاجة بعده فشلت برّه خانات الباسورد — نص
                 # الباسورد اللي اتفرّغ بنجاح عمره ما يتحفظ
                 keep_tmp = not self._keep_failure(cur_mode, wav, msg, op, dur, raw=text or "")
-            self.on_state("err", msg)
+            try:
+                self.on_state("err", msg)
+            except Exception as e2:           # الواجهة نفسها اللي رمت — مفيش حد يتبلّغ غير اللوج
+                log_error(e2, "process/err-state")
         finally:
             self._set_busy(False)
             if not keep_tmp:                   # الصوت ماتأمّنش → الملف المؤقت بيفضل (مساره في اللوج)
@@ -2265,15 +2287,15 @@ class App:
         بيرجّع True لو الصوت ماتأمّنش (الملف المؤقت لازم يفضل).
         """
         import winput
-        self.on_state("work", "edit")
-        # N2: نفس فحص بروب التسجيل بتاع process — لو begin/end شافوا خانة باسورد
-        # (أثناء التسجيل نفسه)، التعليمات ممن توصل للموديل إطلاقًا، لأن التحديد
-        # ممكن يكون باسورد متسرب من خانة المستخدم اتنقل عنها.
-        if _probe_password_seen(op):
-            self.on_state("err", "مينفعش تعديل خانة باسورد")
-            return False
         instruction, saved, keep_tmp = None, False, False
         try:
+            self.on_state("work", "edit")
+            # N2: نفس فحص بروب التسجيل بتاع process — لو begin/end شافوا خانة باسورد
+            # (أثناء التسجيل نفسه)، التعليمات ممن توصل للموديل إطلاقًا، لأن التحديد
+            # ممكن يكون باسورد متسرب من خانة المستخدم اتنقل عنها.
+            if _probe_password_seen(op):
+                self.on_state("err", "مينفعش تعديل خانة باسورد")
+                return False
             cl = _set_vocab(self.client("edit"))
             # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه.
             # التفريغ بيمشي على قايمة تاب «تعديل»؛ لو اتفرّغ محلي والمعالجة ماوصلتش لحد،
@@ -2297,9 +2319,9 @@ class App:
             rid = history_add("edit", instruction, result, dur, engine=cl.engine())
             if rid:
                 recording_save(rid, wav)
-            else:
+            elif result.strip():
                 # كتابة السجل فشلت: التعليمات بتتحفظ كتسجيل فاشل — والنتيجة بتتسلّم عادي
-                keep_tmp = not self._keep_failure("edit", wav, "مقدرتش أحفظ التسجيل في السجل",
+                keep_tmp = not self._keep_failure("edit", wav, HISTORY_WRITE_FAILED,
                                                   op, dur, raw=instruction)
             saved = True
             # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،

@@ -368,7 +368,8 @@ tr.open .clip-text { -webkit-line-clamp: unset; user-select: text; }
          background: var(--float); border: 1px solid var(--line-2); color: var(--fg); padding: 9px 14px; border-radius: var(--r-md);
          font-size: 12.5px; transition: opacity .15s, transform .15s; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); max-width: 520px; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
-.toast.has-act { pointer-events: auto; display: flex; align-items: center; gap: 12px; }
+.toast.has-act { display: flex; align-items: center; gap: 12px; }
+.toast.show.has-act { pointer-events: auto; }
 .toast-act { height: 26px; padding: 0 10px; border-radius: var(--r-md); border: 1px solid var(--line-2); color: var(--fg);
              font-size: 12px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .toast-act:hover { background: var(--card-2); }

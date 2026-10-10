@@ -325,7 +325,7 @@ async function togglePlay(id) {
 function histVisible() {
   const q = $("#histSearch").value.trim().toLowerCase();
   return S.history.filter(i => (S.histFilter === "all" || i.mode === S.histFilter)
-    && (!q || (i.result || "").toLowerCase().includes(q) || (i.raw || "").toLowerCase().includes(q)));
+    && (!q || [i.result, i.raw, i.error].some(t => (t || "").toLowerCase().includes(q))));
 }
 /* التسجيل الفاشل: علامة «فشل التفريغ» وسببه مكان النتيجة، وزرار «تفريغ يدوي» مكان النسخ */
 function histRowHTML(i, d) {
