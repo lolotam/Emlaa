@@ -52,6 +52,25 @@ GROQ_STT = {"provider": "groq", "model": "w"}
 GROQ_AI = {"provider": "groq", "model": "q"}
 
 
+
+# التسجيل الفاشل بيتحفظ في السجل والتسجيلات — أي اختبار بيشغّل process لازم يكتب في
+# مجلد مؤقت، عمره ما يلمس history.json أو recordings/ بتوع المستخدم
+_store_patches = []
+
+
+def setUpModule():
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="emlaa_store_")
+    for p in (mock.patch.object(core, "HISTORY_PATH", os.path.join(tmp, "history.json")),
+              mock.patch.object(core, "RECORDINGS_DIR", os.path.join(tmp, "recordings"))):
+        p.start()
+        _store_patches.append(p)
+
+
+def tearDownModule():
+    while _store_patches:
+        _store_patches.pop().stop()
+
 class FakeProvider:
     """عميل مزوّد صارم وهمي: transcribe ممكن يرمي (stt_err)، و_chat_raw بيرجّع ai_out أو بيرمي."""
 
@@ -383,7 +402,7 @@ class TestOfflineSilenceMarkers(unittest.TestCase):
             m["history"].assert_not_called()
             m["clip"].assert_not_called()
             self.assertEqual(app.unplaced, [])
-            self.assertEqual(app.events[-1], ("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"))
+            self.assertEqual(app.events[-1], ("err", "مطلعش نص — قرّب من الميك وجرّب تاني"))
 
 
 if __name__ == "__main__":

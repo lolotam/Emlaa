@@ -296,5 +296,184 @@ class TestConvertText(unittest.TestCase):
         self.assertEqual((conv.out, conv.snippet["trigger"], cl.calls), ("me@example.com", "إيميلي", []))
 
 
+class _ProcClient:
+    """عميل ميزة مزيّف للتسجيل الحي: التفريغ ممكن يرمي أو يرجّع نص/فاضي."""
+
+    def __init__(self, text="الكلام ده جملة طويلة شوية", stt_error=None, edit_result="معدّل"):
+        self.text, self.stt_error, self.edit_result = text, stt_error, edit_result
+        self.vocab, self.vocab_extra, self.ai_ok = [], [], True
+
+    def transcribe(self, wav, lang):
+        if self.stt_error:
+            raise self.stt_error
+        return self.text
+
+    def polish(self, t, profile=None):
+        return t
+
+    def to_prompt(self, t):
+        return t
+
+    def translate(self, t):
+        return t
+
+    def edit(self, selection, instruction):
+        return self.edit_result
+
+    def engine(self):
+        return {"stt": "fake"}
+
+
+GUI = {"is_password": False, "class": "Edit", "editable": True}
+PASSWORD = {"is_password": True, "class": "Edit", "editable": True}
+
+
+class _ProcBase(_Store):
+    """تشغيل process حقيقي بعميل مزيّف — الفوكس واللصق مزيّفين."""
+
+    def run_process(self, client, mode="normal", focus=(GUI,), paste="placed", on_text=None,
+                    on_failed=None, selection=None, on_state=None):
+        app = core.App.__new__(core.App)
+        app.recording, app.busy, app._op, app._active_key = False, True, None, None
+        app.events, app.failed = [], []
+
+        def record_state(st, msg=None):
+            app.events.append((st, msg))
+            if on_state:
+                on_state(st, msg)
+
+        app.on_state = record_state
+        app.on_text = on_text or (lambda t: None)
+        app.on_unplaced = lambda t: None
+        app.on_failed = on_failed or (lambda rid, msg: app.failed.append((rid, msg)))
+        app.client = lambda m="normal": client
+        wav = self.make_wav("live.wav")
+        focus_seq = [dict(f) if isinstance(f, dict) else f for f in focus]
+
+        def focused_info():
+            item = focus_seq.pop(0) if len(focus_seq) > 1 else focus_seq[0]
+            if isinstance(item, Exception):
+                raise item
+            return dict(item)
+
+        import winput
+        with mock.patch.object(winput, "focused_info", side_effect=focused_info), \
+                mock.patch.object(winput, "same_target", return_value=True), \
+                mock.patch.object(core, "_foreground_app", return_value=""), \
+                mock.patch.object(core, "paste_text",
+                                  side_effect=paste if callable(paste) else (lambda *a, **k: paste)):
+            op = core.Operation(mode=mode, selection=selection)
+            app.process(wav, op)
+        return app, wav
+
+    def failed_entries(self):
+        return [i for i in self.items() if i.get("status") == "failed"] if os.path.exists(self.hist) else []
+
+
+class TestProcessKeepsFailures(_ProcBase):
+    def test_transcription_error_keeps_the_recording_and_notifies(self):
+        app, wav = self.run_process(_ProcClient(stt_error=RuntimeError("no internet: timed out")))
+        [entry] = self.failed_entries()
+        self.assertEqual(self.files(entry["id"]), {"wav", "json", "mp3"})
+        self.assertEqual(app.failed, [(entry["id"], entry["error"])])
+        self.assertEqual(app.events[-1], ("err", entry["error"]))
+        self.assertFalse(os.path.exists(wav))
+        self.assertFalse(app.busy)
+
+    def test_empty_transcript_is_kept_as_failed(self):
+        app, _ = self.run_process(_ProcClient(text=""))
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["error"], "مطلعش نص — قرّب من الميك وجرّب تاني")
+        self.assertEqual(app.events[-1], ("err", "مطلعش نص — قرّب من الميك وجرّب تاني"))
+
+    def test_error_after_the_entry_was_written_saves_its_audio_without_a_duplicate(self):
+        def boom(text):
+            raise RuntimeError("ui gone")
+
+        self.run_process(_ProcClient(), on_text=boom)
+        items = self.items()
+        self.assertEqual(len(items), 1)
+        self.assertNotIn("status", items[0])
+        self.assertTrue(os.path.exists(core.recording_path(items[0]["id"])))
+
+    def test_password_field_transcription_failure_is_kept(self):
+        self.run_process(_ProcClient(stt_error=RuntimeError("HTTP 500")), focus=(PASSWORD,))
+        self.assertEqual(len(self.failed_entries()), 1)
+
+    def test_password_transcript_is_not_kept_when_a_later_step_fails(self):
+        def paste(*a, **k):
+            raise RuntimeError("paste broke")
+
+        self.run_process(_ProcClient(), focus=(PASSWORD,), paste=paste)
+        self.assertFalse(os.path.exists(self.hist) and self.items())
+        self.assertFalse(os.path.exists(self.recs) and os.listdir(self.recs))
+
+    def test_error_after_transcription_outside_password_fields_keeps_the_words(self):
+        self.run_process(_ProcClient(text="كلام مهم"), focus=(GUI, RuntimeError("uia")))
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["raw"], "كلام مهم")
+
+    def test_temp_audio_survives_when_it_could_not_be_kept(self):
+        with mock.patch.object(core, "keep_failed_recording", return_value=None):
+            _, wav = self.run_process(_ProcClient(stt_error=RuntimeError("HTTP 500")))
+        self.assertTrue(os.path.exists(wav))
+
+    def test_failing_notification_hook_loses_nothing(self):
+        def hook(rid, msg):
+            raise RuntimeError("toast broke")
+
+        app, _ = self.run_process(_ProcClient(stt_error=RuntimeError("HTTP 500")), on_failed=hook)
+        self.assertEqual(len(self.failed_entries()), 1)
+        self.assertFalse(app.busy)
+
+    def test_history_write_failure_keeps_the_recording(self):
+        with mock.patch.object(core, "history_add", return_value=None):
+            self.run_process(_ProcClient(text="كلام اتكتب"))
+        [entry] = self.failed_entries() or [None]
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["raw"], "كلام اتكتب")
+
+
+class TestEditKeepsFailures(_ProcBase):
+    def run_edit(self, client, **kw):
+        with mock.patch.object(core, "_probe_password_seen", return_value=False):
+            return self.run_process(client, mode="edit", selection="النص المحدد", **kw)
+
+    def test_instruction_transcription_error_is_kept(self):
+        self.run_edit(_ProcClient(stt_error=RuntimeError("HTTP 500")))
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["mode"], "edit")
+
+    def test_edit_model_failure_keeps_the_instruction(self):
+        self.run_edit(_ProcClient(text="خليه رسمي", edit_result=None))
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["raw"], "خليه رسمي")
+
+    def test_clipboard_failure_keeps_entry_and_audio(self):
+        app, _ = self.run_edit(_ProcClient(text="خليه رسمي"), paste="clip_failed")
+        [entry] = self.items()
+        self.assertNotIn("status", entry)
+        self.assertTrue(os.path.exists(core.recording_path(entry["id"])))
+        self.assertNotIn("النص المحدد", json.dumps(entry, ensure_ascii=False))
+
+    def test_done_hook_failure_after_save_creates_no_duplicate(self):
+        def on_state(st, msg=None):
+            if st == "done":
+                raise RuntimeError("ui gone")
+
+        self.run_edit(_ProcClient(text="خليه رسمي"), on_state=on_state)
+        self.assertEqual(len(self.items()), 1)
+        self.assertEqual(self.failed_entries(), [])
+
+    def test_history_write_failure_keeps_the_instruction_and_still_delivers(self):
+        pasted = []
+        with mock.patch.object(core, "history_add", return_value=None):
+            self.run_edit(_ProcClient(text="خليه رسمي"),
+                          paste=lambda text, *a, **k: pasted.append(text) or "placed")
+        [entry] = self.failed_entries()
+        self.assertEqual(entry["raw"], "خليه رسمي")
+        self.assertEqual(pasted, ["معدّل"])
+
+
 if __name__ == "__main__":
     unittest.main()

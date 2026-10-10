@@ -1530,6 +1530,15 @@ class Operation:
 NO_AI_MSG = "اتفرّغ بس — الميزة دي مالهاش موديل معالجة (ضيفه من الإعدادات)"
 EDIT_NO_AI_MSG = "التعديل محتاج موديل معالجة — ضيفه من تاب «تعديل» في الإعدادات"
 
+def _wav_seconds(wav):
+    """طول التسجيل بالثواني (None لو الملف مايتقريش) — بيتحسب قبل التفريغ عشان الفشل يسجّله."""
+    try:
+        with wave.open(wav, "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        return None
+
+
 # ── معالجة النص بعد التفريغ — مشتركة بين التسجيل الحي والتفريغ اليدوي ─────────
 Converted = collections.namedtuple("Converted", "out raw bypass snippet ai_failed")
 
@@ -1981,11 +1990,16 @@ class App:
         # busy اتحجز بالفعل في end() (قبل ما الثريد ده يبدأ) — هنا بنفكّه
         # في finally بعد كل الحالات: نجاح، فشل، أو أي return بدري.
         cur_mode = op.mode
+        # تسجيل فشل بيتحفظ عشان التفريغ اليدوي — بنتابع: اتفرّغ؟ (text) / خانة باسورد؟
+        # (protected) / اتكتب له صف؟ (rid) / صوته اتحفظ؟ (audio_saved)
+        text, protected, rid, audio_saved, keep_tmp = None, False, None, False, False
+        dur = _wav_seconds(wav)
         try:
             if cur_mode == "edit":
                 # F6: وضع التعديل مسار مستقل — مفيش فحص باسورد مبكّر ولا
                 # bypass/snippets/polish/fix_mixed/prompt/translate، التعليمات بس.
-                self._process_edit(wav, op)
+                # بيتعامل مع فشله بنفسه (عشان مايتعملش صف فشل مكرر من هنا)
+                keep_tmp = self._process_edit(wav, op, dur)
                 return
             # F2 (خصوصية): معلومات الفوكس بتتقرا مرة واحدة في أول العملية — قبل
             # أي نداء للموديل وحتى قبل إشعار الواجهة — عشان نمسك حالة الخانة
@@ -2001,12 +2015,8 @@ class App:
             # محمية طول عمرها — مش بنخفّضها أبدًا.
             early_secure = (_probe_password_seen(op)
                             or info.get("is_password") is True)
+            protected = early_secure
             self.on_state("work", cur_mode)    # جوّه الـtry: لو الواجهة رمت خطأ، busy لازم يتفك برضه
-            try:
-                with wave.open(wav, "rb") as w:
-                    dur = w.getnframes() / float(w.getframerate())
-            except Exception:
-                dur = None
             # كل الأوضاع هنا (عادي/برومبت/ترجمة): المتكلم ممكن يتكلم إنجليزي، فمانجبرش التفريغ
             # على العربي — Whisper المجبر على "ar" بيترجم الكلام الإنجليزي («How are you» ←
             # «كيف تتعرّف؟»)، والبرومبت كان عمره ما بيوصله طلب إنجليزي. التعديل بالصوت ليه مساره.
@@ -2022,7 +2032,9 @@ class App:
                               if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
             text = cl.transcribe(wav, lang)
             if not text:
-                self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
+                # التفريغ الفاضي فشل: الصوت بيتحفظ عشان التفريغ اليدوي (ممكن الموديل اللي بعده يسمعه)
+                keep_tmp = not self._keep_failure(cur_mode, wav, "مطلعش نص — قرّب من الميك وجرّب تاني", op, dur)
+                self.on_state("err", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
             if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
@@ -2042,6 +2054,7 @@ class App:
             info2 = winput.focused_info()
             info2["exe"] = _foreground_app()
             late_secure = info2.get("is_password") is True
+            protected = protected or late_secure
             if early_secure and not late_secure:
                 # الفوكس كان على خانة باسورد وقت التسجيل وبعدين اتنقل — ممن نكتب
                 # كلمة السر في أي مكان تاني (غالبًا خانة عادية المستخدم بيقلّب فيها).
@@ -2074,6 +2087,10 @@ class App:
                 engine = cl.engine()
                 rid = history_add(cur_mode, text, history_result, dur, engine=engine,
                                   bypass=bypass, app=op.target_app)
+                if rid is None:
+                    # كتابة السجل فشلت: الكلام مايضيعش — بيتحفظ كتسجيل فاشل بالنص اللي اتقال
+                    keep_tmp = not self._keep_failure(cur_mode, wav, "مقدرتش أحفظ التسجيل في السجل",
+                                                      op, dur, raw=text)
                 self.on_text(out)
             res = None
             if not secure or CFG.get("auto_paste", True):
@@ -2089,6 +2106,7 @@ class App:
                 self.on_state("err", "الكتابة التلقائية مقفولة — خانة الباسورد مينفعش أنسخ لها")
             if rid:
                 recording_save(rid, wav)          # بعد الكتابة عشان مايأخّرهاش (قبل ما الـwav يتمسح)
+                audio_saved = True
             # "done" بس لما النتيجة انكتبت أو اتسلّمت للمستخدم. «clip_failed» ناشر
             # "err" فوق فمينفعش يتغطى بـ"done". الخانة الآمنة لو الكتابة فشلت: "err"
             # من غير "done" — مفيش حافظة تلزق منها، المستخدم لازم يكتبها بنفسه.
@@ -2106,25 +2124,54 @@ class App:
                 self.on_state("err", "مقدرتش أكتب في خانة الباسورد — اكتبها بنفسك")
         except Exception as e:
             log_error(e, "process/transcribe")
-            self.on_state("err", friendly_error(e))
+            msg = friendly_error(e)
+            if rid and not audio_saved:
+                recording_save(rid, wav)       # الصف اتكتب — صوته لازم يتحفظ مهما حصل بعده
+            elif rid is None and cur_mode != "edit" and (text is None or not protected):
+                # التفريغ فشل (في أي خانة) أو حاجة بعده فشلت برّه خانات الباسورد — نص
+                # الباسورد اللي اتفرّغ بنجاح عمره ما يتحفظ
+                keep_tmp = not self._keep_failure(cur_mode, wav, msg, op, dur, raw=text or "")
+            self.on_state("err", msg)
         finally:
             self._set_busy(False)
-            try:
-                os.remove(wav)
-            except Exception:
-                pass
+            if not keep_tmp:                   # الصوت ماتأمّنش → الملف المؤقت بيفضل (مساره في اللوج)
+                try:
+                    os.remove(wav)
+                except Exception:
+                    pass
             self._apply_pending_hotkeys()
+
+    def _keep_failure(self, mode, wav, message, op, dur, raw=""):
+        """
+        بيحفظ تسجيل فشل ويقول للواجهة (رسالة + «افتح السجل»). False = الصوت ماتأمّنش —
+        اللي بينده مايمسحش ملفه المؤقت، والمسار بيتكتب في اللوج عشان مايضيعش.
+        """
+        rid = keep_failed_recording(mode, wav, message, app=op.target_app, raw=raw, dur=dur)
+        if rid is None:
+            log_error(RuntimeError("التسجيل ماتحفظش — الصوت لسه في " + wav), "process/keep-failed")
+            return False
+        try:
+            self.on_failed(rid, message)
+        except Exception as e:
+            log_error(e, "process/on-failed")
+        return True
+
+    def on_failed(self, rid, message):
+        """تسجيل فشل واتحفظ في السجل — الواجهة بتعرض رسالة بزرار «افتح السجل»."""
+        pass
 
     def _apply_pending_hotkeys(self):
         """زراير اتحفظت وقت عملية — بتتطبّق أول ما العملية تخلص."""
         if getattr(self, "_hotkey_restart_pending", False) and not self.recording and not self.busy:
             self.restart_hotkey()
 
-    def _process_edit(self, wav, op):
+    def _process_edit(self, wav, op, dur=None):
         """
         F6: تنفيذ التعديل في المكان. التعليمات المنطوقة بتتفّرغ وتروح للموديل
         مع النص المحدد، والنتيجة بتتحقن مكان التحديد (أو بتتنسخ لو الهدف اتغيّر).
         النص المحدد نفسه عمره ما يتسجّل في السجل — التعليمات والنتيجة بس.
+        بيتعامل مع فشله بنفسه: التفريغ أو التعديل لو فشل، التسجيل بيتحفظ كفاشل.
+        بيرجّع True لو الصوت ماتأمّنش (الملف المؤقت لازم يفضل).
         """
         import winput
         self.on_state("work", "edit")
@@ -2133,51 +2180,66 @@ class App:
         # ممكن يكون باسورد متسرب من خانة المستخدم اتنقل عنها.
         if _probe_password_seen(op):
             self.on_state("err", "مينفعش تعديل خانة باسورد")
-            return
-        cl = self.client("edit")
-        cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-        cl.vocab_extra = [str(s.get("trigger") or "").strip()
-                          for s in (CFG.get("snippets") or [])
-                          if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+            return False
+        instruction, saved, keep_tmp = None, False, False
         try:
-            with wave.open(wav, "rb") as w:
-                dur = w.getnframes() / float(w.getframerate())
-        except Exception:
-            dur = None
-        # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه.
-        # التفريغ بيمشي على قايمة تاب «تعديل»؛ لو اتفرّغ محلي والمعالجة ماوصلتش لحد،
-        # edit() بيرجّع None والتحديد بيفضل زي ما هو (تحت).
-        instruction = cl.transcribe(wav, None)
-        if not instruction:
-            self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
-            return
-        result = cl.edit(op.selection, instruction)
-        if result is None:
-            # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة
-            self.on_state("err", "معرفتش أعدّل النص — جرّب تاني")
-            return
-        info = winput.focused_info()
-        info["exe"] = _foreground_app()
-        target = smart.insert_target(info, result, CFG.get("insert_method"))
-        # M6: الهدف اتحوّل لخانة باسورد بعد الأسر — ممن نحقن ولا ننسخ (الباسورد
-        # عمره مايوصل للحافظة)؛ بنوقف برسالة واضحة من غير "done".
-        if target[0] == "secure":
-            self.on_state("err", "مكتبتش التعديل — الهدف بقى خانة باسورد")
-            return
-        # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،
-        # paste_text بيتسلّم (رسالة بزرار نسخ) بدل ما يكتب فوق حاجة تانية.
-        res = paste_text(result, target, guard=lambda: winput.same_target(op))
-        # M7: auto_paste مقفول والنسخة فشلت → مفيش حاجة وصلت: خطأ بدل on_unplaced + "done"
-        if res == "clip_failed":
-            self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
-            return
-        if res in ("failed", "handoff"):
-            self.on_unplaced(result)
-        rid = history_add("edit", instruction, result, dur, engine=cl.engine())
-        if rid:
-            recording_save(rid, wav)
-        if res in ("placed", "handoff", "failed"):
-            self.on_state("done", "edit")
+            cl = self.client("edit")
+            cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+            cl.vocab_extra = [str(s.get("trigger") or "").strip()
+                              for s in (CFG.get("snippets") or [])
+                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+            # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه.
+            # التفريغ بيمشي على قايمة تاب «تعديل»؛ لو اتفرّغ محلي والمعالجة ماوصلتش لحد،
+            # edit() بيرجّع None والتحديد بيفضل زي ما هو (تحت).
+            instruction = cl.transcribe(wav, None)
+            if not instruction:
+                return self._edit_failed(wav, op, dur, "مطلعش نص — قرّب من الميك وجرّب تاني", "")
+            result = cl.edit(op.selection, instruction)
+            if result is None:
+                # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة؛ التعليمات بتتحفظ
+                return self._edit_failed(wav, op, dur, "معرفتش أعدّل النص — جرّب تاني", instruction)
+            info = winput.focused_info()
+            info["exe"] = _foreground_app()
+            target = smart.insert_target(info, result, CFG.get("insert_method"))
+            # M6: الهدف اتحوّل لخانة باسورد بعد الأسر — ممن نحقن ولا ننسخ (الباسورد
+            # عمره مايوصل للحافظة)؛ بنوقف برسالة واضحة من غير "done".
+            if target[0] == "secure":
+                self.on_state("err", "مكتبتش التعديل — الهدف بقى خانة باسورد")
+                return False
+            # السجل والصوت قبل التسليم: فشل الكتابة/النسخ بعدها مايضيّعش التسجيل
+            rid = history_add("edit", instruction, result, dur, engine=cl.engine())
+            if rid:
+                recording_save(rid, wav)
+            else:
+                # كتابة السجل فشلت: التعليمات بتتحفظ كتسجيل فاشل — والنتيجة بتتسلّم عادي
+                keep_tmp = not self._keep_failure("edit", wav, "مقدرتش أحفظ التسجيل في السجل",
+                                                  op, dur, raw=instruction)
+            saved = True
+            # M6: الحقن بيعيد فحص الهدف بعد انتظار الفوكس (guard) — لو اتغيّر،
+            # paste_text بيتسلّم (رسالة بزرار نسخ) بدل ما يكتب فوق حاجة تانية.
+            res = paste_text(result, target, guard=lambda: winput.same_target(op))
+            # M7: auto_paste مقفول والنسخة فشلت → مفيش حاجة وصلت: خطأ بدل on_unplaced + "done"
+            if res == "clip_failed":
+                self.on_state("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني")
+                return keep_tmp
+            if res in ("failed", "handoff"):
+                self.on_unplaced(result)
+            if res in ("placed", "handoff", "failed"):
+                self.on_state("done", "edit")
+            return keep_tmp
+        except Exception as e:
+            log_error(e, "process/edit")
+            if saved:                           # التسجيل اتحفظ قبل الغلط — مفيش صف تاني
+                self.on_state("err", friendly_error(e))
+                return keep_tmp
+            return self._edit_failed(wav, op, dur, friendly_error(e), instruction or "")
+
+    def _edit_failed(self, wav, op, dur, message, raw, report=True):
+        """تعديل فشل: التسجيل (والتعليمات لو اتفرّغت) بيتحفظ كفاشل. True = الملف المؤقت يفضل."""
+        keep_tmp = not self._keep_failure("edit", wav, message, op, dur, raw=raw)
+        if report:
+            self.on_state("err", message)
+        return keep_tmp
 
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
     def start_hotkey(self):
