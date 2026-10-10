@@ -104,7 +104,9 @@ what was in progress if the app dies between two steps:
   `os.replace`) by a tombstone `{"deleted": true}`. `history_delete` and `history_clear` write it
   **before** their History write and restore the sidecars if that write fails. Then the WAV
   (and MP3) are removed, and the sidecar last, only once the WAV is gone. A WAV with a tombstone
-  means an interrupted removal: Recovery finishes it. A sidecar without a WAV is leftover and is
+  means an interrupted removal: Recovery finishes it, even when the History row is still
+  there (a failed row is dropped; a resolved row keeps its MP3), deleting files only after the
+  History write succeeds. A sidecar without a WAV is leftover and is
   removed. So neither a crash nor a failed file delete can lose a recording or resurrect one that
   was deleted or resolved.
 

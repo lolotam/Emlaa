@@ -218,6 +218,28 @@ class TestCrashSafety(_Store):
                 self.assertNotIn(rid, [i["id"] for i in core.history_get()])
                 self.assertEqual(self.files(rid), set())
 
+    def test_crash_before_the_history_write_still_finishes_the_removal(self):
+        crash_history = (lambda rid: mock.patch.object(core, "_write_list", side_effect=_Crash("write")),
+                         lambda rid: _crash_when("remove", lambda path: str(path) == self.hist))
+        for action, crash in zip((lambda rid: core.history_delete([rid]), lambda rid: core.history_clear()),
+                                 crash_history):
+            with self.subTest(action=action):
+                rid = self.keep()
+                with crash(rid), self.assertRaises(_Crash):
+                    action(rid)
+                core.recordings_prune()
+                self.assertNotIn(rid, [i["id"] for i in core.history_get()])
+                self.assertEqual(self.files(rid), set())
+
+    def test_crash_while_resolving_keeps_the_resolved_entry_and_its_mp3(self):
+        rid = self.keep()
+        with _crash_when("remove", lambda path: str(path).endswith(".wav")), self.assertRaises(_Crash):
+            core.history_resolve(rid, "الكلام", "الكلام", None)
+        core.recordings_prune()
+        [entry] = self.items()
+        self.assertNotIn("status", entry)
+        self.assertEqual(self.files(rid), {"mp3"})
+
     def test_failed_delete_write_keeps_the_entry_recoverable(self):
         rid = self.keep()
         with mock.patch.object(core, "_write_list", side_effect=OSError("locked")):

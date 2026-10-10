@@ -68,6 +68,13 @@ class TestFailedToast(unittest.TestCase):
         self.toast = self.root = None
         gc.collect()
 
+    def test_a_new_toast_of_another_kind_replaces_it(self):
+        emlaa.FailedToast.show_for(self.root, "سبب", lambda: None)
+        failed = emlaa._Toast._current
+        emlaa.ResultToast.show_for(self.root, "نص")
+        self.assertFalse(failed.winfo_exists())
+        emlaa._Toast._current.destroy()
+
     def test_open_history_button_opens_it_and_closes(self):
         self.toast._open()
         self.assertEqual(self.opened, [1])

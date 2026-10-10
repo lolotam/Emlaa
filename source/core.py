@@ -618,38 +618,57 @@ def _read_sidecar(rid):
         return None
 
 
+def _drop_failed_row(items, rid):
+    """صف فاشل لسه في السجل وعليه علامة «اتمسح» = المسح اتقطع قبل كتابة السجل — بيتشال. True لو اتشال."""
+    idx = next((k for k, i in enumerate(items) if i.get("id") == rid and _is_failed(i)), None)
+    if idx is None:
+        return False
+    items.pop(idx)
+    return True
+
+
 def _recover_failed(items):
     """
-    تسجيل فاشل صوته موجود وصفه مش في السجل (السجل باظ، كتابته فشلت، أو البرنامج اتقفل) بيرجع
-    في مكانه بالترتيب — من ملف بياناته، أو من الصوت نفسه لو النشر اتقطع قبل ملف البيانات. اللي
-    عليه علامة «اتمسح» مسحه بيكمل؛ ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
+    ملفات التسجيلات الفاشلة بتقول إيه اللي كان شغّال لو البرنامج اتقفل في النص:
+    - WAV صفه مش في السجل (السجل باظ، كتابته فشلت، أو النشر اتقطع) بيرجع في مكانه بالترتيب —
+      من ملف بياناته، أو من الصوت نفسه لو النشر اتقطع قبل ملف البيانات.
+    - علامة «اتمسح» = مسح أو تفريغ يدوي اتقطع: بيكمل حتى لو الصف لسه في السجل — الفاشل بيتشال،
+      واللي اتفرّغ بيفضل بصوته الـMP3. الملفات بتتمسح بعد ما السجل يتكتب بس.
+    - ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
     """
     live = {i.get("id") for i in items}
-    added = False
-    for rid in sorted(_ids_with(".wav") - live - set(_retrying), reverse=True):
+    finish, changed = [], False
+    for rid in sorted(_ids_with(".wav") - set(_retrying), reverse=True):
         try:
             entry = _read_sidecar(rid)
         except Exception as e:
             log_error(e, "recordings/recover")
             continue
+        if isinstance(entry, dict) and entry.get("deleted"):
+            changed = _drop_failed_row(items, rid) or changed
+            finish.append(rid)
+            continue
+        if rid in live:
+            continue
         if entry is None:
             entry = _entry_from_wav(rid)
-        elif not isinstance(entry, dict) or entry.get("deleted"):
-            _remove_failed_files(rid)
-            continue
-        elif entry.get("id") != rid:
+        elif not isinstance(entry, dict) or entry.get("id") != rid:
             continue
         pos = next((k for k, i in enumerate(items) if (i.get("id") or 0) < rid), len(items))
         items.insert(pos, entry)
-        added = True
+        changed = True
     # ملف بيانات من غير صوت = مسح كمّل لنصه — مالوش لازمة
     for rid in _ids_with(".json") - _ids_with(".wav") - set(_retrying):
         _silent_remove(failed_sidecar_path(rid))
-    if added:
+    if changed:
         try:
             _write_list(HISTORY_PATH, items)
         except Exception as e:
             log_error(e, "history/write")
+            return items                   # العلامات بتفضل — المسح بيكمل بعد أول كتابة تنجح
+    resolved = {i.get("id") for i in items}  # اللي فاضل في السجل من اللي عليهم علامة = اتفرّغوا
+    for rid in finish:
+        _remove_failed_files(rid, keep_mp3=rid in resolved)
     return items
 
 

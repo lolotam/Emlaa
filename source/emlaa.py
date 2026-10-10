@@ -514,12 +514,13 @@ class _Toast(tk.Toplevel):
 
     @classmethod
     def show_for(cls, master, *args):
-        if cls._current is not None:
+        # خانة واحدة لكل الأنواع: الرسايل كلها بتظهر في نفس المكان — الجديدة بتشيل القديمة
+        if _Toast._current is not None:
             try:
-                cls._current.destroy()
+                _Toast._current.destroy()
             except Exception:
                 pass
-        cls._current = cls(master, *args)
+        _Toast._current = cls(master, *args)
 
     def __init__(self, master):
         super().__init__(master)
