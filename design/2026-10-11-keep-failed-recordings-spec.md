@@ -95,11 +95,18 @@ delete** its temporary WAV — it logs the temp path ("الصوت لسه في �
 destroyed by our own cleanup. If only the History write fails, the WAV and sidecar are published
 and Recovery will list the entry again.
 
-Removing a failed recording's files (explicit delete, clear, successful resolution) always
-removes the **sidecar first**: it is what Recovery reads. If removing the sidecar fails, it is
-replaced (temp + `os.replace`) by a tombstone `{"deleted": true}`; Recovery skips tombstones and
-sidecars without a WAV. Only then are the WAV and MP3 removed, so a failed file delete can never
-resurrect an entry that was deleted or resolved.
+**Crash-safe file protocol** (PR #17 review, round 2). The files on disk must say unambiguously
+what was in progress if the app dies between two steps:
+- Publish: WAV first, then the sidecar. A `<id>.wav` without a sidecar therefore always means an
+  interrupted publish, and Recovery restores it as a failed entry built from the WAV
+  (`RECOVERED_ERROR`, time from the id, `dur` from the WAV, mode `normal`).
+- Removal (explicit delete, clear, successful resolution): the sidecar is first replaced (temp +
+  `os.replace`) by a tombstone `{"deleted": true}`. `history_delete` and `history_clear` write it
+  **before** their History write and restore the sidecars if that write fails. Then the WAV
+  (and MP3) are removed, and the sidecar last, only once the WAV is gone. A WAV with a tombstone
+  means an interrupted removal: Recovery finishes it. A sidecar without a WAV is leftover and is
+  removed. So neither a crash nor a failed file delete can lose a recording or resurrect one that
+  was deleted or resolved.
 
 `history_add` returns the id **only after a successful write** (it returned the id even when
 the write failed, so a caller assumed a row that did not exist). `process` treats a `None` from
@@ -122,7 +129,8 @@ the transcript as `raw`.
 ### Recovery
 
 `recordings_prune` (under the lock, after a successful read of `history.json`) re-inserts the
-sidecar entry of every `<id>.wav` whose id is missing from History (skipping tombstones), at its
+sidecar entry (or, without a sidecar, an entry built from the WAV) of every `<id>.wav` whose
+id is missing from History (finishing the removal of tombstoned ones), at its
 time-ordered position, outside the success cap like any failed entry — so a corrupt or reset
 `history.json` (which `_load_for_write` backs up and replaces with `[]`) can never make a failed
 recording unreachable. Explicit deletion removes the WAV, sidecar and MP3, so a deleted entry is

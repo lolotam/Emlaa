@@ -27,6 +27,7 @@ const EN = {
   "التسجيل ده بيتفرّغ دلوقتي": "This recording is being transcribed right now",
   "مقدرتش أحفظ التسجيل في السجل": "Couldn't save the recording to History",
   "اتفرّغ بس مقدرتش أحفظه في السجل — انسخه دلوقتي": "Transcribed, but couldn't save it to History — copy it now",
+  "البرنامج اتقفل قبل ما التسجيل يكمّل حفظه — جرّب التفريغ اليدوي": "The app closed before this recording finished saving — try Transcribe again",
   "الإصدار": "Version", "تحقق من التحديثات": "Check for updates",
   "فاتح / غامق": "Light / dark", "تصغير": "Minimize", "إغلاق (يفضل شغّال جنب الساعة)": "Close (keeps running in the tray)",
   "English / عربي": "English / عربي",

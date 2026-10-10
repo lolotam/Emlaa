@@ -354,6 +354,7 @@ class TestStaticUiChecks(unittest.TestCase):
             self.assertIn('"%s":' % ar, self.i18n, ar)
         # رسايل التفريغ اليدوي والفشل بتيجي من Python وبتظهر في السجل والتنبيه زي ما هي
         for ar in (core.RETRY_DELETED, core.AI_FAILED_NOTE, core.EMPTY_TRANSCRIPT, core.RETRY_NOT_SAVED,
+                   core.RECOVERED_ERROR,
                    "التسجيل ده مش موجود أو اتفرّغ خلاص", "التسجيل ده بيتفرّغ دلوقتي",
                    "مقدرتش أحفظ التسجيل في السجل"):
             self.assertIn('"%s":' % ar, self.i18n, ar)

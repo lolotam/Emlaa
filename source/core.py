@@ -309,9 +309,9 @@ def _allocate_id(items):
     return rid
 
 
-def _time_fields():
+def _time_fields(when=None):
     import datetime
-    now = datetime.datetime.now()
+    now = when or datetime.datetime.now()
     return {"time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "time_display": now.strftime("%I:%M %p").lstrip("0"),
             "date_display": now.strftime("%Y/%m/%d")}
@@ -432,24 +432,45 @@ def history_entry(rid):
     return next((i for i in _read_list(HISTORY_PATH)[0] if i.get("id") == rid), None)
 
 
+def _replace_json(path, obj):
+    """كتابة ذرية (ملف مؤقت ← os.replace): قفل مفاجئ عمره ما يسيب ملف نصه مكتوب."""
+    tmp = path + "." + uuid.uuid4().hex[:8] + ".tmp"
+    _write_json(tmp, obj)
+    os.replace(tmp, path)
+
+
+def _mark_deleted(rids):
+    """
+    نية المسح بتتكتب في ملف البيانات قبل السجل: لو البرنامج اتقفل بين الاتنين، الاسترجاع
+    بيشوف العلامة ويكمّل المسح بدل ما يرجّع التسجيل اللي صاحبه مسحه.
+    """
+    for rid in rids:
+        try:
+            _replace_json(failed_sidecar_path(rid), {"deleted": True})
+        except Exception as e:
+            log_error(e, "recordings/tombstone")
+
+
+def _restore_sidecars(entries):
+    """كتابة السجل فشلت بعد علامة المسح: ملفات البيانات بترجع للصفوف اللي لسه عايشة."""
+    for entry in entries:
+        try:
+            _replace_json(failed_sidecar_path(entry["id"]), entry)
+        except Exception as e:
+            log_error(e, "recordings/sidecar")
+
+
 def _remove_failed_files(rid, keep_mp3=False):
     """
-    ملف البيانات الأول — هو اللي الاسترجاع بيقراه. لو مسحه فشل بيتبدّل بـ«اتمسح» عشان
-    التسجيل مايرجعش؛ وبعدين الـWAV، والـMP3 (إلا بعد تفريغ يدوي ناجح: بقى صوت تسجيل عادي).
+    الترتيب: علامة «اتمسح» ← الـWAV (والـMP3 إلا بعد تفريغ يدوي ناجح: بقى صوت تسجيل عادي)
+    ← ملف البيانات. قفل مفاجئ في النص بيسيب WAV بعلامة (الاسترجاع بيكمّل المسح) أو ملف
+    بيانات لوحده (التنضيف بيشيله) — عمره ما يسيب WAV من غير ملف بياناته: دي علامة «نشر اتقطع».
     """
-    side = failed_sidecar_path(rid)
-    try:
-        if os.path.exists(side):
-            os.remove(side)
-    except Exception as e:
-        log_error(e, "recordings/remove-failed")
-        try:
-            tmp = side + "." + uuid.uuid4().hex[:8] + ".tmp"
-            _write_json(tmp, {"deleted": True})
-            os.replace(tmp, side)
-        except Exception as e2:
-            log_error(e2, "recordings/tombstone")
-    _silent_remove(failed_wav_path(rid), *(() if keep_mp3 else (recording_path(rid),)))
+    _mark_deleted([rid])
+    wav = failed_wav_path(rid)
+    _silent_remove(wav, *(() if keep_mp3 else (recording_path(rid),)))
+    if not os.path.exists(wav):                # الـWAV لسه موجود = العلامة لازم تفضل جنبه
+        _silent_remove(failed_sidecar_path(rid))
 
 
 def history_resolve(rid, raw, result, engine):
@@ -490,12 +511,7 @@ def history_fail_again(rid, error):
         except Exception as e:
             log_error(e, "history/write")
             return False
-        try:
-            tmp = failed_sidecar_path(rid) + "." + uuid.uuid4().hex[:8] + ".tmp"
-            _write_json(tmp, entry)
-            os.replace(tmp, failed_sidecar_path(rid))
-        except Exception as e:
-            log_error(e, "recordings/sidecar")
+        _restore_sidecars([entry])
         return True
 
 
@@ -578,32 +594,57 @@ def _remove_stray_tmp():
         log_error(e, "recordings/prune")
 
 
+def _entry_from_wav(rid):
+    """صف لتسجيل فاشل البرنامج اتقفل بين نشر صوته وملف بياناته — التفاصيل ضاعت، الصوت لأ."""
+    import datetime
+    try:
+        when = datetime.datetime.fromtimestamp(rid / 1000)
+    except (OverflowError, OSError, ValueError):     # اسم ملف مش وقت حقيقي
+        when = None
+    entry = dict(_time_fields(when), id=rid, mode="normal", raw="", result="", words=0,
+                 status=FAILED, error=RECOVERED_ERROR)
+    dur = _wav_seconds(failed_wav_path(rid))
+    if dur:
+        entry["dur"] = round(dur, 2)
+    return entry
+
+
+def _read_sidecar(rid):
+    """الصف المحفوظ جنب الصوت، None لو مفيش ملف — وبيرمي لو الملف مايتقريش."""
+    try:
+        with open(failed_sidecar_path(rid), encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
 def _recover_failed(items):
     """
-    تسجيل فاشل صوته موجود وصفه مش في السجل (السجل باظ واتعمله backup، أو كتابته فشلت):
-    بيرجع من ملف بياناته في مكانه بالترتيب. اللي اتمسح بإيد صاحبه (ملف البيانات اتمسح أو عليه
-    علامة deleted) صوته بيتمسح؛ ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
+    تسجيل فاشل صوته موجود وصفه مش في السجل (السجل باظ، كتابته فشلت، أو البرنامج اتقفل) بيرجع
+    في مكانه بالترتيب — من ملف بياناته، أو من الصوت نفسه لو النشر اتقطع قبل ملف البيانات. اللي
+    عليه علامة «اتمسح» مسحه بيكمل؛ ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
     """
     live = {i.get("id") for i in items}
     added = False
     for rid in sorted(_ids_with(".wav") - live - set(_retrying), reverse=True):
         try:
-            with open(failed_sidecar_path(rid), encoding="utf-8") as f:
-                entry = json.load(f)
-        except FileNotFoundError:
-            _silent_remove(failed_wav_path(rid))
-            continue
+            entry = _read_sidecar(rid)
         except Exception as e:
             log_error(e, "recordings/recover")
             continue
-        if isinstance(entry, dict) and entry.get("deleted"):
-            _silent_remove(failed_wav_path(rid), failed_sidecar_path(rid))
+        if entry is None:
+            entry = _entry_from_wav(rid)
+        elif not isinstance(entry, dict) or entry.get("deleted"):
+            _remove_failed_files(rid)
             continue
-        if not isinstance(entry, dict) or entry.get("id") != rid:
+        elif entry.get("id") != rid:
             continue
         pos = next((k for k, i in enumerate(items) if (i.get("id") or 0) < rid), len(items))
         items.insert(pos, entry)
         added = True
+    # ملف بيانات من غير صوت = مسح كمّل لنصه — مالوش لازمة
+    for rid in _ids_with(".json") - _ids_with(".wav") - set(_retrying):
+        _silent_remove(failed_sidecar_path(rid))
     if added:
         try:
             _write_list(HISTORY_PATH, items)
@@ -655,15 +696,19 @@ def history_prune():
 def history_clear():
     """يمسح السجل بالكامل — وصوت التسجيلات الفاشلة كمان، بعد ما المسح ينجح بس."""
     with _store_lock:
+        # حتى اللي بيتفرّغ دلوقتي: التفريغ شغّال على نسخة خاصة، والمسح لازم يكسب — لو ملفاته
+        # فضلت، الاسترجاع كان هيرجّع صفه للسجل تاني
+        doomed = _ids_with(".wav")
+        failed = [i for i in _read_list(HISTORY_PATH)[0] if _is_failed(i) and i.get("id") in doomed]
+        _mark_deleted(doomed)
         try:
             if os.path.exists(HISTORY_PATH):
                 os.remove(HISTORY_PATH)
         except Exception as e:
             log_error(e, "history/clear")
+            _restore_sidecars(failed)
             return
-        # حتى اللي بيتفرّغ دلوقتي: التفريغ شغّال على نسخة خاصة، والمسح لازم يكسب — لو ملفاته
-        # فضلت، الاسترجاع كان هيرجّع صفه للسجل تاني
-        for rid in _ids_with(".wav"):
+        for rid in doomed:
             _remove_failed_files(rid)
     recordings_prune()
 
@@ -672,13 +717,17 @@ def history_delete(ids):
     """يمسح تسجيلات معيّنة بالـid — وملفات الفاشل منها بعد ما الكتابة تنجح بس."""
     ids = set(ids or [])
     with _store_lock:
-        items = [i for i in _load_for_write(HISTORY_PATH, "history/read") if i.get("id") not in ids]
+        items = _load_for_write(HISTORY_PATH, "history/read")
+        doomed = ids & _ids_with(".wav")
+        failed = [i for i in items if _is_failed(i) and i.get("id") in doomed]
+        _mark_deleted(doomed)
         try:
-            _write_list(HISTORY_PATH, items)
+            _write_list(HISTORY_PATH, [i for i in items if i.get("id") not in ids])
         except Exception as e:
             log_error(e, "history/write")
+            _restore_sidecars(failed)
             return
-        for rid in ids & _ids_with(".wav"):
+        for rid in doomed:
             _remove_failed_files(rid)
     recordings_prune()
 
@@ -1601,6 +1650,7 @@ EMPTY_TRANSCRIPT = "مطلعش نص — قرّب من الميك وجرّب تا
 RETRY_DELETED = "التسجيل اتمسح"
 AI_FAILED_NOTE = "مقدرتش أحوّله — ده الكلام زي ما اتقال"
 RETRY_NOT_SAVED = "اتفرّغ بس مقدرتش أحفظه في السجل — انسخه دلوقتي"
+RECOVERED_ERROR = "البرنامج اتقفل قبل ما التسجيل يكمّل حفظه — جرّب التفريغ اليدوي"
 HISTORY_WRITE_FAILED = "مقدرتش أحفظ التسجيل في السجل"
 
 

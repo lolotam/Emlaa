@@ -156,7 +156,7 @@ class TestExplicitRemoval(_Store):
         self.assertTrue(all(self.files(r) == set() for r in rids))
         self.assertFalse(os.path.exists(self.hist) and self.items())
 
-    def test_failed_sidecar_removal_leaves_a_tombstone_recovery_skips(self):
+    def test_failed_sidecar_removal_never_brings_the_entry_back(self):
         rid = self.keep()
         real_remove = os.remove
 
@@ -169,8 +169,7 @@ class TestExplicitRemoval(_Store):
             core.history_delete([rid])
         core.recordings_prune()
         self.assertEqual(self.items(), [])
-        with open(os.path.join(self.recs, "%d.json" % rid), encoding="utf-8") as f:
-            self.assertEqual(json.load(f), {"deleted": True})
+        self.assertEqual(self.files(rid), set())
 
     def test_delete_whose_history_write_fails_keeps_the_files(self):
         rid = self.keep()
@@ -179,8 +178,58 @@ class TestExplicitRemoval(_Store):
         self.assertEqual(self.files(rid), {"wav", "json", "mp3"})
 
 
+class _Crash(BaseException):
+    """قفل مفاجئ للبرنامج: مش Exception، فمفيش except في الكود بيمسكه — زي ما الحالة بتقف في النص."""
+
+
+def _crash_when(name, predicate):
+    """core.os.<name> بيقفل البرنامج لما predicate(path...) يتحقق، والباقي حقيقي."""
+    real = getattr(core.os, name)
+
+    def call(*args, **kw):
+        if predicate(*args):
+            raise _Crash(name)
+        return real(*args, **kw)
+    return mock.patch.object(core.os, name, side_effect=call)
+
+
+class TestCrashSafety(_Store):
+    """البرنامج بيتقفل في النص بين خطوتين: الاسترجاع عمره ما يضيّع تسجيل ولا يرجّع واحد اتمسح."""
+
+    def test_crash_between_audio_and_sidecar_publish_keeps_the_recording(self):
+        with _crash_when("replace", lambda src, dst: dst.endswith(".json")), \
+                self.assertRaises(_Crash):
+            self.keep()
+        core.recordings_prune()
+        [entry] = self.items()
+        self.assertEqual((entry["status"], entry["error"]), ("failed", core.RECOVERED_ERROR))
+        self.assertIn("wav", self.files(entry["id"]))
+
+    def test_crash_after_delete_or_clear_does_not_bring_it_back(self):
+        for action in (lambda rid: core.history_delete([rid]), lambda rid: core.history_clear()):
+            with self.subTest(action=action):
+                rid = self.keep()
+                # أول لمسة لملفات التسجيل بعد كتابة السجل — النقطة اللي القفل فيها كان بيرجّعه
+                in_recs = lambda path: (os.path.dirname(str(path)) == self.recs
+                                        and str(path).endswith((".wav", ".json")))
+                with _crash_when("remove", in_recs), self.assertRaises(_Crash):
+                    action(rid)
+                core.recordings_prune()
+                self.assertNotIn(rid, [i["id"] for i in core.history_get()])
+                self.assertEqual(self.files(rid), set())
+
+    def test_failed_delete_write_keeps_the_entry_recoverable(self):
+        rid = self.keep()
+        with mock.patch.object(core, "_write_list", side_effect=OSError("locked")):
+            core.history_delete([rid])
+        with open(self.hist, "w", encoding="utf-8") as f:
+            f.write("[]")                        # السجل باظ بعدها — ملف البيانات لازم يكون سليم
+        core.recordings_prune()
+        self.assertEqual([i["id"] for i in self.items()], [rid])
+
+
 class TestOrphanAudio(_Store):
-    """صوت تسجيل فاشل صفه مش في السجل: بيرجع لو ملف بياناته سليم، وبيتمسح لو اتمسح بإيد صاحبه."""
+    """صوت تسجيل فاشل صفه مش في السجل: بيرجع ما لم يكون عليه علامة «اتمسح»."""
 
     def orphan(self, rid, sidecar):
         os.makedirs(self.recs, exist_ok=True)
@@ -190,12 +239,17 @@ class TestOrphanAudio(_Store):
             with open(os.path.join(self.recs, "%d.json" % rid), "w", encoding="utf-8") as f:
                 f.write(sidecar)
 
-    def test_wav_without_sidecar_or_with_tombstone_is_removed(self):
-        for rid, sidecar in ((11, None), (12, json.dumps({"deleted": True}))):
-            with self.subTest(sidecar=sidecar):
-                self.orphan(rid, sidecar)
-                core.recordings_prune()
-                self.assertEqual(self.files(rid), set())
+    def test_tombstoned_wav_is_removed(self):
+        self.orphan(12, json.dumps({"deleted": True}))
+        core.recordings_prune()
+        self.assertEqual(self.files(12), set())
+
+    def test_sidecar_without_audio_is_removed(self):
+        os.makedirs(self.recs, exist_ok=True)
+        with open(os.path.join(self.recs, "14.json"), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"deleted": True}))
+        core.recordings_prune()
+        self.assertEqual(self.files(14), set())
 
     def test_unreadable_sidecar_keeps_the_audio(self):
         self.orphan(13, "{not json")
