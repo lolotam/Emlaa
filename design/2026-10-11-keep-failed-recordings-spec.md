@@ -232,8 +232,10 @@ before calling it. Password-field handling stays in `process` (no conversion whe
   afterwards the list reloads and a toast reports success or the new error.
 - Home: "Last result" skips failed entries; "Recent" shows a failed row as "⚠ فشل التفريغ".
 - Classic Tk UI: `_start_engine` wires `on_failed` to the same failure toast, whose button opens
-  the classic history window; there a failed entry shows "⚠ فشل التفريغ — <error>" and no copy
-  button (no retry — the classic UI is the fallback when the web UI can't load).
+  the classic history window; there a failed entry shows "⚠ فشل التفريغ — <error>" and a
+  **تفريغ يدوي** button instead of copy (PR #17 gate review: the toast sends classic users there,
+  so it must offer the action). The retry runs in a thread; success shows the result in
+  `ResultToast` (with Copy) and the list reloads; a failure shows the new error in the row.
 - Every new Arabic string has an `EN` entry in `i18n.js`.
 
 ## Privacy

@@ -1023,6 +1023,23 @@ class EmlaaClassic(tk.Tk):
             core.history_clear()
             render_items()
 
+        def retry(rid, btn):
+            # التفريغ اليدوي بيكلّم المزوّد — في ثريد عشان النافذة ماتعلّقش. النتيجة بتظهر برسالة
+            # فيها «نسخ» (عمرها ما بتتكتب)، والغلط الجديد بيظهر في صف التسجيل نفسه
+            btn.config(text=R("بيفرّغ…"), state="disabled")
+
+            def done(res):
+                if d.winfo_exists():
+                    render_items()
+                if res.get("ok"):
+                    ResultToast.show_for(self, res["result"])
+
+            def run():
+                res = core.retranscribe(rid)
+                self.after(0, lambda: done(res))
+
+            threading.Thread(target=run, daemon=True).start()
+
         clr_btn = tk.Button(head, text=R("مسح السجل"), bg=CARD, fg=MUTED, bd=0,
                             font=(FONT, 8, "bold"), activebackground=BORDER,
                             activeforeground=RED, cursor="hand2", padx=9, pady=3,
@@ -1083,10 +1100,15 @@ class EmlaaClassic(tk.Tk):
                 top.pack(fill="x", padx=12, pady=(10, 4))
 
                 res_text = item.get("result", "")
-                # التسجيل الفاشل: السبب مكان النتيجة ومفيش نسخ — التفريغ اليدوي من الواجهة الأساسية
+                # التسجيل الفاشل: السبب مكان النتيجة، و«تفريغ يدوي» مكان النسخ
                 failed = item.get("status") == "failed"
                 if failed:
                     res_text = "⚠ فشل التفريغ — " + str(item.get("error") or "")
+                    b_retry = tk.Button(top, text=R("تفريغ يدوي"), bg=FIELD, fg=FG, bd=0,
+                                        font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
+                                        activebackground=BORDER, activeforeground=FG)
+                    b_retry.config(command=lambda rid=item.get("id"), btn=b_retry: retry(rid, btn))
+                    b_retry.pack(side="left")
                 else:
                     b_copy = tk.Button(top, text=R("نسخ"), bg=FIELD, fg=MUTED, bd=0,
                                        font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",

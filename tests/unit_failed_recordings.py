@@ -240,6 +240,15 @@ class TestCrashSafety(_Store):
         self.assertNotIn("status", entry)
         self.assertEqual(self.files(rid), {"mp3"})
 
+    def test_crash_right_after_resolving_drops_the_failure_files(self):
+        rid = self.keep()
+        tombstone = lambda src, dst: os.path.dirname(dst) == self.recs and dst.endswith(".json")
+        with _crash_when("replace", tombstone), self.assertRaises(_Crash):
+            core.history_resolve(rid, "الكلام", "الكلام", None)
+        core.recordings_prune()
+        self.assertNotIn("status", self.items()[0])
+        self.assertEqual(self.files(rid), {"mp3"})
+
     def test_failed_delete_write_keeps_the_entry_recoverable(self):
         rid = self.keep()
         with mock.patch.object(core, "_write_list", side_effect=OSError("locked")):

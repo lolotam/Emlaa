@@ -637,8 +637,11 @@ def _recover_failed(items):
     - ملف بيانات مايتقريش بيفضل زي ما هو (مانمسحش صوت مش متأكدين منه).
     """
     live = {i.get("id") for i in items}
-    finish, changed = [], False
-    for rid in sorted(_ids_with(".wav") - set(_retrying), reverse=True):
+    wavs = _ids_with(".wav") - set(_retrying)
+    # صف ناجح لسه جنبه WAV = تفريغ يدوي اتكتب في السجل والبرنامج اتقفل قبل ما يشيل ملفات الفشل
+    finish = [i.get("id") for i in items if not _is_failed(i) and i.get("id") in wavs]
+    changed = False
+    for rid in sorted(wavs - set(finish), reverse=True):
         try:
             entry = _read_sidecar(rid)
         except Exception as e:
