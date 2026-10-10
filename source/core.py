@@ -1530,6 +1530,53 @@ class Operation:
 NO_AI_MSG = "اتفرّغ بس — الميزة دي مالهاش موديل معالجة (ضيفه من الإعدادات)"
 EDIT_NO_AI_MSG = "التعديل محتاج موديل معالجة — ضيفه من تاب «تعديل» في الإعدادات"
 
+# ── معالجة النص بعد التفريغ — مشتركة بين التسجيل الحي والتفريغ اليدوي ─────────
+Converted = collections.namedtuple("Converted", "out raw bypass snippet ai_failed")
+
+
+def _is_raw(mode):
+    """
+    خام = مفيش معالجة بالـAI ولا تنضيف محلي: «تفريغ حرفي» من جنب الساعة، أو قايمة
+    معالجة الميزة فاضية. قايمة المعالجة بتشتغل مهما كان مين فرّغ — المحلي أول القايمة
+    اختيار (خصوصية/سرعة) مش «مفيش نت».
+    """
+    return not CFG.get("polish", True) or not feature(mode).get("ai")
+
+
+def convert_text(client, mode, text, app=""):
+    """
+    النص بعد التفريغ ← النص اللي بيتكتب، من غير أي أثر على الواجهة. ai_failed = البرومبت أو
+    الترجمة ليهم موديلات وولا واحد ردّ (رجع الكلام الخام). خانات الباسورد مابتعدّيش من هنا.
+    """
+    raw = _is_raw(mode)
+    has_ai = bool(feature(mode).get("ai"))
+    bypass, snippet = False, None
+    if mode in ("prompt", "translate") and not has_ai:
+        out = text                    # قايمة المعالجة فاضية: الكلام زي ما اتقال — ولا نداء لموديل
+    elif mode == "prompt":
+        out = client.to_prompt(text)
+    elif mode == "translate":
+        out = client.translate(text)
+    else:
+        # F8 (الوضع العادي): لو الكلام كله اختصار صوتي محفوظ، النص بيتوسّع لنص الاختصار
+        # حرفيًا — من غير أي لفة موديل ولا تنضيف، لأن النص المخزّن (IBAN/عنوان/إيميل) ممن
+        # يتغيّر ولو بحرف. بيعتمد على التطبيع مش على التطابق الحرفي.
+        snippet = smart.match_snippet(text, CFG.get("snippets"))
+        if snippet is not None:
+            out = snippet.get("text", "")
+        elif raw:
+            out = text
+        elif smart.should_bypass(text, mode, CFG):
+            # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة — التنظيف المحلي أسرع
+            # ومابيغيّرش الكلمة اللي اتقالت
+            out, bypass = smart.light_clean(text), True
+        else:
+            # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
+            out = client.polish(text, profile=smart.app_profile(app, CFG))
+    ai_failed = mode in ("prompt", "translate") and has_ai and not getattr(client, "ai_ok", True)
+    return Converted(out, raw, bypass, snippet, ai_failed)
+
+
 CAPTURE_TIMEOUT_ERR = "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار"
 
 
@@ -1977,48 +2024,18 @@ class App:
             if not text:
                 self.on_state("ready", "مطلعش نص — قرّب من الميك وجرّب تاني")
                 return
-            # خام = مفيش معالجة بالـAI ولا تنضيف محلي: «تفريغ حرفي» من جنب الساعة، أو
-            # قايمة معالجة العادي فاضية. قايمة المعالجة بتشتغل مهما كان مين فرّغ — المحلي
-            # أول القايمة اختيار (خصوصية/سرعة) مش «مفيش نت».
-            raw = not CFG.get("polish", True) or not feature(cur_mode).get("ai")
-
-            bypass = False
-            snippet = None
             if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
                 # ولا تنضيف محلي — النص بيتكتب زي ما اتفرّغ. حتى لو المستخدم
                 # اختار برومبت أو ترجمة، كلمة السر عمرها ماتوصل للموديل.
                 # وبرضه مفيش توسيع اختصار: نص الاختصار (IBAN/عنوان/إيميل) ممن
                 # يندسّ في خانة باسورد.
-                out = text
-            elif not feature(cur_mode).get("ai") and cur_mode in ("prompt", "translate"):
-                # قايمة المعالجة فاضية: الكلام زي ما اتقال — ولا نداء لأي موديل
-                out = text
-            elif cur_mode == "prompt":
-                self.on_state("prompt", "بجهّز البرومبت…")
-                out = cl.to_prompt(text)
-            elif cur_mode == "translate":
-                self.on_state("translate", "بترجم الكلام…")
-                out = cl.translate(text)
+                conv = Converted(text, _is_raw(cur_mode), False, None, False)
             else:
-                # F8 (الوضع العادي): لو الكلام كله اختصار صوتي محفوظ، النص بيتوسّع
-                # لنص الاختصار حرفيًا — من غير أي لفة موديل ولا تنضيف، لأن النص
-                # المخزّن (IBAN/عنوان/إيميل) ممن يتغيّر ولو بحرف. بيعتمد على
-                # التطبيع مش على التطابق الحرفي.
-                snippet = smart.match_snippet(text, CFG.get("snippets"))
-                if snippet is not None:
-                    out = snippet.get("text", "")
-                elif not raw:
-                    if smart.should_bypass(text, cur_mode, CFG):
-                        # رد يومي قصير (F2): مفيش قيمة للفة LLM كاملة —
-                        # التنظيف المحلي أسرع ومابيغيّرش الكلمة اللي اتقالت
-                        out = smart.light_clean(text)
-                        bypass = True
-                    else:
-                        # F5: لو البرنامج اللي قدامه عنده override، تنظيف النص ياخد أسلوبه
-                        out = cl.polish(text, profile=smart.app_profile(op.target_app, CFG))
-                else:
-                    out = text
+                if cur_mode in ("prompt", "translate") and feature(cur_mode).get("ai"):
+                    self.on_state(cur_mode, "بجهّز البرومبت…" if cur_mode == "prompt" else "بترجم الكلام…")
+                conv = convert_text(cl, cur_mode, text, op.target_app)
+            out, raw, bypass, snippet = conv.out, conv.raw, conv.bypass, conv.snippet
 
             # الموديل ممكن ياخد ثواني والفوكس يتحرّك في النص — فبنعيد قراية الفوكس
             # قبل تصنيف الهدف. الاستعلام الأخير ده هو اللي بيحدد مكان الكتابة.

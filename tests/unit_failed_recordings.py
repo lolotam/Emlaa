@@ -230,5 +230,71 @@ class TestStrayTemp(_Store):
         self.assertTrue(os.path.exists(fresh))
 
 
+class _ConvClient:
+    """عميل ميزة مزيّف: بيسجّل النداءات، وai_ok زي FeatureClient."""
+
+    def __init__(self, ai_ok=True):
+        self.calls, self.ai_ok = [], ai_ok
+
+    def to_prompt(self, t):
+        self.calls.append("prompt")
+        return "PROMPT:" + t if self.ai_ok else t
+
+    def translate(self, t):
+        self.calls.append("translate")
+        return "EN:" + t if self.ai_ok else t
+
+    def polish(self, t, profile=None):
+        self.calls.append(("polish", profile))
+        return "P:" + t
+
+
+def _cfg_with_ai(mode=None, ai=True, **over):
+    cfg = dict(core.DEFAULTS, **over)
+    cfg["features"] = json.loads(json.dumps(core.DEFAULTS["features"]))
+    if mode and not ai:
+        cfg["features"][mode]["ai"] = []
+    return cfg
+
+
+class TestConvertText(unittest.TestCase):
+    """المعالجة المشتركة بين التسجيل الحي والتفريغ اليدوي."""
+
+    def convert(self, mode, text, cfg=None, client=None, app=""):
+        client = client or _ConvClient()
+        with mock.patch.object(core, "CFG", cfg or _cfg_with_ai()):
+            return core.convert_text(client, mode, text, app), client
+
+    def test_prompt_and_translate_use_their_operation(self):
+        for mode, want in (("prompt", "PROMPT:طلب"), ("translate", "EN:طلب")):
+            with self.subTest(mode=mode):
+                conv, cl = self.convert(mode, "طلب")
+                self.assertEqual((conv.out, conv.ai_failed), (want, False))
+                self.assertEqual(cl.calls, [mode])
+
+    def test_failed_conversion_is_flagged(self):
+        conv, _ = self.convert("prompt", "طلب", client=_ConvClient(ai_ok=False))
+        self.assertEqual((conv.out, conv.ai_failed), ("طلب", True))
+
+    def test_empty_ai_list_calls_no_model(self):
+        conv, cl = self.convert("translate", "طلب", cfg=_cfg_with_ai("translate", ai=False))
+        self.assertEqual((conv.out, conv.ai_failed, cl.calls), ("طلب", False, []))
+
+    def test_normal_polishes_with_the_app_profile(self):
+        conv, cl = self.convert("normal", "الكلام ده جملة طويلة شوية عشان تتنضّف", app="code")
+        self.assertEqual(conv.out, "P:الكلام ده جملة طويلة شوية عشان تتنضّف")
+        self.assertEqual(cl.calls, [("polish", "dev")])
+        self.assertFalse(conv.raw)
+
+    def test_normal_raw_when_polish_is_off(self):
+        conv, cl = self.convert("normal", "الكلام زي ما هو", cfg=_cfg_with_ai(polish=False))
+        self.assertEqual((conv.out, conv.raw, cl.calls), ("الكلام زي ما هو", True, []))
+
+    def test_snippet_expands_without_a_model(self):
+        cfg = _cfg_with_ai(snippets=[{"trigger": "إيميلي", "text": "me@example.com"}])
+        conv, cl = self.convert("normal", "إيميلي", cfg=cfg)
+        self.assertEqual((conv.out, conv.snippet["trigger"], cl.calls), ("me@example.com", "إيميلي", []))
+
+
 if __name__ == "__main__":
     unittest.main()
