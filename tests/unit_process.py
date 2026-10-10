@@ -36,6 +36,9 @@ def setUpModule():
     for p in (mock.patch.object(core, "beep"),
               mock.patch.object(core, "ERR_LOG", os.path.join(tmp, "emlaa-error.log")),
               mock.patch.object(core, "_foreground_app", return_value=""),
+              # التسجيل الفاشل بيتحفظ — في مجلد مؤقت، مش ملفات المستخدم
+              mock.patch.object(core, "HISTORY_PATH", os.path.join(tmp, "history.json")),
+              mock.patch.object(core, "RECORDINGS_DIR", os.path.join(tmp, "recordings")),
               mock.patch.object(winput, "focused_info",
                                 return_value={"is_password": False, "class": "Edit", "editable": True})):
         p.start()
@@ -574,7 +577,8 @@ class TestProcess(unittest.TestCase):
             app.process("WAV", core.Operation(mode="normal"))
         self.assertFalse(app.busy)
         self.assertEqual(app.texts, [])
-        self.assertIn(("ready", "مطلعش نص — قرّب من الميك وجرّب تاني"), app.events)
+        # التفريغ الفاضي بقى «فشل»: الصوت اتحفظ في السجل عشان التفريغ اليدوي
+        self.assertIn(("err", "مطلعش نص — قرّب من الميك وجرّب تاني"), app.events)
 
     def test_process_normal_mode_success(self):
         # «مرحبا بالعالم» كلمة منها مش في قايمة التخطّي (العالم) → polish عادي
@@ -1312,6 +1316,8 @@ class TestRecordingSaveTmpCleanup(unittest.TestCase):
             stray = os.path.join(recs, "999.mp3.tmp")
             with open(stray, "wb") as f:
                 f.write(b"leftover")
+            old = time.time() - 700          # بقايا قديمة — الحديثة ممكن تكون كتابة لسه شغّالة
+            os.utime(stray, (old, old))
             with mock.patch.object(core, "RECORDINGS_DIR", recs), \
                     mock.patch.object(core, "HISTORY_PATH", os.path.join(d, "history.json")), \
                     mock.patch.object(core, "log_error"):

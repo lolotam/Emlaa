@@ -31,6 +31,7 @@
 | 📋 **مفيش خانة كتابة؟ ولا يهمك** | النص بيظهر على الشاشة ٣ ثواني بزرار «نسخ»، ويتحفظ في السجل دايمًا |
 | 🌊 **موجة عائمة** | بتظهر وقت التسجيل بس — أو زرار صغير بيتحرك ظاهر طول الوقت |
 | 🕘 **السجل** | كل اللي اتكتب بصوتك — مع خيار «احتفظ بآخر 10 بس» |
+| 🛟 **التسجيل مايضيعش** | لو التفريغ فشل (نت، مفتاح، موديل، أو مطلعش نص) الصوت بيتحفظ في السجل بالسبب ورسالة بزرار «افتح السجل» — ومن هناك «تفريغ يدوي» لما المشكلة تتحل، والنتيجة بتنسخها انت (مبتتكتبش لوحدها) |
 | 📎 **مدير الحافظة** | كل حاجة بتتنسخ في جدول: فلترة، بحث، نسخ، ومسح أكتر من سطر مرة واحدة |
 | 📖 **القاموس** | أسماء ومصطلحات بتاعتك عشان تتكتب صح كل مرة |
 | 🤖 **4 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · Whisper محلي — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
@@ -129,7 +130,7 @@
 | **اللغة · المظهر** | عربي / English · فاتح / غامق / تلقائي |
 | **يفضل شغّال جنب الساعة** | قفل النافذة بيخبّيها بدل ما يقفل البرنامج |
 | **زرار عائم ظاهر طول الوقت** | لو مقفول: الموجة بتظهر وقت التسجيل بس |
-| **احتفظ بآخر 10 تسجيلات بس** | الأقدم بيتمسح أول بأول (شغّال افتراضيًا) |
+| **احتفظ بآخر 10 تسجيلات بس** | الأقدم بيتمسح أول بأول (شغّال افتراضيًا) — إلا التسجيلات اللي فشل تفريغها |
 | **حفظ كل حاجة بتتنسخ** | قسم الحافظة |
 | **صوت تنبيه** | بيب قصير مع البداية والنهاية |
 | **طمّني لو نزلت نسخة جديدة** | يسأل GitHub عن آخر إصدار ويعرض «نزّل وثبّت» |
@@ -165,6 +166,7 @@
 
 - المفاتيح بتتحفظ **على جهازك بس** (ملف `.env` جنب البرنامج).
 - الصوت رايح **للمزوّد بحسابك انت مباشرة**، والملف المؤقت بيتمسح بعد كل تفريغ — بس **آخر ١٠ تسجيلات** بتتحفظ على جهازك كملفات MP3 (فولدر `recordings` في فولدر بيانات البرنامج — جنب `Emlaa.exe` في النسخة المحمولة، و`%LOCALAPPDATA%\Emlaa` في نسخة Microsoft Store) للسماع والتنزيل، وبتتمسح مع مسح تسجيلها من السجل (أو لما تسجيل أحدث يزيحها).
+- التسجيل اللي تفريغه **فشل** بيتحفظ في نفس الفولدر (الصوت الأصلي WAV + MP3 + نسخة من صفّه) برّه حد آخر ١٠ — لحد ما تفرّغه يدوي (ساعتها الـMP3 بس بيفضل ويمشي على قاعدة آخر ١٠) أو تمسحه أو تمسح السجل. ولو حتى حفظه فشل، الملف المؤقت مابيتمسحش ومكانه بيتكتب في ملف اللوج. ده بيشمل تسجيل فشل وانت في خانة باسورد (الصوت بس — مفيش نص)، ولو فرّغته يدوي النتيجة بتتحفظ في السجل زي أي تسجيل.
 - السجل والحافظة والقاموس **على جهازك بس**.
 - **الاتصال الوحيد غير المزوّد** هو سؤال GitHub عن آخر إصدار — من غير أي بيانات عنك (ونسخة الـStore مبتسألش خالص).
 - سياسة الخصوصية كاملة: [PRIVACY.md](PRIVACY.md)
@@ -198,6 +200,7 @@
 - **4 features**, each on its own settings tab: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English), Edit selected text (speak an instruction).
 - **Record any hotkey** — one key, or Ctrl/Alt/Shift/Win plus a key. The hotkey is blocked from other apps; Ctrl/Alt/Shift/Win themselves still pass through.
 - **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
+- **Failed recordings are kept:** if transcription fails (network, key, model, or no speech), the audio stays in History with the reason, a toast offers "Open History", and "Transcribe again" re-runs it once the problem is fixed. The result is shown for you to copy — never typed.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.
 - **Auto-updates from GitHub Releases** — one-click "Download & install", or fully automatic (waits until you finish recording). Downloads are checked by size and SHA-256.
 - Keys, settings and history stay on your machine. Audio goes only to the provider you chose.

@@ -19,6 +19,25 @@ import providers  # noqa: E402
 GUI_FOCUS = {"is_password": False, "class": "Edit", "editable": True}
 
 
+
+# التسجيل الفاشل بيتحفظ في السجل والتسجيلات — أي اختبار بيشغّل process لازم يكتب في
+# مجلد مؤقت، عمره ما يلمس history.json أو recordings/ بتوع المستخدم
+_store_patches = []
+
+
+def setUpModule():
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="emlaa_store_")
+    for p in (mock.patch.object(core, "HISTORY_PATH", os.path.join(tmp, "history.json")),
+              mock.patch.object(core, "RECORDINGS_DIR", os.path.join(tmp, "recordings"))):
+        p.start()
+        _store_patches.append(p)
+
+
+def tearDownModule():
+    while _store_patches:
+        _store_patches.pop().stop()
+
 class StubRec:
     """ميكروفون وهمي — دورة process مش بتلمسه، بس App لازم يلاقي واحد."""
     def ensure_open(self): return True

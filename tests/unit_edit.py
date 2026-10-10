@@ -52,6 +52,25 @@ def _make_edit_client(pid="groq"):
 
 
 # ── stubs لدورة التسجيل ───────────────────────────────────────────────────────
+
+# التسجيل الفاشل بيتحفظ في السجل والتسجيلات — أي اختبار بيشغّل process لازم يكتب في
+# مجلد مؤقت، عمره ما يلمس history.json أو recordings/ بتوع المستخدم
+_store_patches = []
+
+
+def setUpModule():
+    import tempfile as _tempfile
+    tmp = _tempfile.mkdtemp(prefix="emlaa_store_")
+    for p in (mock.patch.object(core, "HISTORY_PATH", os.path.join(tmp, "history.json")),
+              mock.patch.object(core, "RECORDINGS_DIR", os.path.join(tmp, "recordings"))):
+        p.start()
+        _store_patches.append(p)
+
+
+def tearDownModule():
+    while _store_patches:
+        _store_patches.pop().stop()
+
 class StubRec:
     def __init__(self):
         self.started = 0
@@ -306,8 +325,9 @@ class TestProcessEdit(unittest.TestCase):
             core.Operation(mode="edit", selection="نص"), copy_ok=False, auto_paste=False)
         self.assertFalse(ttype.called)
         self.assertEqual(app.unplaced, [])
-        hist.assert_not_called()
-        rsave.assert_not_called()
+        # السجل والصوت بيتحفظوا قبل التسليم — فشل النسخ مابقاش يضيّع التسجيل
+        hist.assert_called_once()
+        rsave.assert_called_once()
         self.assertEqual(app.events[-1], ("err", "مقدرتش أكتب النص ولا أنسخه — جرّب تاني"))
         self.assertFalse(app.busy)
 

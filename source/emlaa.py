@@ -506,28 +506,24 @@ class WaveOverlay(tk.Toplevel):
             c.create_line(xc, cy - h, xc, cy + h, fill=col, width=2.6, capstyle="round")
 
 
-class ResultToast(tk.Toplevel):
-    """
-    لما التفريغ يخلص والنص ما اتكتبش (مفيش خانة كتابة / الكتابة فشلت)، النص بيظهر هنا
-    فوق الموجة. الإملاء مبيتنسخش لوحده: زرار «نسخ» (أو دوسة على النص) بينسخه.
-    بيختفي لوحده بعد ٣ ثواني (إلا لو الماوس عليه) — والنص محفوظ في السجل.
-    """
+class _Toast(tk.Toplevel):
+    """رسالة صغيرة فوق الموجة: بتختفي لوحدها بعد SHOW_MS — إلا لو الماوس عليها."""
     BG, BORDER = "#17171c", "#2b2b32"
     SHOW_MS = 3000
     _current = None
 
     @classmethod
-    def show_for(cls, master, text):
-        if cls._current is not None:
+    def show_for(cls, master, *args):
+        # خانة واحدة لكل الأنواع: الرسايل كلها بتظهر في نفس المكان — الجديدة بتشيل القديمة
+        if _Toast._current is not None:
             try:
-                cls._current.destroy()
+                _Toast._current.destroy()
             except Exception:
                 pass
-        cls._current = cls(master, text)
+        _Toast._current = cls(master, *args)
 
-    def __init__(self, master, text):
+    def __init__(self, master):
         super().__init__(master)
-        self.text = text
         self._hover = False
         self.overrideredirect(True)
         try:
@@ -536,30 +532,23 @@ class ResultToast(tk.Toplevel):
         except Exception:
             pass
         self.configure(bg=self.BORDER)
-        box = tk.Frame(self, bg=self.BG, padx=14, pady=10)
-        box.pack(padx=1, pady=1)
-
-        head = tk.Frame(box, bg=self.BG); head.pack(fill="x")
-        x = tk.Label(head, text="✕", bg=self.BG, fg=MUTED, font=(FONT, 10), cursor="hand2")
+        self.box = tk.Frame(self, bg=self.BG, padx=14, pady=10)
+        self.box.pack(padx=1, pady=1)
+        self.head = tk.Frame(self.box, bg=self.BG)
+        self.head.pack(fill="x")
+        x = tk.Label(self.head, text="✕", bg=self.BG, fg=MUTED, font=(FONT, 10), cursor="hand2")
         x.pack(side="left"); x.bind("<Button-1>", lambda e: self.destroy())
-        # عربي وإنجليزي في نفس الـLabel بيتلخبط ترتيبهم في Tk — فكل واحد في Label لوحده
-        tk.Label(head, text=self._t("النص ما اتكتبش", "Not typed"), bg=self.BG, fg=MUTED,
-                 font=(FONT, 9, "bold")).pack(side="right")
-        # Label مش Button: الدوسة عليه زي الدوسة على النص — من غير زرار Tk بفوكس وحدود
-        self.copy_btn = tk.Label(head, text=self._t("نسخ", "Copy"), bg="#232329", fg=FG,
-                                 font=(FONT, 9, "bold"), padx=8, cursor="hand2")
-        self.copy_btn.pack(side="right", padx=(0, 8))
-        self.copy_btn.bind("<Button-1>", lambda e: self._copy())
 
-        shown = text if len(text) <= 600 else text[:600] + "…"
-        body = tk.Label(box, text=R(shown), bg=self.BG, fg=FG, font=(FONT, 11),
-                        wraplength=360, justify="right", anchor="e", cursor="hand2")
-        body.pack(fill="x", pady=(8, 2))
-        body.bind("<Button-1>", lambda e: self._copy())
-        tk.Label(box, text=self._t("اتحفظ في السجل", "Saved to History"), bg=self.BG,
-                 fg=DIM, font=(FONT, 8)).pack(anchor="e")
+    def _head_button(self, ar, en, action):
+        # Label مش Button: الدوسة من غير زرار Tk بفوكس وحدود
+        btn = tk.Label(self.head, text=self._t(ar, en), bg="#232329", fg=FG,
+                       font=(FONT, 9, "bold"), padx=8, cursor="hand2")
+        btn.pack(side="right", padx=(0, 8))
+        btn.bind("<Button-1>", lambda e: action())
+        return btn
 
-        for w in (self, box, body, self.copy_btn):
+    def _show(self, *widgets):
+        for w in (self, self.box) + widgets:
             w.bind("<Enter>", lambda e: setattr(self, "_hover", True))
             w.bind("<Leave>", lambda e: setattr(self, "_hover", False))
         self._place()
@@ -582,13 +571,6 @@ class ResultToast(tk.Toplevel):
         y = top - h - 10 if top - h - 10 > 8 else top + WaveOverlay.H + 10
         self.geometry(f"+{x}+{min(y, sh - h - 8)}")
 
-    def _copy(self):
-        try:
-            self.clipboard_clear(); self.clipboard_append(self.text); self.update_idletasks()
-            self.copy_btn.config(text=self._t("✓ اتنسخ", "✓ Copied"), fg=GREEN)
-        except Exception:
-            pass
-
     def _expire(self):
         if not self.winfo_exists():
             return
@@ -596,6 +578,62 @@ class ResultToast(tk.Toplevel):
             self.after(1000, self._expire)       # بتختفي ثانية بعد ما الماوس يسيبها
         else:
             self.destroy()
+
+
+class ResultToast(_Toast):
+    """
+    لما التفريغ يخلص والنص ما اتكتبش (مفيش خانة كتابة / الكتابة فشلت)، النص بيظهر هنا
+    فوق الموجة. الإملاء مبيتنسخش لوحده: زرار «نسخ» (أو دوسة على النص) بينسخه.
+    بيختفي لوحده بعد ٣ ثواني (إلا لو الماوس عليه) — والنص محفوظ في السجل.
+    """
+
+    def __init__(self, master, text):
+        super().__init__(master)
+        self.text = text
+        # عربي وإنجليزي في نفس الـLabel بيتلخبط ترتيبهم في Tk — فكل واحد في Label لوحده
+        tk.Label(self.head, text=self._t("النص ما اتكتبش", "Not typed"), bg=self.BG, fg=MUTED,
+                 font=(FONT, 9, "bold")).pack(side="right")
+        self.copy_btn = self._head_button("نسخ", "Copy", self._copy)
+
+        shown = text if len(text) <= 600 else text[:600] + "…"
+        body = tk.Label(self.box, text=R(shown), bg=self.BG, fg=FG, font=(FONT, 11),
+                        wraplength=360, justify="right", anchor="e", cursor="hand2")
+        body.pack(fill="x", pady=(8, 2))
+        body.bind("<Button-1>", lambda e: self._copy())
+        tk.Label(self.box, text=self._t("اتحفظ في السجل", "Saved to History"), bg=self.BG,
+                 fg=DIM, font=(FONT, 8)).pack(anchor="e")
+        self._show(body, self.copy_btn)
+
+    def _copy(self):
+        try:
+            self.clipboard_clear(); self.clipboard_append(self.text); self.update_idletasks()
+            self.copy_btn.config(text=self._t("✓ اتنسخ", "✓ Copied"), fg=GREEN)
+        except Exception:
+            pass
+
+
+class FailedToast(_Toast):
+    """
+    التفريغ فشل بس التسجيل اتحفظ في السجل: الرسالة بتقول السبب، و«افتح السجل» بيودّي
+    للتسجيل عشان التفريغ اليدوي. بتفضل أطول من رسالة النتيجة — فيها حاجة لازم تتعمل.
+    """
+    SHOW_MS = 6000
+
+    def __init__(self, master, message, on_open):
+        super().__init__(master)
+        self.on_open = on_open
+        tk.Label(self.head, text=self._t("التفريغ فشل — التسجيل اتحفظ في السجل",
+                                         "Transcription failed — kept in History"),
+                 bg=self.BG, fg=RED, font=(FONT, 9, "bold")).pack(side="right")
+        self.open_btn = self._head_button("افتح السجل", "Open History", self._open)
+        body = tk.Label(self.box, text=R(message), bg=self.BG, fg=FG, font=(FONT, 10),
+                        wraplength=360, justify="right", anchor="e")
+        body.pack(fill="x", pady=(8, 2))
+        self._show(body, self.open_btn)
+
+    def _open(self):
+        self.destroy()
+        self.on_open()
 
 
 class EmlaaClassic(tk.Tk):
@@ -985,6 +1023,23 @@ class EmlaaClassic(tk.Tk):
             core.history_clear()
             render_items()
 
+        def retry(rid, btn):
+            # التفريغ اليدوي بيكلّم المزوّد — في ثريد عشان النافذة ماتعلّقش. النتيجة بتظهر برسالة
+            # فيها «نسخ» (عمرها ما بتتكتب)، والغلط الجديد بيظهر في صف التسجيل نفسه
+            btn.config(text=R("بيفرّغ…"), state="disabled")
+
+            def done(res):
+                if d.winfo_exists():
+                    render_items()
+                if res.get("ok"):
+                    ResultToast.show_for(self, res["result"])
+
+            def run():
+                res = core.retranscribe(rid)
+                self.after(0, lambda: done(res))
+
+            threading.Thread(target=run, daemon=True).start()
+
         clr_btn = tk.Button(head, text=R("مسح السجل"), bg=CARD, fg=MUTED, bd=0,
                             font=(FONT, 8, "bold"), activebackground=BORDER,
                             activeforeground=RED, cursor="hand2", padx=9, pady=3,
@@ -1023,6 +1078,7 @@ class EmlaaClassic(tk.Tk):
         def render_items():
             for child in scroll_frame.winfo_children():
                 child.destroy()
+            core.recordings_prune()           # بيرجّع تسجيل فاشل صفه ماتكتبش قبل قفل مفاجئ
             items = core.history_get()
             if not items:
                 empty = tk.Frame(scroll_frame, bg=BG)
@@ -1044,21 +1100,30 @@ class EmlaaClassic(tk.Tk):
                 top.pack(fill="x", padx=12, pady=(10, 4))
 
                 res_text = item.get("result", "")
-
-                b_copy = tk.Button(top, text=R("نسخ"), bg=FIELD, fg=MUTED, bd=0,
-                                   font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
-                                   activebackground=BORDER, activeforeground=FG)
-                def copy_cmd(t=res_text, btn=b_copy):
-                    try:
-                        d.clipboard_clear()
-                        d.clipboard_append(t)
-                        d.update_idletasks()
-                        btn.config(text=R("اتنسخ ✓"), fg=GREEN)
-                        d.after(1200, lambda: btn.winfo_exists() and btn.config(text=R("نسخ"), fg=MUTED))
-                    except Exception:
-                        pass
-                b_copy.config(command=copy_cmd)
-                b_copy.pack(side="left")
+                # التسجيل الفاشل: السبب مكان النتيجة، و«تفريغ يدوي» مكان النسخ
+                failed = item.get("status") == "failed"
+                if failed:
+                    res_text = "⚠ فشل التفريغ — " + str(item.get("error") or "")
+                    b_retry = tk.Button(top, text=R("تفريغ يدوي"), bg=FIELD, fg=FG, bd=0,
+                                        font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
+                                        activebackground=BORDER, activeforeground=FG)
+                    b_retry.config(command=lambda rid=item.get("id"), btn=b_retry: retry(rid, btn))
+                    b_retry.pack(side="left")
+                else:
+                    b_copy = tk.Button(top, text=R("نسخ"), bg=FIELD, fg=MUTED, bd=0,
+                                       font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
+                                       activebackground=BORDER, activeforeground=FG)
+                    def copy_cmd(t=res_text, btn=b_copy):
+                        try:
+                            d.clipboard_clear()
+                            d.clipboard_append(t)
+                            d.update_idletasks()
+                            btn.config(text=R("اتنسخ ✓"), fg=GREEN)
+                            d.after(1200, lambda: btn.winfo_exists() and btn.config(text=R("نسخ"), fg=MUTED))
+                        except Exception:
+                            pass
+                    b_copy.config(command=copy_cmd)
+                    b_copy.pack(side="left")
 
                 time_str = item.get("time_display", "")
                 date_str = item.get("date_display", "")
@@ -1068,7 +1133,7 @@ class EmlaaClassic(tk.Tk):
                 tk.Label(top, text=R(lbl_text), bg=b_bg, fg=b_fg,
                          font=(FONT, 7, "bold"), padx=6, pady=1).pack(side="right")
 
-                t_lbl = tk.Label(card, text=R(res_text), bg=CARD, fg=FG,
+                t_lbl = tk.Label(card, text=R(res_text), bg=CARD, fg=RED if failed else FG,
                                  font=(FONT, 10), justify="right", anchor="e",
                                  wraplength=380)
                 t_lbl.pack(fill="x", padx=12, pady=(2, 10))
@@ -1530,6 +1595,8 @@ class EmlaaClassic(tk.Tk):
                 app.on_state = self.set_state
                 app.on_text  = self.show_text
                 app.on_unplaced = lambda t: self.after(0, lambda: ResultToast.show_for(self, t))
+                app.on_failed = lambda rid, msg: self.after(
+                    0, lambda: FailedToast.show_for(self, msg, self._open_history))
                 self.engine = app
                 app.start_hotkey()
                 self.after(0, lambda: (self._set_state("ready", None), self._set_hint()))
