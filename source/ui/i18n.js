@@ -156,7 +156,7 @@ const EN = {
   "صوت تنبيه مع البداية والنهاية": "Beep on start and stop", "بيب قصير": "A short beep",
   "طمّني لو نزلت نسخة جديدة": "Tell me about new versions", "بيسأل عن رقم آخر إصدار بس — مفيش أي بيانات عنك": "Only asks for the latest version number — nothing about you is sent",
   "احتفظ بآخر 10 تسجيلات بس": "Keep only the last 10 recordings",
-  "الأقدم بيتمسح من جهازك أول ما يتسجّل جديد": "Older ones are deleted from this device when a new one is saved",
+  "الأقدم بيتمسح من جهازك أول ما يتسجّل جديد — إلا التسجيلات اللي فشل تفريغها": "Older ones are deleted from this device when a new one is saved — except recordings that failed to transcribe",
   "حفظ الإعدادات": "Save settings", "بحفظ…": "Saving…", "بتأكد من المفتاح…": "Checking the key…",
   "اتحفظ ✓ — التغييرات شغّالة دلوقتي": "Saved ✓ — changes are live",
   "✓ المفتاح محفوظ": "✓ Key saved", "مفيش مفتاح": "No key",

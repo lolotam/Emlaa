@@ -1081,21 +1081,25 @@ class EmlaaClassic(tk.Tk):
                 top.pack(fill="x", padx=12, pady=(10, 4))
 
                 res_text = item.get("result", "")
-
-                b_copy = tk.Button(top, text=R("نسخ"), bg=FIELD, fg=MUTED, bd=0,
-                                   font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
-                                   activebackground=BORDER, activeforeground=FG)
-                def copy_cmd(t=res_text, btn=b_copy):
-                    try:
-                        d.clipboard_clear()
-                        d.clipboard_append(t)
-                        d.update_idletasks()
-                        btn.config(text=R("اتنسخ ✓"), fg=GREEN)
-                        d.after(1200, lambda: btn.winfo_exists() and btn.config(text=R("نسخ"), fg=MUTED))
-                    except Exception:
-                        pass
-                b_copy.config(command=copy_cmd)
-                b_copy.pack(side="left")
+                # التسجيل الفاشل: السبب مكان النتيجة ومفيش نسخ — التفريغ اليدوي من الواجهة الأساسية
+                failed = item.get("status") == "failed"
+                if failed:
+                    res_text = "⚠ فشل التفريغ — " + str(item.get("error") or "")
+                else:
+                    b_copy = tk.Button(top, text=R("نسخ"), bg=FIELD, fg=MUTED, bd=0,
+                                       font=(FONT, 8, "bold"), padx=9, pady=2, cursor="hand2",
+                                       activebackground=BORDER, activeforeground=FG)
+                    def copy_cmd(t=res_text, btn=b_copy):
+                        try:
+                            d.clipboard_clear()
+                            d.clipboard_append(t)
+                            d.update_idletasks()
+                            btn.config(text=R("اتنسخ ✓"), fg=GREEN)
+                            d.after(1200, lambda: btn.winfo_exists() and btn.config(text=R("نسخ"), fg=MUTED))
+                        except Exception:
+                            pass
+                    b_copy.config(command=copy_cmd)
+                    b_copy.pack(side="left")
 
                 time_str = item.get("time_display", "")
                 date_str = item.get("date_display", "")
@@ -1105,7 +1109,7 @@ class EmlaaClassic(tk.Tk):
                 tk.Label(top, text=R(lbl_text), bg=b_bg, fg=b_fg,
                          font=(FONT, 7, "bold"), padx=6, pady=1).pack(side="right")
 
-                t_lbl = tk.Label(card, text=R(res_text), bg=CARD, fg=FG,
+                t_lbl = tk.Label(card, text=R(res_text), bg=CARD, fg=RED if failed else FG,
                                  font=(FONT, 10), justify="right", anchor="e",
                                  wraplength=380)
                 t_lbl.pack(fill="x", padx=12, pady=(2, 10))
