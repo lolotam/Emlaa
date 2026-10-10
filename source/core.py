@@ -18,8 +18,10 @@ import sys
 import time
 import json
 import wave
+import shutil
 import tempfile
 import threading
+import uuid
 import collections
 import queue
 import urllib.request
@@ -258,30 +260,101 @@ def _load_for_write(path, where):
 
 
 def history_get(limit=100):
-    """بيرجّع سجل التسجيلات من الأحدث للأقدم."""
-    return _read_list(HISTORY_PATH)[0][:limit]
+    """بيرجّع سجل التسجيلات من الأحدث للأقدم (limit=None = كله)."""
+    items = _read_list(HISTORY_PATH)[0]
+    return items if limit is None else items[:limit]
+
+
+# ── التسجيلات اللي فشل تفريغها ────────────────────────────────────────────────
+# الصوت بيتحفظ في recordings/<id>.wav (الأصل — التفريغ اليدوي محتاجه) + <id>.json (الصف
+# نفسه، عشان لو السجل باظ يرجع) + <id>.mp3 (للسماع والتنزيل). وجود الـWAV = «التسجيل ده
+# فشل»: التنضيف التلقائي عمره ما يمسحه — بيتمسح بس بفعل صريح بعد ما كتابة السجل تنجح.
+FAILED = "failed"
+_retrying = set()          # تسجيلات بيتعملها تفريغ يدوي دلوقتي — التنضيف مايلمسهاش
+_last_id = 0
+
+
+def _is_failed(entry):
+    return entry.get("status") == FAILED
+
+
+def _now_ms():
+    return int(time.time() * 1000)
+
+
+def failed_wav_path(rid):
+    return os.path.join(RECORDINGS_DIR, f"{int(rid)}.wav")
+
+
+def failed_sidecar_path(rid):
+    return os.path.join(RECORDINGS_DIR, f"{int(rid)}.json")
+
+
+def _id_on_disk(rid):
+    return any(os.path.exists(p) for p in (recording_path(rid), failed_wav_path(rid),
+                                          failed_sidecar_path(rid)))
+
+
+def _allocate_id(items):
+    """
+    تحت _store_lock: id جديد عمره ما يتكرر — الساعة لو رجعت لورا (أو تسجيلين في نفس
+    المللي ثانية) كان ممكن صوت تسجيل يتكتب فوق صوت تسجيل تاني.
+    """
+    global _last_id
+    taken = {i.get("id") for i in items}
+    rid = max(_now_ms(), _last_id + 1)
+    while rid in taken or _id_on_disk(rid):
+        rid += 1
+    _last_id = rid
+    return rid
+
+
+def _time_fields():
+    import datetime
+    now = datetime.datetime.now()
+    return {"time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "time_display": now.strftime("%I:%M %p").lstrip("0"),
+            "date_display": now.strftime("%Y/%m/%d")}
+
+
+def _trim(items):
+    """الحد (آخر 10 / 1000) على التسجيلات الناجحة بس — الفاشلة بتفضل لحد ما تتفرّغ أو تتمسح."""
+    cap, kept, out = history_cap(), 0, []
+    for e in items:
+        if _is_failed(e):
+            out.append(e)
+        elif kept < cap:
+            out.append(e)
+            kept += 1
+    return out
+
+
+def _insert_entry(entry):
+    """بيضيف صف أول السجل — True بس لو الكتابة نجحت فعلًا (الغلط مابيتبلعش)."""
+    with _store_lock:
+        items = _load_for_write(HISTORY_PATH, "history/read")
+        if entry.get("id") is None:
+            entry["id"] = _allocate_id(items)
+        items.insert(0, entry)
+        try:
+            _write_list(HISTORY_PATH, _trim(items))
+            return True
+        except Exception as e:
+            log_error(e, "history/write")
+            return False
 
 
 def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False, app=""):
     """
     بيحفظ عملية تسجيل جديدة في ملف history.json (dur = طول التسجيل بالثواني،
     engine = مين فرّغ ومين نضّف، bypass = الـLLM اتتخطّت للرد القصير F2،
-    app = اسم البرنامج اللي اتكتب قدامه F5). بيرجّع الـid عشان الصوت يتحفظ بيه.
+    app = اسم البرنامج اللي اتكتب قدامه F5). بيرجّع الـid عشان الصوت يتحفظ بيه —
+    أو None لو الكتابة فشلت (اللي بينده يحتفظ بالصوت والكلام بطريقة تانية).
     """
     if not result_text or not result_text.strip():
         return None
-    import datetime
-    now = datetime.datetime.now()
-    entry = {
-        "id": int(now.timestamp() * 1000),
-        "time": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "time_display": now.strftime("%I:%M %p").lstrip("0"),
-        "date_display": now.strftime("%Y/%m/%d"),
-        "mode": mode or "normal",
-        "raw": (raw_text or "").strip(),
-        "result": result_text.strip(),
-        "words": len((raw_text or "").split()),
-    }
+    entry = dict(_time_fields(), id=None, mode=mode or "normal", raw=(raw_text or "").strip(),
+                 result=result_text.strip(), words=len((raw_text or "").split()))
     if dur:
         entry["dur"] = round(float(dur), 2)
     if engine:
@@ -294,32 +367,156 @@ def history_add(mode, raw_text, result_text, dur=None, engine=None, bypass=False
         # F5: بيتكتب بس لو اسم البرنامج اتعرف فعلًا — السجلات القديمة والأقدم
         # من غير المفتاح، والواجهة بتقراه بـ .get
         entry["app"] = app
+    return entry["id"] if _insert_entry(entry) else None
+
+
+def _write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _silent_remove(*paths):
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log_error(e, "recordings/cleanup")
+
+
+def keep_failed_recording(mode, wav, error, app="", raw="", dur=None):
+    """
+    تسجيل فشل تفريغه: الصوت والصف بيتحفظوا عشان يتعمله تفريغ يدوي بعدين. بيرجّع الـid،
+    أو None لو الصوت ماتأمّنش — ساعتها اللي بينده مايمسحش ملفه المؤقت.
+    الترتيب: نسخ مؤقتة برّه القفل ← نشرها وكتابة الصف خطوة واحدة جوّه القفل (عشان «مسح
+    الكل» مايقعش بين الاتنين) ← الـMP3 في الآخر (للسماع بس).
+    """
+    with _store_lock:
+        rid = _allocate_id(_read_list(HISTORY_PATH)[0])
+    entry = dict(_time_fields(), id=rid, mode=mode or "normal", raw=(raw or "").strip(),
+                 result="", words=0, status=FAILED, error=str(error or ""))
+    if dur:
+        entry["dur"] = round(float(dur), 2)
+    if app:
+        entry["app"] = app
+    sfx = uuid.uuid4().hex[:8]
+    wav_tmp = os.path.join(RECORDINGS_DIR, f"{rid}.{sfx}.wav.tmp")
+    side_tmp = os.path.join(RECORDINGS_DIR, f"{rid}.{sfx}.json.tmp")
+    try:
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        shutil.copyfile(wav, wav_tmp)
+        _write_json(side_tmp, entry)
+    except Exception as e:
+        log_error(e, "recordings/keep-failed")
+        _silent_remove(wav_tmp, side_tmp)
+        return None
+    with _store_lock:
+        try:
+            os.replace(wav_tmp, failed_wav_path(rid))
+            os.replace(side_tmp, failed_sidecar_path(rid))
+        except Exception as e:
+            log_error(e, "recordings/keep-failed")
+            _silent_remove(wav_tmp, side_tmp)
+            return None
+        inserted = _insert_entry(entry)
+    recording_save(rid, wav)
+    return rid if inserted else None
+
+
+def history_entry(rid):
+    return next((i for i in _read_list(HISTORY_PATH)[0] if i.get("id") == rid), None)
+
+
+def _remove_failed_files(rid, keep_mp3=False):
+    """
+    ملف البيانات الأول — هو اللي الاسترجاع بيقراه. لو مسحه فشل بيتبدّل بـ«اتمسح» عشان
+    التسجيل مايرجعش؛ وبعدين الـWAV، والـMP3 (إلا بعد تفريغ يدوي ناجح: بقى صوت تسجيل عادي).
+    """
+    side = failed_sidecar_path(rid)
+    try:
+        if os.path.exists(side):
+            os.remove(side)
+    except Exception as e:
+        log_error(e, "recordings/remove-failed")
+        try:
+            tmp = side + "." + uuid.uuid4().hex[:8] + ".tmp"
+            _write_json(tmp, {"deleted": True})
+            os.replace(tmp, side)
+        except Exception as e2:
+            log_error(e2, "recordings/tombstone")
+    _silent_remove(failed_wav_path(rid), *(() if keep_mp3 else (recording_path(rid),)))
+
+
+def history_resolve(rid, raw, result, engine):
+    """
+    التفريغ اليدوي نجح: الصف بقى تسجيل عادي، بيطلع أول السجل بوقت النهارده (عشان الحد
+    مايشيلوش قبل ما المستخدم ينسخه)، وملفات الفشل بتتمسح بعد ما الكتابة تنجح بس.
+    False لو الصف اتمسح أو مابقاش فاشل.
+    """
     with _store_lock:
         items = _load_for_write(HISTORY_PATH, "history/read")
+        idx = next((k for k, i in enumerate(items) if i.get("id") == rid), None)
+        if idx is None or not _is_failed(items[idx]):
+            return False
+        entry = items.pop(idx)
+        entry.pop("status", None)
+        entry.pop("error", None)
+        entry["recorded"] = entry.get("time")
+        entry.update(_time_fields(), raw=(raw or "").strip(), result=(result or "").strip(),
+                     words=len((raw or "").split()))
+        if engine:
+            entry["engine"] = engine
         items.insert(0, entry)
         try:
-            _write_list(HISTORY_PATH, items[:history_cap()])
+            _write_list(HISTORY_PATH, _trim(items))
         except Exception as e:
             log_error(e, "history/write")
-    return entry["id"]
+            return False
+        _remove_failed_files(rid, keep_mp3=True)
+    return True
+
+
+def history_fail_again(rid, error):
+    """التفريغ اليدوي فشل تاني: الصف بيفضل فاشل بالغلط الجديد."""
+    with _store_lock:
+        items = _load_for_write(HISTORY_PATH, "history/read")
+        entry = next((i for i in items if i.get("id") == rid and _is_failed(i)), None)
+        if entry is None:
+            return False
+        entry["error"] = str(error or "")
+        try:
+            _write_list(HISTORY_PATH, items)
+            return True
+        except Exception as e:
+            log_error(e, "history/write")
+            return False
 
 
 # ── صوت آخر ١٠ تسجيلات (يتسمع ويتنزّل mp3 من السجل) ─────────────────────────
 RECORDINGS_DIR = os.path.join(BASE, "recordings")
 AUDIO_KEEP = 10
+STRAY_TMP_AGE = 600        # ثانية — ملف مؤقت أحدث من كده ممكن يكون كتابة لسه شغّالة
 
 
 def recording_path(rid):
     return os.path.join(RECORDINGS_DIR, f"{int(rid)}.mp3")
 
 
-def recording_ids():
-    """الـid بتاع كل تسجيل صوته محفوظ."""
+def _ids_with(ext):
     try:
         names = os.listdir(RECORDINGS_DIR)
     except FileNotFoundError:
         return set()
-    return {int(n[:-4]) for n in names if n.endswith(".mp3") and n[:-4].isdigit()}
+    n = len(ext)
+    return {int(x[:-n]) for x in names if x.endswith(ext) and x[:-n].isdigit()}
+
+
+def recording_ids():
+    """الـid بتاع كل تسجيل صوته محفوظ."""
+    return _ids_with(".mp3")
 
 
 def recording_save(rid, wav):
@@ -354,39 +551,78 @@ def recording_save(rid, wav):
 
 
 def _remove_stray_tmp():
-    """بيمسح ملفات .mp3.tmp اللي فضلت من كتابة فاشلة (بيبقى فيها صوت مسجّل)."""
+    """
+    بيمسح ملفات .tmp اللي فضلت من كتابة فاشلة أو قفل مفاجئ (فيها صوت مسجّل) — الأقدم من
+    STRAY_TMP_AGE بس: الأحدث ممكن يكون ثريد تاني لسه بيكتبه.
+    """
     try:
+        cutoff = time.time() - STRAY_TMP_AGE
         for n in os.listdir(RECORDINGS_DIR):
-            if n.endswith(".mp3.tmp"):
-                try:
-                    os.remove(os.path.join(RECORDINGS_DIR, n))
-                except Exception as e:
-                    log_error(e, "recordings/prune")
+            if not n.endswith(".tmp"):
+                continue
+            path = os.path.join(RECORDINGS_DIR, n)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                log_error(e, "recordings/prune")
     except FileNotFoundError:
         pass
     except Exception as e:
         log_error(e, "recordings/prune")
 
 
+def _recover_failed(items):
+    """
+    تسجيل فاشل صوته موجود وصفه مش في السجل (السجل باظ واتعمله backup، أو كتابته فشلت):
+    بيرجع من ملف بياناته في مكانه بالترتيب. اللي اتمسح بإيد صاحبه (علامة deleted) مابيرجعش.
+    """
+    live = {i.get("id") for i in items}
+    added = False
+    for rid in sorted(_ids_with(".wav") - live, reverse=True):
+        try:
+            with open(failed_sidecar_path(rid), encoding="utf-8") as f:
+                entry = json.load(f)
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log_error(e, "recordings/recover")
+            continue
+        if not isinstance(entry, dict) or entry.get("deleted") or entry.get("id") != rid:
+            continue
+        pos = next((k for k, i in enumerate(items) if (i.get("id") or 0) < rid), len(items))
+        items.insert(pos, entry)
+        added = True
+    if added:
+        try:
+            _write_list(HISTORY_PATH, items)
+        except Exception as e:
+            log_error(e, "history/write")
+    return items
+
+
 def recordings_prune():
     """
-    الصوت بيفضل لآخر AUDIO_KEEP تسجيلات موجودة في السجل بس: أي ملف أقدم،
-    أو تسجيله اتمسح من السجل، بيتمسح (الـid = وقت التسجيل، فالأكبر = الأحدث).
+    الصوت بيفضل لآخر AUDIO_KEEP تسجيلات ناجحة بترتيب السجل؛ أي MP3 تاني بيتمسح. صوت
+    التسجيلات الفاشلة (اللي ليها WAV) واللي بيتفرّغ دلوقتي عمره ما بيتمسح هنا.
     """
     with _store_lock:
         _remove_stray_tmp()
         items, ok = _read_list(HISTORY_PATH)
         if not ok:                     # السجل بايظ = مانعرفش مين عايش — مانمسحش صوت حد
             return
-        live = {i.get("id") for i in items}
-        ids = sorted(recording_ids(), reverse=True)
-        keep = set([i for i in ids if i in live][:AUDIO_KEEP])
-        for i in ids:
-            if i not in keep:
-                try:
-                    os.remove(recording_path(i))
-                except Exception as e:
-                    log_error(e, "recordings/prune")
+        items = _recover_failed(items)
+        protected = _ids_with(".wav") | set(_retrying)
+        audio = recording_ids()
+        ordered = [i.get("id") for i in items if not _is_failed(i) and i.get("id") in audio]
+        keep = set(ordered[:AUDIO_KEEP]) | protected
+        for i in audio - keep:
+            try:
+                os.remove(recording_path(i))
+            except Exception as e:
+                log_error(e, "recordings/prune")
 
 
 def history_cap():
@@ -395,29 +631,34 @@ def history_cap():
 
 
 def history_prune():
-    """بيطبّق الحد على السجل الموجود (لما الإعداد يتفعّل)."""
+    """بيطبّق الحد على السجل الموجود (لما الإعداد يتفعّل) — الفاشلة برّه الحد."""
     with _store_lock:
         items, ok = _read_list(HISTORY_PATH)
-        if ok and len(items) > history_cap():
+        trimmed = _trim(items) if ok else items
+        if ok and len(trimmed) != len(items):
             try:
-                _write_list(HISTORY_PATH, items[:history_cap()])
+                _write_list(HISTORY_PATH, trimmed)
             except Exception as e:
                 log_error(e, "history/prune")
     recordings_prune()
 
 
 def history_clear():
-    """يمسح السجل بالكامل."""
-    try:
-        if os.path.exists(HISTORY_PATH):
-            os.remove(HISTORY_PATH)
-    except Exception:
-        pass
+    """يمسح السجل بالكامل — وصوت التسجيلات الفاشلة كمان، بعد ما المسح ينجح بس."""
+    with _store_lock:
+        try:
+            if os.path.exists(HISTORY_PATH):
+                os.remove(HISTORY_PATH)
+        except Exception as e:
+            log_error(e, "history/clear")
+            return
+        for rid in _ids_with(".wav") - set(_retrying):
+            _remove_failed_files(rid)
     recordings_prune()
 
 
 def history_delete(ids):
-    """يمسح تسجيلات معيّنة بالـid."""
+    """يمسح تسجيلات معيّنة بالـid — وملفات الفاشل منها بعد ما الكتابة تنجح بس."""
     ids = set(ids or [])
     with _store_lock:
         items = [i for i in _load_for_write(HISTORY_PATH, "history/read") if i.get("id") not in ids]
@@ -425,6 +666,9 @@ def history_delete(ids):
             _write_list(HISTORY_PATH, items)
         except Exception as e:
             log_error(e, "history/write")
+            return
+        for rid in ids & _ids_with(".wav"):
+            _remove_failed_files(rid)
     recordings_prune()
 
 
@@ -432,9 +676,9 @@ def history_stats():
     """
     أرقام الصفحة الرئيسية من السجل الحقيقي:
     عدد الكلمات، الوقت اللي اتوفّر مقارنة بالكتابة (٤٠ كلمة/دقيقة)، ومتوسط سرعة الإملاء.
-    السرعة بتتحسب بس من التسجيلات اللي اتحفظ طولها (الجديدة).
+    السرعة بتتحسب بس من التسجيلات اللي اتحفظ طولها (الجديدة). الفاشلة مش إملاء — مابتتحسبش.
     """
-    items = history_get(limit=1000)
+    items = [i for i in history_get(limit=None) if not _is_failed(i)]
     words = sum(i.get("words") or len((i.get("raw") or "").split()) for i in items)
     timed = [i for i in items if i.get("dur")]
     t_words = sum(i.get("words") or len((i.get("raw") or "").split()) for i in timed)

@@ -1312,6 +1312,8 @@ class TestRecordingSaveTmpCleanup(unittest.TestCase):
             stray = os.path.join(recs, "999.mp3.tmp")
             with open(stray, "wb") as f:
                 f.write(b"leftover")
+            old = time.time() - 700          # بقايا قديمة — الحديثة ممكن تكون كتابة لسه شغّالة
+            os.utime(stray, (old, old))
             with mock.patch.object(core, "RECORDINGS_DIR", recs), \
                     mock.patch.object(core, "HISTORY_PATH", os.path.join(d, "history.json")), \
                     mock.patch.object(core, "log_error"):
