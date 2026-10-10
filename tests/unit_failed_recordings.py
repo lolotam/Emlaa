@@ -557,6 +557,13 @@ class TestRetranscribe(_Store):
         self.assertEqual(self.items(), [])
         self.assertEqual(self.files(rid), set())
 
+    def test_clear_while_transcribing_wins(self):
+        rid = self.keep()
+        res = self.retry(rid, _RetryClient(during=lambda wav: core.history_clear()))
+        self.assertEqual(res, {"ok": False, "err": "التسجيل اتمسح"})
+        self.assertEqual(core.history_get(), [])
+        self.assertEqual(self.files(rid), set())
+
     def test_failed_processing_keeps_the_transcript_with_a_note(self):
         rid = self.keep(mode="prompt")
         res = self.retry(rid, _RetryClient(text="اكتب برومبت", ai_ok=False))

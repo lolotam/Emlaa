@@ -652,7 +652,9 @@ def history_clear():
         except Exception as e:
             log_error(e, "history/clear")
             return
-        for rid in _ids_with(".wav") - set(_retrying):
+        # حتى اللي بيتفرّغ دلوقتي: التفريغ شغّال على نسخة خاصة، والمسح لازم يكسب — لو ملفاته
+        # فضلت، الاسترجاع كان هيرجّع صفه للسجل تاني
+        for rid in _ids_with(".wav"):
             _remove_failed_files(rid)
     recordings_prune()
 
