@@ -512,6 +512,15 @@ class TestEditKeepsFailures(_ProcBase):
         [entry] = self.failed_entries()
         self.assertEqual(entry["mode"], "edit")
 
+    def test_raising_error_hook_after_an_edit_failure_keeps_one_entry(self):
+        def on_state(st, msg=None):
+            if st == "err":
+                raise RuntimeError("ui gone")
+
+        app, wav = self.run_edit(_ProcClient(text=""), on_state=on_state)
+        self.assertEqual(len(self.failed_entries()), 1)
+        self.assertFalse(os.path.exists(wav))
+
     def test_edit_model_failure_keeps_the_instruction(self):
         self.run_edit(_ProcClient(text="خليه رسمي", edit_result=None))
         [entry] = self.failed_entries()

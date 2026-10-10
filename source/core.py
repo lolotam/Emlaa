@@ -2241,10 +2241,7 @@ class App:
                 # التفريغ فشل (في أي خانة) أو حاجة بعده فشلت برّه خانات الباسورد — نص
                 # الباسورد اللي اتفرّغ بنجاح عمره ما يتحفظ
                 keep_tmp = not self._keep_failure(cur_mode, wav, msg, op, dur, raw=text or "")
-            try:
-                self.on_state("err", msg)
-            except Exception as e2:           # الواجهة نفسها اللي رمت — مفيش حد يتبلّغ غير اللوج
-                log_error(e2, "process/err-state")
+            self._report_err(msg)
         finally:
             self._set_busy(False)
             if not keep_tmp:                   # الصوت ماتأمّنش → الملف المؤقت بيفضل (مساره في اللوج)
@@ -2253,6 +2250,16 @@ class App:
                 except Exception:
                     pass
             self._apply_pending_hotkeys()
+
+    def _report_err(self, message):
+        """
+        رسالة الغلط بعد ما التسجيل اتحفظ كفاشل: لو الواجهة نفسها رمت، مفيش حد يتبلّغ غير
+        اللوج — والغلط مايرجعش للـexcept اللي كان هيحفظ التسجيل تاني.
+        """
+        try:
+            self.on_state("err", message)
+        except Exception as e:
+            log_error(e, "process/err-state")
 
     def _keep_failure(self, mode, wav, message, op, dur, raw=""):
         """
@@ -2347,7 +2354,7 @@ class App:
         """تعديل فشل: التسجيل (والتعليمات لو اتفرّغت) بيتحفظ كفاشل. True = الملف المؤقت يفضل."""
         keep_tmp = not self._keep_failure("edit", wav, message, op, dur, raw=raw)
         if report:
-            self.on_state("err", message)
+            self._report_err(message)
         return keep_tmp
 
     # ── أزرار التسجيل العامة (3 أوضاع مستقلة) ──
