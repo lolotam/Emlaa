@@ -692,6 +692,13 @@ class TestBridge(_Store):
             json.dump(failed + ok, f)
         self.assertEqual(len(self.app_web.Api(None).history()["items"]), 1002)
 
+    def test_history_lists_a_recording_published_before_a_crash(self):
+        rid = self.keep()
+        with open(self.hist, "w", encoding="utf-8") as f:
+            f.write("[]")                        # القفل حصل قبل ما صفه يتكتب
+        items = self.app_web.Api(None).history()["items"]
+        self.assertEqual([i["id"] for i in items], [rid])
+
     def test_retry_resolves_through_the_bridge(self):
         rid = self.keep()
         with mock.patch.object(core.chains, "FeatureClient", return_value=_RetryClient()),                 mock.patch.object(core.providers, "read_key_pools", return_value={}):

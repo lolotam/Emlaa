@@ -655,6 +655,8 @@ class Api:
 
     # ── السجل ──
     def history(self):
+        # الاسترجاع قبل القراية: تسجيل فاشل صوته اتحفظ والبرنامج اتقفل قبل ما صفه يتكتب
+        core.recordings_prune()
         items = core.history_get(limit=None)       # كله: التسجيلات الفاشلة برّه حد الـ1000
         has = core.recording_ids()
         for i in items:

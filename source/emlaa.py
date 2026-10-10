@@ -1060,6 +1060,7 @@ class EmlaaClassic(tk.Tk):
         def render_items():
             for child in scroll_frame.winfo_children():
                 child.destroy()
+            core.recordings_prune()           # بيرجّع تسجيل فاشل صفه ماتكتبش قبل قفل مفاجئ
             items = core.history_get()
             if not items:
                 empty = tk.Frame(scroll_frame, bg=BG)
