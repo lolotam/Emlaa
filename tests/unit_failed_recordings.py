@@ -592,5 +592,42 @@ class TestRetranscribe(_Store):
         self.assertEqual(client.vocab, ["إملاء"])
 
 
+class TestBridge(_Store):
+    """الواجهة: السجل كامل، والتفريغ اليدوي، ورسالة الفشل بزرار «افتح السجل»."""
+
+    def setUp(self):
+        super().setUp()
+        import app_web
+        self.app_web = app_web
+
+    def test_history_lists_failed_entries_beyond_the_cap(self):
+        ok = [dict(id=k + 1, mode="normal", raw="ك", result="ك", words=1) for k in range(1000)]
+        failed = [dict(id=5000 + k, mode="normal", raw="", result="", words=0,
+                       status="failed", error="x") for k in range(2)]
+        with open(self.hist, "w", encoding="utf-8") as f:
+            json.dump(failed + ok, f)
+        self.assertEqual(len(self.app_web.Api(None).history()["items"]), 1002)
+
+    def test_retry_resolves_through_the_bridge(self):
+        rid = self.keep()
+        with mock.patch.object(core.chains, "FeatureClient", return_value=_RetryClient()),                 mock.patch.object(core.providers, "read_key_pools", return_value={}):
+            res = self.app_web.Api(None).history_retry(rid)
+        self.assertTrue(res["ok"])
+        self.assertNotIn("status", self.items()[0])
+
+    def test_engine_failure_shows_a_toast_that_opens_history(self):
+        ctrl = self.app_web.Controller.__new__(self.app_web.Controller)
+        ctrl.root, ctrl.tk_call = "root", lambda fn: fn()
+        ctrl.emlaa = mock.MagicMock()
+        ctrl.show_window = mock.MagicMock()
+        app = core.App.__new__(core.App)
+        ctrl._wire(app)
+        app.on_failed(7, "مفيش اتصال بالنت")
+        master, message, on_open = ctrl.emlaa.FailedToast.show_for.call_args.args
+        self.assertEqual((master, message), ("root", "مفيش اتصال بالنت"))
+        on_open()
+        ctrl.show_window.assert_called_once_with("history")
+
+
 if __name__ == "__main__":
     unittest.main()

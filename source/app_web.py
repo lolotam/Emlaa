@@ -108,7 +108,7 @@ def combo_listener(combo, fire):
 
 class Controller:
     def __init__(self, version, brand_name, brand_url):
-        import emlaa                                  # WaveOverlay / ResultToast
+        import emlaa                                  # WaveOverlay / ResultToast / FailedToast
         self.emlaa = emlaa
         self.version = version
         self.brand = {"name": brand_name, "url": brand_url}
@@ -191,6 +191,16 @@ class Controller:
     def on_unplaced(self, text):
         self.tk_call(lambda: self.emlaa.ResultToast.show_for(self.root, text))
 
+    def on_failed(self, rid, message):
+        self.tk_call(lambda: self.emlaa.FailedToast.show_for(
+            self.root, message, lambda: self.show_window("history")))
+
+    def _wire(self, app):
+        app.on_state = self.set_state
+        app.on_text = self.on_text
+        app.on_unplaced = self.on_unplaced
+        app.on_failed = self.on_failed
+
     def push(self, fn, payload):
         """بيبعت حدث للواجهة (لو مفتوحة)."""
         w = self.window
@@ -216,9 +226,7 @@ class Controller:
         def boot():
             try:
                 app = core.App()
-                app.on_state = self.set_state
-                app.on_text = self.on_text
-                app.on_unplaced = self.on_unplaced
+                self._wire(app)
                 try:
                     app.start_hotkey()
                 except Exception:
@@ -647,7 +655,7 @@ class Api:
 
     # ── السجل ──
     def history(self):
-        items = core.history_get(limit=1000)
+        items = core.history_get(limit=None)       # كله: التسجيلات الفاشلة برّه حد الـ1000
         has = core.recording_ids()
         for i in items:
             i["audio"] = i.get("id") in has
@@ -672,7 +680,7 @@ class Api:
             return {"ok": False}
         if not os.path.exists(src):
             return {"ok": False}
-        item = next((i for i in core.history_get(limit=1000) if i.get("id") == rid), {})
+        item = core.history_entry(rid) or {}
         stamp = (item.get("time") or "").replace(":", "-").replace(" ", "_") or str(rid)
         try:
             kind = webview.FileDialog.SAVE
@@ -700,6 +708,10 @@ class Api:
     def history_clear(self):
         core.history_clear()
         return self.history()
+
+    def history_retry(self, rid):
+        """التفريغ اليدوي — الصفحة مستنية الرد، والنتيجة بتتعرض للنسخ (عمرها ما بتتكتب)."""
+        return core.retranscribe(rid)
 
     # ── الحافظة ──
     def clips(self):
