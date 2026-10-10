@@ -328,6 +328,18 @@ GUI = {"is_password": False, "class": "Edit", "editable": True}
 PASSWORD = {"is_password": True, "class": "Edit", "editable": True}
 
 
+def _first_history_write_fails():
+    """أول كتابة لملف السجل بتفشل (قفل/قرص) والباقي حقيقي — فشل history_add من غير ما نزيّفه."""
+    real, calls = core._write_list, []
+
+    def write(path, items):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError("history.json locked")
+        return real(path, items)
+    return mock.patch.object(core, "_write_list", side_effect=write)
+
+
 class _ProcBase(_Store):
     """تشغيل process حقيقي بعميل مزيّف — الفوكس واللصق مزيّفين."""
 
@@ -414,7 +426,7 @@ class TestProcessKeepsFailures(_ProcBase):
         self.assertEqual(entry["raw"], "كلام مهم")
 
     def test_temp_audio_survives_when_it_could_not_be_kept(self):
-        with mock.patch.object(core, "keep_failed_recording", return_value=None):
+        with mock.patch.object(core.shutil, "copyfile", side_effect=OSError("disk full")):
             _, wav = self.run_process(_ProcClient(stt_error=RuntimeError("HTTP 500")))
         self.assertTrue(os.path.exists(wav))
 
@@ -427,7 +439,7 @@ class TestProcessKeepsFailures(_ProcBase):
         self.assertFalse(app.busy)
 
     def test_history_write_failure_keeps_the_recording(self):
-        with mock.patch.object(core, "history_add", return_value=None):
+        with _first_history_write_fails():
             self.run_process(_ProcClient(text="كلام اتكتب"))
         [entry] = self.failed_entries() or [None]
         self.assertIsNotNone(entry)
@@ -467,7 +479,7 @@ class TestEditKeepsFailures(_ProcBase):
 
     def test_history_write_failure_keeps_the_instruction_and_still_delivers(self):
         pasted = []
-        with mock.patch.object(core, "history_add", return_value=None):
+        with _first_history_write_fails():
             self.run_edit(_ProcClient(text="خليه رسمي"),
                           paste=lambda text, *a, **k: pasted.append(text) or "placed")
         [entry] = self.failed_entries()
