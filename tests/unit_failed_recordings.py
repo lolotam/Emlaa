@@ -475,5 +475,122 @@ class TestEditKeepsFailures(_ProcBase):
         self.assertEqual(pasted, ["معدّل"])
 
 
+LONG = "الكلام ده جملة طويلة شوية عشان تتنضف, صح?"
+
+
+class _RetryClient(_ProcClient):
+    """عميل التفريغ اليدوي: during(wav) بيتنده وهو بيقرا الصوت — عشان نمسح/نعيد في النص."""
+
+    def __init__(self, text=LONG, stt_error=None, ai_ok=True, during=None):
+        super().__init__(text=text, stt_error=stt_error)
+        self.ai_ok, self.during, self.read = ai_ok, during, []
+
+    def transcribe(self, wav, lang):
+        self.read.append((os.path.exists(wav), lang))
+        if self.during:
+            self.during(wav)
+        return super().transcribe(wav, lang)
+
+    def edit(self, selection, instruction):
+        raise AssertionError("التعديل مايتعادش — التحديد عمره ما اتحفظ")
+
+
+class TestRetranscribe(_Store):
+    def retry(self, rid, client):
+        return core.retranscribe(rid, client_factory=lambda mode: client)
+
+    def entry(self, rid):
+        return next(i for i in self.items() if i["id"] == rid)
+
+    def test_success_resolves_the_entry_and_never_types(self):
+        rid = self.keep()
+        with mock.patch.object(core, "paste_text") as paste:
+            res = self.retry(rid, _RetryClient())
+        self.assertEqual(res, {"ok": True, "result": "الكلام ده جملة طويلة شوية عشان تتنضف، صح؟"})
+        entry = self.entry(rid)
+        self.assertNotIn("status", entry)
+        self.assertEqual((entry["raw"], entry["result"]), (LONG, res["result"]))
+        self.assertEqual(self.files(rid), {"mp3"})
+        paste.assert_not_called()
+
+    def test_raw_mode_skips_the_mixed_text_fix(self):
+        rid = self.keep()
+        with mock.patch.dict(core.CFG, polish=False):
+            res = self.retry(rid, _RetryClient())
+        self.assertEqual(res["result"], LONG)
+
+    def test_empty_transcript_stays_failed(self):
+        rid = self.keep()
+        res = self.retry(rid, _RetryClient(text=""))
+        self.assertFalse(res["ok"])
+        self.assertEqual((self.entry(rid)["status"], self.entry(rid)["error"]), ("failed", res["err"]))
+        self.assertEqual(self.files(rid), {"wav", "json", "mp3"})
+
+    def test_transcription_error_stays_failed_with_the_new_reason(self):
+        rid = self.keep(error="قديم")
+        res = self.retry(rid, _RetryClient(stt_error=RuntimeError("HTTP 500")))
+        self.assertFalse(res["ok"])
+        self.assertNotEqual(res["err"], "قديم")
+        self.assertEqual(self.entry(rid)["error"], res["err"])
+
+    def test_missing_or_successful_entries_are_refused(self):
+        ok_id = core.history_add("normal", "كلام", "كلام")
+        for rid in (ok_id, 42):
+            with self.subTest(rid=rid):
+                client = _RetryClient()
+                self.assertFalse(self.retry(rid, client)["ok"])
+                self.assertEqual(client.read, [])
+
+    def test_second_retry_of_the_same_recording_is_refused(self):
+        rid = self.keep()
+        nested = []
+        self.retry(rid, _RetryClient(during=lambda wav: nested.append(self.retry(rid, _RetryClient()))))
+        self.assertFalse(nested[0]["ok"])
+        self.assertNotIn("status", self.entry(rid))
+
+    def test_delete_while_transcribing_wins(self):
+        rid = self.keep()
+        client = _RetryClient(during=lambda wav: core.history_delete([rid]))
+        res = self.retry(rid, client)
+        self.assertEqual(res, {"ok": False, "err": "التسجيل اتمسح"})
+        self.assertEqual(client.read, [(True, None)])
+        self.assertEqual(self.items(), [])
+        self.assertEqual(self.files(rid), set())
+
+    def test_failed_processing_keeps_the_transcript_with_a_note(self):
+        rid = self.keep(mode="prompt")
+        res = self.retry(rid, _RetryClient(text="اكتب برومبت", ai_ok=False))
+        self.assertEqual(res, {"ok": True, "result": "اكتب برومبت",
+                               "note": "مقدرتش أحوّله — ده الكلام زي ما اتقال"})
+        self.assertNotIn("status", self.entry(rid))
+
+    def test_edit_retry_returns_the_instruction(self):
+        rid = self.keep(mode="edit")
+        res = self.retry(rid, _RetryClient(text="خليه رسمي"))
+        self.assertEqual(res, {"ok": True, "result": "خليه رسمي"})
+        self.assertEqual(self.entry(rid)["result"], "خليه رسمي")
+
+    def test_snippet_is_expanded_and_labelled_in_history(self):
+        rid = self.keep()
+        with mock.patch.dict(core.CFG, snippets=[{"trigger": "إيميلي", "text": "me@example.com"}]):
+            res = self.retry(rid, _RetryClient(text="إيميلي"))
+        self.assertEqual(res["result"], "me@example.com")
+        self.assertEqual(self.entry(rid)["result"], "[اختصار] إيميلي")
+
+    def test_an_exception_does_not_leave_the_recording_locked(self):
+        rid = self.keep()
+        with mock.patch.object(core, "convert_text", side_effect=RuntimeError("boom")):
+            self.assertFalse(self.retry(rid, _RetryClient())["ok"])
+        self.assertTrue(self.retry(rid, _RetryClient())["ok"])
+
+    def test_default_client_is_a_fresh_feature_client(self):
+        rid = self.keep(mode="translate")
+        client = _RetryClient(text="اترجم ده")
+        with mock.patch.object(core.chains, "FeatureClient", return_value=client) as make,                 mock.patch.object(core.providers, "read_key_pools", return_value={"groq": ["k"]}),                 mock.patch.dict(core.CFG, dictionary=["إملاء"]):
+            self.assertTrue(core.retranscribe(rid)["ok"])
+        make.assert_called_once_with(core.feature("translate"), {"groq": ["k"]})
+        self.assertEqual(client.vocab, ["إملاء"])
+
+
 if __name__ == "__main__":
     unittest.main()

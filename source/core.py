@@ -1586,6 +1586,101 @@ def convert_text(client, mode, text, app=""):
     return Converted(out, raw, bypass, snippet, ai_failed)
 
 
+EMPTY_TRANSCRIPT = "مطلعش نص — قرّب من الميك وجرّب تاني"
+RETRY_DELETED = "التسجيل اتمسح"
+AI_FAILED_NOTE = "مقدرتش أحوّله — ده الكلام زي ما اتقال"
+
+
+def _set_vocab(client):
+    """كلمات القاموس + مفاتيح الاختصارات (F8) بتتبعت لموديل التفريغ عشان يسمعها صح."""
+    client.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
+    client.vocab_extra = [str(s.get("trigger") or "").strip()
+                          for s in (CFG.get("snippets") or [])
+                          if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+    return client
+
+
+def _fresh_client(mode):
+    """
+    عميل جديد للتفريغ اليدوي بالإعدادات الحالية — مش عميل الإملاء الحي: حالة كل عملية فيه
+    (ai_ok/آخر موديل) بتاعة الإملاء اللي ممكن يكون شغّال في نفس الوقت.
+    """
+    return _set_vocab(chains.FeatureClient(feature(mode), providers.read_key_pools(ENV_PATH)))
+
+
+def _claim_retry(rid):
+    """
+    تحت القفل: الصف لازم يكون فاشل وصوته موجود ومحدش بيفرّغه — بيتعلّم «بيتفرّغ» (التنضيف
+    مايلمسوش، وتفريغ تاني له بيترفض) وبيتنسخ صوته نسخة خاصة: المسح أثناء التفريغ مايشدّش
+    الصوت من تحت المزوّد. بيرجّع (الصف، النسخة) أو (None، سبب الرفض).
+    """
+    with _store_lock:
+        entry = history_entry(rid)
+        if entry is None or not _is_failed(entry) or not os.path.exists(failed_wav_path(rid)):
+            return None, "التسجيل ده مش موجود أو اتفرّغ خلاص"
+        if rid in _retrying:
+            return None, "التسجيل ده بيتفرّغ دلوقتي"
+        fd, work = tempfile.mkstemp(prefix="emlaa-retry-", suffix=".wav")
+        os.close(fd)
+        try:
+            shutil.copyfile(failed_wav_path(rid), work)
+        except Exception as e:
+            log_error(e, "retranscribe/copy")
+            _silent_remove(work)
+            return None, friendly_error(e)
+        _retrying.add(rid)
+    return entry, work
+
+
+def _fail_again(rid, message):
+    history_fail_again(rid, message)
+    return {"ok": False, "err": message}
+
+
+def _retry_text(rid, entry, wav, make_client):
+    """التفريغ + معالجة الميزة على الصوت المحفوظ، والصف بيتحوّل لتسجيل عادي."""
+    mode, app = entry.get("mode") or "normal", entry.get("app") or ""
+    cl = make_client(mode)
+    text = cl.transcribe(wav, None)
+    if not text:
+        return _fail_again(rid, EMPTY_TRANSCRIPT)
+    if mode == "edit":
+        # التحديد عمره ما اتحفظ، فالتعديل مايتعادش — التعليمات نفسها هي اللي بتتنسخ
+        conv = Converted(text, True, False, None, False)
+    else:
+        conv = convert_text(cl, mode, text, app)
+    out = conv.out
+    if mode == "normal" and not conv.raw and conv.snippet is None and not smart.is_dev_app(app, CFG):
+        out = smart.fix_mixed(out)        # زي الإملاء الحي — من غير هدف كتابة، فقاعدة الترمنال مالهاش لازمة
+    shown = "[اختصار] " + str(conv.snippet.get("trigger") or "") if conv.snippet is not None else out
+    if not history_resolve(rid, text, shown, cl.engine()):
+        return {"ok": False, "err": RETRY_DELETED}       # اتمسح أثناء التفريغ — المسح بيكسب
+    res = {"ok": True, "result": out}
+    if conv.ai_failed:
+        res["note"] = AI_FAILED_NOTE                       # الكلام اتحفظ — المعالجة بس اللي فشلت
+    return res
+
+
+def retranscribe(rid, client_factory=None):
+    """
+    التفريغ اليدوي لتسجيل فشل: نفس تفريغ الميزة ومعالجتها على الصوت المحفوظ، والنتيجة بتظهر
+    في السجل للنسخ — عمره ما بيكتب ولا بينسخ. {"ok": True, "result", "note"?} أو {"ok": False, "err"}.
+    """
+    entry, work = _claim_retry(rid)
+    if entry is None:
+        return {"ok": False, "err": work}
+    try:
+        return _retry_text(rid, entry, work, client_factory or _fresh_client)
+    except Exception as e:
+        log_error(e, "retranscribe")
+        return _fail_again(rid, friendly_error(e))
+    finally:
+        with _store_lock:
+            _retrying.discard(rid)
+        _silent_remove(work)
+        recordings_prune()
+
+
 CAPTURE_TIMEOUT_ERR = "الزرار ماوصلش لويندوز — لو لابتوب جرّب Fn مع الزرار"
 
 
@@ -2023,18 +2118,12 @@ class App:
             lang = None
             # كل ميزة ليها قايمة تفريغ بالترتيب (مزوّدين و/أو الموديل المحلي) — FeatureClient
             # بيجرّب الأول ولو فشل بأي سبب بينقل للي بعده؛ "محلي" أول القايمة = من غير نت خالص.
-            cl = self.client(cur_mode)
-            cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-            # F8: مفاتيح الاختصارات الصوتية بتتبعت للموديل زي كلمات القاموس —
-            # عشان Whisper يسمعها صح ويطلعها زي ما المستخدم نطقها.
-            cl.vocab_extra = [str(s.get("trigger") or "").strip()
-                              for s in (CFG.get("snippets") or [])
-                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+            cl = _set_vocab(self.client(cur_mode))
             text = cl.transcribe(wav, lang)
             if not text:
                 # التفريغ الفاضي فشل: الصوت بيتحفظ عشان التفريغ اليدوي (ممكن الموديل اللي بعده يسمعه)
-                keep_tmp = not self._keep_failure(cur_mode, wav, "مطلعش نص — قرّب من الميك وجرّب تاني", op, dur)
-                self.on_state("err", "مطلعش نص — قرّب من الميك وجرّب تاني")
+                keep_tmp = not self._keep_failure(cur_mode, wav, EMPTY_TRANSCRIPT, op, dur)
+                self.on_state("err", EMPTY_TRANSCRIPT)
                 return
             if early_secure:
                 # خانة باسورد: مفيش أي لفة موديل في أي وضع (عادي/برومبت/ترجمة)
@@ -2183,17 +2272,13 @@ class App:
             return False
         instruction, saved, keep_tmp = None, False, False
         try:
-            cl = self.client("edit")
-            cl.vocab = [w for w in (CFG.get("dictionary") or []) if str(w).strip()]
-            cl.vocab_extra = [str(s.get("trigger") or "").strip()
-                              for s in (CFG.get("snippets") or [])
-                              if isinstance(s, dict) and str(s.get("trigger") or "").strip()]
+            cl = _set_vocab(self.client("edit"))
             # تعرّف تلقائي: التعليمات ممكن يبقى فيها نص إنجليزي يتحط حرفيًا — المجبر على "ar" بيترجمه.
             # التفريغ بيمشي على قايمة تاب «تعديل»؛ لو اتفرّغ محلي والمعالجة ماوصلتش لحد،
             # edit() بيرجّع None والتحديد بيفضل زي ما هو (تحت).
             instruction = cl.transcribe(wav, None)
             if not instruction:
-                return self._edit_failed(wav, op, dur, "مطلعش نص — قرّب من الميك وجرّب تاني", "")
+                return self._edit_failed(wav, op, dur, EMPTY_TRANSCRIPT, "")
             result = cl.edit(op.selection, instruction)
             if result is None:
                 # فشل النداء = مفيش تعديل — التحديد زي ما هو، ومنكتبش حاجة؛ التعليمات بتتحفظ
