@@ -28,8 +28,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STORE_DIR = os.path.join(ROOT, "tools", "store")
 LAYOUT = os.path.join(ROOT, "build", "store", "layout")
 OUT_DIR = os.path.join(ROOT, "dist", "store")
-CACHE = os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "Emlaa-build", "sdk-buildtools")
-NUGET = "https://www.nuget.org/api/v2/package/Microsoft.Windows.SDK.BuildTools"
+# إصدار ثابت عشان البناء مايتغيّرش لوحده لما NuGet ينزّل إصدار جديد. الكاش جوّه build/ بتاع
+# المشروع: من فولدر AppData كان makeappx بيقع بـ«side-by-side configuration is incorrect»
+# (الـmanifests بتاعة الأدوات ماكانتش بتتلاقي)، ومن نفس الملفات على F: بيشتغل عادي.
+BUILDTOOLS = "10.0.26100.9169"
+CACHE = os.path.join(ROOT, "build", "sdk-buildtools-" + BUILDTOOLS)
+NUGET = "https://www.nuget.org/api/v2/package/Microsoft.Windows.SDK.BuildTools/" + BUILDTOOLS
 
 
 def app_version():
