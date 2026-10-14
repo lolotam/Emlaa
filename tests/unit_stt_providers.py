@@ -137,7 +137,7 @@ class TestXaiTranscribe(unittest.TestCase):
 
     def test_auto_language_sends_no_language_or_format_field(self):
         with _TmpWav() as wav, \
-                mock.patch.object(providers, "_post_multipart", return_value={"text": "hi"}) as post:
+                mock.patch.object(providers, "_post_multipart", return_value={"transcript": "hi"}) as post:
             self.cl._xai_transcribe(wav, None)
         names = _field_names(post.call_args.args[1])
         self.assertNotIn("language", names)
@@ -146,7 +146,7 @@ class TestXaiTranscribe(unittest.TestCase):
     def test_400_retries_same_model_without_hints(self):
         with _TmpWav() as wav, \
                 mock.patch.object(providers, "_post_multipart",
-                                  side_effect=[_http_error(400), {"text": "تمام"}]) as post:
+                                  side_effect=[_http_error(400), {"transcript": "تمام"}]) as post:
             self.assertEqual(self.cl._xai_transcribe(wav, "ar"), "تمام")
         retry = post.call_args_list[1].args[1]
         self.assertEqual(retry, [("model", "grok-voice-transcribe-2.0")])
@@ -154,7 +154,7 @@ class TestXaiTranscribe(unittest.TestCase):
     def test_404_falls_back_to_the_next_model(self):
         with _TmpWav() as wav, \
                 mock.patch.object(providers, "_post_multipart",
-                                  side_effect=[_http_error(404), {"text": "تمام"}]) as post:
+                                  side_effect=[_http_error(404), {"transcript": "تمام"}]) as post:
             self.cl._xai_transcribe(wav, "ar")
         self.assertEqual(post.call_args_list[1].args[1][0], ("model", "grok-voice-transcribe-1.0"))
         self.assertEqual(self.cl.last_stt_model, "grok-voice-transcribe-1.0")
@@ -177,7 +177,7 @@ class TestXaiTranscribe(unittest.TestCase):
 
     def test_client_transcribe_goes_to_the_xai_endpoint(self):
         with _TmpWav() as wav, \
-                mock.patch.object(providers, "_post_multipart", return_value={"text": "تمام"}) as post:
+                mock.patch.object(providers, "_post_multipart", return_value={"transcript": "تمام"}) as post:
             self.assertEqual(self.cl.transcribe(wav, "ar"), "تمام")
         self.assertEqual(post.call_args.args[0], providers.XAI_STT_URL)
 

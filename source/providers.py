@@ -1282,7 +1282,8 @@ class Client(TextOps):
                 try:
                     r = send(model, use_hints)
                     self.last_stt_model = model
-                    return (r.get("text") or "").strip()
+                    # xAI بيرجّع النص في transcript، و Z.ai/OpenRouter في text
+                    return (r.get("text") or r.get("transcript") or "").strip()
                 except urllib.error.HTTPError as e:
                     if e.code == 400 and j < len(tries) - 1:
                         continue
