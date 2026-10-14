@@ -122,8 +122,8 @@ class TestCatalogs(unittest.TestCase):
         self.assertEqual(providers.stt_order("groq"), ["whisper-large-v3-turbo", "whisper-large-v3"])
 
     def test_stt_catalog_lists_every_pickable_model(self):
-        self.assertEqual(providers.stt_catalog("openai")[:3],
-                         ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"])
+        self.assertEqual(providers.stt_catalog("openai"),
+                         ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"])
         self.assertIn("whisper-1", providers.stt_catalog("openai"))
 
 

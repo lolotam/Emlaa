@@ -7,16 +7,23 @@
   • OpenAI و Groq: نفس شكل الـAPI بالظبط، فبنستخدم مكتبة openai للاتنين
     وبنغيّر الـbase_url بس.
   • Gemini: شكل مختلف تمامًا (generateContent + الصوت جوّه الطلب base64)،
-    فليه مسار خاص بـ urllib — من غير أي مكتبة زيادة.
+    فليه مسار خاص بـ urllib — من غير أي مكتبة زيادة. موديلات gemini-*-transcribe
+    على /interactions.
+  • xAI Grok و Z.ai GLM: تفريغ بس، برفع الملف (multipart) بـ urllib برضه.
 
 المفاتيح بتتخزّن على جهاز المستخدم بس، كل مزوّد ومفتاحه، في ملف .env جنب البرنامج.
 """
+import io
 import os
 import re
 import ssl
 import time
 import json
+import tempfile
+import uuid
+import wave
 import base64
+import binascii
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -96,13 +103,77 @@ PROVIDERS = {
         "chat":      None,     # Deepgram بيفرّغ بس — التنظيف بيتعمل بمفتاح مزوّد تاني لو موجود
         "chat_alt":  None,
     },
+    "xai": {
+        "name":      "xAI Grok",
+        "tag":       "بالساعة",
+        "desc":      "تفريغ بس · بيدعم العربي · بيتحاسب بساعات الصوت",
+        "key_url":   "https://console.x.ai/",
+        "key_hint":  "المفتاح بيبدأ بحروف xai",
+        "key_start": "xai-",
+        "env":       "XAI_API_KEY",
+        "base_url":  None,
+        "stt":       "grok-voice-transcribe-2.0",
+        "stt_alt":   ["grok-voice-transcribe-1.0"],
+        "chat":      None,
+        "chat_alt":  None,
+    },
+    "zai": {
+        "name":      "Z.ai GLM",
+        "tag":       "تجريبي",
+        "desc":      "تفريغ بس · العربي مش في لغاته الرسمية · بنقسّم الكلام كل ٢٨ ثانية",
+        "key_url":   "https://z.ai/manage-apikey/apikey-list",
+        "key_hint":  "هاته من z.ai ← API Keys",
+        "key_start": None,
+        "env":       "ZAI_API_KEY",
+        "base_url":  None,
+        "stt":       "glm-asr-2512",
+        "stt_alt":   None,
+        "chat":      None,
+        "chat_alt":  None,
+    },
+    "openrouter": {
+        "name":      "OpenRouter",
+        "tag":       "موديلات كتير",
+        "desc":      "تفريغ بس · مفتاح واحد لموديلات تفريغ من شركات كتير",
+        "key_url":   "https://openrouter.ai/settings/keys",
+        "key_hint":  "المفتاح بيبدأ بحروف sk-or",
+        "key_start": "sk-or-",
+        "env":       "OPENROUTER_API_KEY",
+        "base_url":  None,
+        "stt":       "openai/whisper-large-v3-turbo",
+        "stt_alt":   ["openai/whisper-large-v3"],
+        "chat":      None,
+        "chat_alt":  None,
+    },
+    # Vercel AI Gateway هنا للقراية بصوت (TTS) بس — مش في ORDER: مبيفرّغش ومبيعالجش
+    "vercel": {
+        "name":      "Vercel AI Gateway",
+        "tag":       "قراءة بصوت",
+        "desc":      "قراءة النص بصوت بس (TTS) · مفتاح واحد لموديلات صوت من شركات كتير",
+        "key_url":   "https://vercel.com/dashboard/ai-gateway/api-keys",
+        "key_hint":  "هاته من Vercel ← AI Gateway ← API Keys",
+        "key_start": None,
+        "env":       "AI_GATEWAY_API_KEY",
+        "base_url":  None,
+        "stt":       None,
+        "stt_alt":   None,
+        "chat":      None,
+        "chat_alt":  None,
+        "tts":       "openai/tts-1",
+    },
 }
 
-ORDER = ["groq", "openai", "gemini", "deepgram"]
+ORDER = ["groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter"]   # بيفرّغوا/بيعالجوا
+TTS_ORDER = ["vercel"]                                                           # بيقروا النص بصوت بس
 DEFAULT = "groq"
 
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
 DEEPGRAM_API = "https://api.deepgram.com/v1"
+XAI_STT_URL = "https://api.x.ai/v1/stt"
+ZAI_STT_URL = "https://api.z.ai/api/paas/v4/audio/transcriptions"
+OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+VERCEL_TTS_URL = "https://ai-gateway.vercel.sh/v4/ai/speech-model"
+TTS_MAX_CHARS = 4000     # OpenAI tts-1 بيقبل 4096 حرف — أقل حد بين موديلات البوابة
 
 # ── موديلات التفريغ بس (مش موديلات الشات) + نسبة الترشيح ─────────────────────
 # النسبة = قد إيه الموديل مناسب للإملاء بالعامية المصرية (دقة + سرعة + تكلفة).
@@ -113,13 +184,15 @@ MODELS = {
         {"id": "whisper-large-v3",       "score": 90,  "note": "أدق شوية في العربي · أبطأ"},
     ],
     "openai": [
-        {"id": "gpt-4o-transcribe",      "score": 100, "note": "أدق تفريغ للعامية"},
-        {"id": "gpt-4o-mini-transcribe", "score": 90,  "note": "قريب منه · أرخص وأسرع"},
+        {"id": "gpt-transcribe",         "score": 100, "note": "أحدث موديل تفريغ من OpenAI"},
+        {"id": "gpt-4o-transcribe",      "score": 95,  "note": "أدق تفريغ للعامية"},
+        {"id": "gpt-4o-mini-transcribe", "score": 85,  "note": "قريب منه · أرخص وأسرع"},
         {"id": "whisper-1",              "score": 70,  "note": "الموديل القديم"},
     ],
     "gemini": [
-        {"id": "gemini-3.8-flash",       "score": 100, "note": "أحدث Flash · سريع ومجاني"},
-        {"id": "gemini-flash-latest",    "score": 95,  "note": "بيمشي مع آخر Flash تلقائيًا"},
+        {"id": "gemini-3.5-transcribe",  "score": 100, "note": "موديل جوجل المخصوص للتفريغ"},
+        {"id": "gemini-3.8-flash",       "score": 95,  "note": "أحدث Flash · سريع ومجاني"},
+        {"id": "gemini-flash-latest",    "score": 90,  "note": "بيمشي مع آخر Flash تلقائيًا"},
         {"id": "gemini-3.5-flash",       "score": 85,  "note": "نسخة أقدم"},
         {"id": "gemini-2.5-flash",       "score": 75,  "note": "نسخة قديمة"},
     ],
@@ -127,6 +200,39 @@ MODELS = {
         {"id": "nova-3",                 "score": 100, "note": "بيدعم العامية المصرية · سريع جدًا"},
         {"id": "whisper-large",          "score": 70,  "note": "Whisper على سيرفرات Deepgram · أبطأ"},
         {"id": "whisper-medium",         "score": 50,  "note": "أخف · أقل دقة في العربي"},
+    ],
+    "xai": [
+        {"id": "grok-voice-transcribe-2.0", "score": 100, "note": "أحدث نسخة · أدق من 1.0"},
+        {"id": "grok-voice-transcribe-1.0", "score": 70,  "note": "النسخة الأولى · هتتشال قريب"},
+    ],
+    "zai": [
+        {"id": "glm-asr-2512",           "score": 60,  "note": "العربي مش مضمون · جرّبه الأول"},
+    ],
+    # موديلات التفريغ بس (output_modalities=transcription) — من غير الـstreaming والطبي
+    "openrouter": [
+        {"id": "openai/whisper-large-v3-turbo", "score": 100, "note": "سريع ورخيص · كويس في العربي"},
+        {"id": "openai/gpt-transcribe",         "score": 95,  "note": "أحدث موديل تفريغ من OpenAI"},
+        {"id": "openai/gpt-4o-transcribe",      "score": 95,  "note": "أدق تفريغ للعامية"},
+        {"id": "google/gemini-3.5-transcribe",  "score": 90,  "note": "موديل جوجل المخصوص للتفريغ"},
+        {"id": "openai/gpt-4o-mini-transcribe", "score": 85,  "note": "قريب منه · أرخص وأسرع"},
+        {"id": "elevenlabs/scribe-v2",          "score": 85,  "note": "ElevenLabs Scribe"},
+        {"id": "x-ai/grok-stt-1.0",             "score": 80,  "note": "Grok · بيدعم العربي"},
+        {"id": "deepgram/nova-3",               "score": 80,  "note": "بيدعم العامية المصرية · سريع جدًا"},
+        {"id": "openai/whisper-large-v3",       "score": 80,  "note": "أدق شوية في العربي · أبطأ"},
+        {"id": "mistralai/voxtral-mini-transcribe", "score": 70, "note": "Mistral Voxtral"},
+        {"id": "openai/whisper-1",              "score": 70,  "note": "الموديل القديم"},
+    ],
+}
+
+# ── موديلات القراية بصوت (TTS) — كل موديلات type=speech في كتالوج البوابة ─────────
+TTS_MODELS = {
+    "vercel": [
+        "openai/tts-1", "openai/tts-1-hd",
+        "google/gemini-3.8-flash-tts", "google/gemini-3.8-flash-lite-tts",
+        "microsoft/mai-voice-2.1", "microsoft/mai-voice-2.1-flash",
+        "microsoft/mai-voice-2", "microsoft/mai-voice-2-flash",
+        "spacexai/grok-tts",
+        "fish-audio/s2.1-pro", "fish-audio/s2-pro", "fish-audio/s1", "fish-audio/drama-3",
     ],
 }
 
@@ -159,6 +265,34 @@ GUIDES = {
                   "انسخ المفتاح فورًا (مبيظهرش تاني) والصقه هنا"],
         "docs": "https://developers.deepgram.com/docs/pre-recorded-audio",
         "free": "$200 رصيد مجاني",
+    },
+    "xai": {
+        "steps": ["سجّل دخول على console.x.ai",
+                  "اشحن رصيد من Billing",
+                  "API Keys ← Create API Key وانسخه (بيبدأ بـ xai-)"],
+        "docs": "https://docs.x.ai/developers/model-capabilities/audio/speech-to-text",
+        "free": "مدفوع",
+    },
+    "zai": {
+        "steps": ["سجّل دخول على z.ai",
+                  "اشحن رصيد من Billing",
+                  "API Keys ← Create a new API key وانسخه"],
+        "docs": "https://docs.z.ai/guides/audio/glm-asr-2512",
+        "free": "مدفوع",
+    },
+    "openrouter": {
+        "steps": ["سجّل دخول على openrouter.ai",
+                  "اشحن رصيد من Credits",
+                  "Settings ← API Keys ← Create Key وانسخه (بيبدأ بـ sk-or-)"],
+        "docs": "https://openrouter.ai/docs/guides/overview/multimodal/stt",
+        "free": "مدفوع",
+    },
+    "vercel": {
+        "steps": ["سجّل دخول على vercel.com",
+                  "ادخل AI Gateway ← API Keys",
+                  "Create key وانسخه"],
+        "docs": "https://vercel.com/docs/ai-gateway/modalities/text-to-speech",
+        "free": "مدفوع",
     },
 }
 
@@ -591,6 +725,69 @@ def _post_json(url, payload, headers, timeout=120):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _post_multipart(url, fields, file_name, file_bytes, headers, timeout=120):
+    """
+    رفع ملف صوت مع حقول نصية (xAI و Z.ai). fields = [(اسم، قيمة)] بالترتيب، والاسم
+    ممكن يتكرر (keyterm/hotwords). الملف آخر حقل: xAI بيتجاهل أي حقل بعده.
+    """
+    boundary = "emlaa-" + uuid.uuid4().hex
+    parts = []
+    for name, value in fields:
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                     f'{value}\r\n'.encode("utf-8"))
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                 f'filename="{file_name}"\r\nContent-Type: audio/wav\r\n\r\n'.encode("utf-8"))
+    parts += [file_bytes, f"\r\n--{boundary}--\r\n".encode("utf-8")]
+    req = urllib.request.Request(
+        url, data=b"".join(parts), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "User-Agent": "Emlaa", **headers})
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _b64_file(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
+
+
+def _silent_wav(frames=1600):
+    """عُشر ثانية سكوت (16kHz mono) — للتأكد من المفتاح على مسار التفريغ نفسه."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * frames)
+    return buf.getvalue()
+
+
+def _wav_chunks(wav_bytes, seconds):
+    """بيقسّم WAV لملفات WAV كل واحد ≤ seconds (Z.ai بيقبل ٣٠ ثانية بس للطلب)."""
+    with wave.open(io.BytesIO(wav_bytes), "rb") as src:
+        params = src.getparams()
+        step = int(params.framerate * seconds)
+        if params.nframes <= step:
+            return [wav_bytes]
+        chunks = []
+        while True:
+            frames = src.readframes(step)
+            if not frames:
+                return chunks
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as out:
+                out.setparams(params)
+                out.writeframes(frames)
+            chunks.append(buf.getvalue())
+
+
+def _interaction_text(resp):
+    """يطلّع النص من رد /interactions (موديلات gemini-*-transcribe)."""
+    return "".join(c.get("text", "")
+                   for step in resp.get("steps") or [] if step.get("type") == "model_output"
+                   for c in step.get("content") or [] if c.get("type") == "text").strip()
+
+
 def _gemini_text(resp):
     """يطلّع النص من رد generateContent."""
     try:
@@ -948,6 +1145,12 @@ class Client(TextOps):
                 return self._gemini_transcribe(wav_path, language)
             elif self.id == "deepgram":
                 return self._deepgram_transcribe(wav_path, language)
+            elif self.id == "xai":
+                return self._xai_transcribe(wav_path, language)
+            elif self.id == "zai":
+                return self._zai_transcribe(wav_path)
+            elif self.id == "openrouter":
+                return self._openrouter_transcribe(wav_path, language)
             return self._oa_transcribe(wav_path, language)
         text = self._run(run)
         # التعرّف التلقائي ساعات بيغلط في المقاطع القصيرة ويطلّع العامية فارسي أو أوردو…
@@ -1003,7 +1206,7 @@ class Client(TextOps):
         """بيرجّع (النص، اللغة اللي اتعرّف عليها). language=None = detect_language."""
         audio = open(wav_path, "rb").read()
         hdr = {"Authorization": "Token " + self.key, "Content-Type": "audio/wav"}
-        terms = [str(w).strip() for w in self.vocab[:50] if str(w).strip()]
+        terms = self._vocab_terms(50)
         last_err = None
         candidates = self._stt_models()
         for i, model in enumerate(candidates):
@@ -1046,6 +1249,109 @@ class Client(TextOps):
             raise err
         return "", language
 
+    def _vocab_terms(self, limit):
+        """كلمات القاموس كقايمة مصطلحات (keyterm/hotwords/custom_vocabulary) — من غير الفاضي."""
+        return [str(w).strip() for w in self.vocab[:limit] if str(w).strip()]
+
+    def _multipart_transcribe(self, url, audio, hints, extra=()):
+        """تفريغ برفع الملف (xAI و Z.ai) — extra حقول ثابتة، hints بتتشال لو رجع 400."""
+        hdr = {"Authorization": "Bearer " + self.key}
+
+        def send(model, use_hints):
+            fields = [("model", model)] + list(extra) + (list(hints) if use_hints else [])
+            return _post_multipart(url, fields, "audio.wav", audio, hdr)
+        return self._hinted_transcribe(send, bool(hints))
+
+    def _hinted_transcribe(self, send, has_hints):
+        """
+        send(model, use_hints) بيبعت الطلب ويرجّع الرد (فيه text). لكل موديل: بالتلميحات
+        (اللغة/كلمات القاموس) الأول ولو رجع 400 من غيرها — يمكن المزوّد مش قابل لغة أو
+        كلمة. 400/403/404 على موديل مش الأخير = البديل.
+        """
+        candidates = self._stt_models()
+        for i, model in enumerate(candidates):
+            tries = [True, False] if has_hints else [False]
+            for j, use_hints in enumerate(tries):
+                try:
+                    r = send(model, use_hints)
+                    self.last_stt_model = model
+                    return (r.get("text") or "").strip()
+                except urllib.error.HTTPError as e:
+                    if e.code == 400 and j < len(tries) - 1:
+                        continue
+                    if e.code in (400, 403, 404) and i < len(candidates) - 1:
+                        break
+                    raise RuntimeError(_http_msg(e))
+                except Exception as e:
+                    raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
+        return ""
+
+    def _xai_transcribe(self, wav_path, language):
+        # language عند xAI بيظبط التنسيق بس (مع format=true) — التعرّف على اللغة تلقائي
+        hints = [("language", language)] if language else []
+        hints += [("keyterm", t[:50]) for t in self._vocab_terms(100)]
+        with open(wav_path, "rb") as f:
+            audio = f.read()
+        return self._multipart_transcribe(XAI_STT_URL, audio, hints)
+
+    def _openrouter_transcribe(self, wav_path, language):
+        hdr = {"Authorization": "Bearer " + self.key}
+        terms = self._vocab_terms(100)
+        hints = {"keyterms": terms} if terms else {}
+        if language:
+            hints["language"] = language
+        audio = _b64_file(wav_path)
+
+        def send(model, use_hints):
+            body = {"model": model, "input_audio": {"data": audio, "format": "wav"}}
+            return _post_json(OPENROUTER_STT_URL, {**body, **hints} if use_hints else body, hdr)
+        return self._hinted_transcribe(send, bool(hints))
+
+    # ── القراية بصوت (TTS) ──
+    def speak(self, text, model):
+        """بيرجّع بايتات الصوت للنص ده بموديل من TTS_MODELS (بنفس تبديل المفاتيح)."""
+        text = (text or "").strip()
+        if not text:
+            raise RuntimeError("مفيش نص يتقري")
+        if len(text) > TTS_MAX_CHARS:
+            raise RuntimeError(f"النص أطول من {TTS_MAX_CHARS} حرف")
+        if model not in TTS_MODELS.get(self.id, []):
+            raise RuntimeError("موديل الصوت مش معروف")
+        return self._run(lambda: self._vercel_speech(text, model))
+
+    def _vercel_speech(self, text, model):
+        hdr = {"Authorization": "Bearer " + self.key, "ai-model-id": model,
+               "ai-gateway-protocol-version": "0.0.1",
+               "ai-speech-model-specification-version": "4"}
+        try:
+            r = _post_json(VERCEL_TTS_URL, {"text": text, "outputFormat": "mp3"}, hdr)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(_http_msg(e))
+        except Exception as e:
+            raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
+        try:
+            audio = base64.b64decode(r.get("audio") or "", validate=True)
+        except (binascii.Error, ValueError):
+            audio = b""
+        if not audio:
+            raise RuntimeError("الخدمة مارجّعتش صوت")
+        return audio
+
+    def _zai_transcribe(self, wav_path):
+        """
+        Z.ai بيقبل ٣٠ ثانية بس في الطلب، فبنقسّم كل ٢٨ ثانية ونبعت النص اللي فات كـprompt
+        مع الجزء اللي بعده (ده استخدام الـprompt عندهم). مالوش برامتر لغة.
+        """
+        with open(wav_path, "rb") as f:
+            chunks = _wav_chunks(f.read(), 28)
+        hints = [("hotwords", t) for t in self._vocab_terms(100)]
+        texts = []
+        for chunk in chunks:
+            prev = " ".join(texts)[-4000:]
+            extra = [("prompt", prev)] if prev else []
+            texts.append(self._multipart_transcribe(ZAI_STT_URL, chunk, hints, extra))
+        return " ".join(t for t in texts if t)
+
     def _oa_transcribe(self, wav_path, language):
         from openai import APIConnectionError, APITimeoutError
         candidates = self._stt_models()
@@ -1055,8 +1361,7 @@ class Client(TextOps):
             # مفتاح تاني: ولا إعادة — الحد (429) يبدّل للمفتاح التاني فورًا من غير انتظار
             client = (self._openai() if self._final_key_attempt
                       else self._openai().with_options(max_retries=0))
-            # من غير language خالص (مش None) عشان Whisper يشغّل التعرّف التلقائي على اللغة
-            kw = {"language": language} if language else {}
+            kw = self._oa_language_kw(model, language)
             try:
                 with open(wav_path, "rb") as f:
                     tr = client.audio.transcriptions.create(
@@ -1079,6 +1384,20 @@ class Client(TextOps):
         if last_err:
             raise last_err
         return ""
+
+    def _oa_language_kw(self, model, language):
+        """
+        gpt-transcribe بياخد languages (اللغات المحتملة) بدل language، ومعاها keywords
+        لكلمات القاموس. باقي الموديلات: من غير language خالص (مش None) عشان Whisper
+        يشغّل التعرّف التلقائي على اللغة.
+        """
+        if model == "gpt-transcribe":
+            extra = {"languages": [language] if language else ["ar", "en"]}
+            terms = self._vocab_terms(100)
+            if terms:
+                extra["keywords"] = terms
+            return {"extra_body": extra}
+        return {"language": language} if language else {}
 
     def _stt_timeout(self):
         """
@@ -1112,9 +1431,13 @@ class Client(TextOps):
         last_err = None
         for i, model in enumerate(candidates):
             try:
-                r = _post_json(f"{GEMINI_API}/models/{model}:generateContent", payload, hdr)
+                if "transcribe" in model:
+                    text = self._gemini_interaction_transcribe(model, audio, language, hdr)
+                else:
+                    text = _gemini_text(_post_json(
+                        f"{GEMINI_API}/models/{model}:generateContent", payload, hdr))
                 self.last_stt_model = model
-                return _gemini_text(r)
+                return text
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code == 404 and i < len(candidates) - 1:
@@ -1125,6 +1448,31 @@ class Client(TextOps):
         if last_err:
             raise RuntimeError(_http_msg(last_err))
         return ""
+
+    def _gemini_interaction_transcribe(self, model, audio, language, hdr):
+        """
+        موديلات gemini-*-transcribe على /interactions مش generateContent، ومن غير تعليمات
+        نصية: اللغة وكلمات القاموس في transcription_config. لو رجع 400 (لغة أو كلمات مش
+        مقبولة) بنعيد من غير الإعدادات دي.
+        """
+        config = {"language_codes": [language] if language else []}
+        terms = self._vocab_terms(100)
+        if terms:
+            config["custom_vocabulary"] = terms
+
+        def post(transcription_config):
+            return _interaction_text(_post_json(f"{GEMINI_API}/interactions", {
+                "model": model,
+                "input": [{"type": "audio", "data": audio, "mime_type": "audio/wav"}],
+                "generation_config": {"transcription_config": transcription_config},
+            }, hdr))
+
+        try:
+            return post(config)
+        except urllib.error.HTTPError as e:
+            if e.code != 400:
+                raise
+        return post({})
 
     # ── معالجة النص بالموديل (تنظيف / تحويل لبرومبت) ──
     def _chat(self, system, text, temperature=0.2):
@@ -1320,6 +1668,10 @@ def verify(provider_id, key):
                 raise last_err
         elif provider_id == "deepgram":
             _get_json(DEEPGRAM_API + "/projects", {"Authorization": "Token " + key}, timeout=15)
+        elif m.get("tts"):
+            _verify_tts(provider_id, key)
+        elif not m["chat"]:
+            _verify_by_silent_stt(provider_id, key)
         else:
             from openai import OpenAI
             import httpx
@@ -1336,17 +1688,11 @@ def verify(provider_id, key):
                     messages=[{"role": "user", "content": "hi"}],
                     max_tokens=1
                 )
-                import io, wave, struct
                 stt_candidates = _model_list(m["stt"], m.get("stt_alt"))
                 stt_ok = False
                 stt_last_err = None
                 for stt_model in stt_candidates:
-                    buf = io.BytesIO()
-                    with wave.open(buf, 'wb') as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(16000)
-                        wav.writeframes(struct.pack('<h', 0) * 1600)
+                    buf = io.BytesIO(_silent_wav())
                     buf.name = 'test.wav'
                     buf.seek(0)
                     try:
@@ -1383,6 +1729,62 @@ def verify(provider_id, key):
             return False, "الخدمة مش لاقية الموديل — الموديل اتغيّر عند المزوّد"
         detail = " ".join(_http_msg(e).split())[:60]
         return False, ("معرفناش نتأكد من المفتاح" + (" — " + detail if detail else ""))
+
+
+def _verify_by_silent_stt(provider_id, key):
+    """
+    مزوّد تفريغ بس: بنفرّغ عُشر ثانية سكوت بنفس مسار التفريغ العادي (Client). 400 معناها
+    المفتاح عدّى والطلب نفسه اترفض (صوت فاضي) — يعني المفتاح شغّال؛ 401/403/429 بتطلع.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = os.path.join(tmp, "test.wav")
+        with open(wav, "wb") as f:
+            f.write(_silent_wav())
+        client = Client(provider_id, key, model=meta(provider_id)["stt"], strict=True)
+        try:
+            client.transcribe(wav, None)
+        except RuntimeError as e:
+            if not str(e).startswith("HTTP 400"):
+                raise
+
+
+def _verify_tts(provider_id, key):
+    """
+    مزوّد قراية بصوت: كلمة واحدة بأرخص موديل (المفتاح بيتحاسب على حرفين تقريبًا).
+    400 معناها المفتاح عدّى والطلب نفسه اترفض — يعني المفتاح شغّال.
+    """
+    try:
+        Client(provider_id, key).speak("hi", meta(provider_id)["tts"])
+    except RuntimeError as e:
+        if not str(e).startswith("HTTP 400"):
+            raise
+
+
+_ARABIC_RE = re.compile(r"[؀-ۿ]")
+
+
+def tts_error_message(e):
+    """رسالة عربي للمستخدم لما «اقرا بصوت» يفشل — رسايلنا العربي بتطلع زي ما هي."""
+    if smart.is_network_error(e):
+        return "مفيش اتصال بالنت — اتأكد من الاتصال وجرّب تاني"
+    s = str(e)
+    if _ARABIC_RE.search(s):
+        return s
+    low = s.lower()
+    if "http 401" in low or "http 403" in low:
+        return "مفتاح Vercel AI Gateway مش مقبول"
+    if "http 429" in low or "quota" in low or "credit" in low:
+        return "رصيد Vercel AI Gateway خلص أو وصلت للحد"
+    return "مقدرتش أقرا النص — " + " ".join(s.split())[:60]
+
+
+def audio_mime(audio):
+    """نوع الصوت من أول بايتات — البوابة ممكن ترجّع wav لو الموديل مش بيدعم mp3."""
+    if audio[:4] == b"RIFF":
+        return "audio/wav"
+    if audio[:4] == b"OggS":
+        return "audio/ogg"
+    return "audio/mpeg"
 
 
 def _get_json(url, headers, timeout=12):

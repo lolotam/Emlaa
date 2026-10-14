@@ -552,8 +552,8 @@ class CaptureSession:
 # ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
 FEATURES = ("normal", "prompt", "translate", "edit")
 LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
-STT_ONLY = ("deepgram", LOCAL)        # بيفرّغوا بس — ممنوعين في قايمة المعالجة
-KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram")
+STT_ONLY = ("deepgram", "xai", "zai", "openrouter", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
+KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter")
 _CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
 
 
@@ -620,7 +620,7 @@ def validate_features(features, known=KNOWN_PROVIDERS):
         for item in ai:
             if not isinstance(item, dict) or item.get("provider") not in known \
                     or item.get("provider") in STT_ONLY or not item.get("model"):
-                return "المعالجة محتاجة مزوّد بيعرف يكتب (مش Deepgram ولا الموديل المحلي)"
+                return "المعالجة محتاجة مزوّد بيعرف يكتب (مش مزوّد تفريغ بس ولا الموديل المحلي)"
         if not isinstance(hk, list) or not hotkey_shape_ok(hk):
             return "زرار التسجيل مش مظبوط — زرار واحد، أو Ctrl/Alt/Shift/Win مع زرار"
         if hk:

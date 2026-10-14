@@ -197,6 +197,7 @@ DEFAULTS = {
     "theme":             "dark",    # dark / light / system
     "lang":              "ar",      # لغة الواجهة: ar / en
     "history_keep_last10": True,    # السجل بيحتفظ بآخر 10 تسجيلات بس والأقدم بيتمسح
+    "tts_model":         providers.PROVIDERS["vercel"]["tts"],   # «اقرا بصوت» في السجل (Vercel)
 }
 # الإعدادات الافتراضية للميزات (Groq لكل حاجة بترتيب النهارده) — ثابتة ومن غير قراية
 # مفاتيح، عشان أي CFG مبني من DEFAULTS يبقى فيه features. ملف المستخدم اللي مفيهوش
