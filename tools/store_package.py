@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -33,7 +34,8 @@ OUT_DIR = os.path.join(ROOT, "dist", "store")
 # (الـmanifests بتاعة الأدوات ماكانتش بتتلاقي)، ومن نفس الملفات على F: بيشتغل عادي.
 BUILDTOOLS = "10.0.26100.9169"
 CACHE = os.path.join(ROOT, "build", "sdk-buildtools-" + BUILDTOOLS)
-NUGET = "https://www.nuget.org/api/v2/package/Microsoft.Windows.SDK.BuildTools/" + BUILDTOOLS
+NUGET = ("https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools/"
+         f"{BUILDTOOLS}/microsoft.windows.sdk.buildtools.{BUILDTOOLS}.nupkg")
 
 
 def app_version():
@@ -50,7 +52,10 @@ def makeappx():
         print("→ بنزّل أدوات التغليف من NuGet (مرة واحدة)…")
         os.makedirs(CACHE, exist_ok=True)
         pkg = os.path.join(CACHE, "buildtools.zip")
-        urllib.request.urlretrieve(NUGET, pkg)
+        try:
+            urllib.request.urlretrieve(NUGET, pkg)
+        except urllib.error.URLError as e:
+            sys.exit(f"فشل تنزيل أدوات التغليف ({e}): {NUGET}")
         with zipfile.ZipFile(pkg) as z:
             z.extractall(CACHE)
         os.remove(pkg)
