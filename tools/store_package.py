@@ -13,7 +13,9 @@
 (Product management → Product identity: Package/Identity/Name و Publisher و PublisherDisplayName).
 أداة makeappx بتتنزّل لوحدها أول مرة (حزمة Microsoft.Windows.SDK.BuildTools من NuGet).
 """
+import base64
 import glob
+import hashlib
 import io
 import json
 import os
@@ -21,7 +23,6 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.error
 import urllib.request
 import zipfile
 
@@ -36,6 +37,8 @@ BUILDTOOLS = "10.0.26100.9169"
 CACHE = os.path.join(ROOT, "build", "sdk-buildtools-" + BUILDTOOLS)
 NUGET = ("https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools/"
          f"{BUILDTOOLS}/microsoft.windows.sdk.buildtools.{BUILDTOOLS}.nupkg")
+# الـhash المنشور في كتالوج NuGet للإصدار ده (packageHash).
+BUILDTOOLS_SHA512 = "hOpNh7bCzJOOm2hvKuodr1NUKHeqoUhxdAzTmhO/q+u/E+5FOyhK+THhNhUUfKLbWnSslZ/m35dwghmS2BzaWg=="
 
 
 def app_version():
@@ -46,19 +49,35 @@ def app_version():
     return ".".join(map(str, parts)) + ".0"          # الـStore عايز آخر رقم 0
 
 
+def sha512_b64(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(hashlib.file_digest(f, "sha512").digest()).decode()
+
+
+def fetch_buildtools():
+    """ينزّل حزمة الأدوات ويتأكد من الـhash قبل فكّها؛ لو أي حاجة فشلت يمسح الكاش الناقص ويقف."""
+    os.makedirs(CACHE, exist_ok=True)
+    pkg = os.path.join(CACHE, "buildtools.zip")
+    try:
+        with urllib.request.urlopen(NUGET, timeout=60) as resp, open(pkg, "wb") as out:
+            shutil.copyfileobj(resp, out)
+        if sha512_b64(pkg) == BUILDTOOLS_SHA512:
+            with zipfile.ZipFile(pkg) as z:
+                z.extractall(CACHE)
+            os.remove(pkg)
+            return
+        problem = "الـhash مش مطابق للإصدار المثبّت"
+    except (OSError, zipfile.BadZipFile) as e:     # OSError بيشمل URLError والـtimeout
+        problem = e
+    shutil.rmtree(CACHE, ignore_errors=True)
+    sys.exit(f"فشل تجهيز أدوات التغليف ({problem}): {NUGET}")
+
+
 def makeappx():
     found = glob.glob(os.path.join(CACHE, "bin", "*", "x64", "makeappx.exe"))
     if not found:
         print("→ بنزّل أدوات التغليف من NuGet (مرة واحدة)…")
-        os.makedirs(CACHE, exist_ok=True)
-        pkg = os.path.join(CACHE, "buildtools.zip")
-        try:
-            urllib.request.urlretrieve(NUGET, pkg)
-        except urllib.error.URLError as e:
-            sys.exit(f"فشل تنزيل أدوات التغليف ({e}): {NUGET}")
-        with zipfile.ZipFile(pkg) as z:
-            z.extractall(CACHE)
-        os.remove(pkg)
+        fetch_buildtools()
         found = glob.glob(os.path.join(CACHE, "bin", "*", "x64", "makeappx.exe"))
     if not found:
         sys.exit("مش لاقي makeappx.exe")
