@@ -595,6 +595,12 @@ def _hotkey_state(cfg):
             cfg.get("mode"))
 
 
+def _tts_model():
+    """موديل «اقرا بصوت» — لو المحفوظ اتشال من القايمة (config قديم أو متعدّل) نرجع للافتراضي."""
+    chosen = core.CFG.get("tts_model")
+    return chosen if chosen in providers.TTS_MODELS["vercel"] else providers.PROVIDERS["vercel"]["tts"]
+
+
 class Api:
     """كل الدوال دي بتتنده من الواجهة (JavaScript) — window.pywebview.api.*"""
 
@@ -643,6 +649,7 @@ class Api:
                                tts=p in providers.TTS_ORDER)
                           for p in providers.ORDER + providers.TTS_ORDER],
             "ttsModels": providers.TTS_MODELS["vercel"],
+            "ttsMaxChars": providers.TTS_MAX_CHARS,
             # الواجهة بتعرض الاسم بس — save_settings بيرمي label لو رجعت معاها
             "features": {m: dict(core.feature(m), label=smart.hotkey_label(core.feature(m).get("hotkey"), lang))
                          for m in smart.FEATURES},
@@ -686,8 +693,7 @@ class Api:
         if not keys:
             return {"ok": False, "err": "ضيف مفتاح Vercel AI Gateway الأول"}
         try:
-            audio = providers.Client("vercel", keys=keys).speak(
-                text, core.CFG.get("tts_model") or providers.PROVIDERS["vercel"]["tts"])
+            audio = providers.Client("vercel", keys=keys).speak(text, _tts_model())
         except Exception as e:
             core.log_error(e, "tts/history_speak")
             return {"ok": False, "err": providers.tts_error_message(e)}

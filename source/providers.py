@@ -172,6 +172,12 @@ DEEPGRAM_API = "https://api.deepgram.com/v1"
 XAI_STT_URL = "https://api.x.ai/v1/stt"
 ZAI_STT_URL = "https://api.z.ai/api/paas/v4/audio/transcriptions"
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+# التأكد من المفتاح من غير تكلفة (Z.ai مفيهوش endpoint موثّق — بيفضل على تفريغ سكوت قصير)
+KEY_CHECK_URLS = {
+    "xai":        "https://api.x.ai/v1/api-key",
+    "openrouter": "https://openrouter.ai/api/v1/key",
+    "vercel":     "https://ai-gateway.vercel.sh/v1/credits",
+}
 _OA_KEYWORD_BAD = re.compile(r"[<>\r\n]")   # حروف ممنوعة في keywords بتاعة gpt-transcribe
 VERCEL_TTS_URL = "https://ai-gateway.vercel.sh/v4/ai/speech-model"
 TTS_MAX_CHARS = 4000     # OpenAI tts-1 بيقبل 4096 حرف — أقل حد بين موديلات البوابة
@@ -1390,16 +1396,16 @@ class Client(TextOps):
     def _oa_language_kw(self, model, language):
         """
         gpt-transcribe بياخد languages (اللغات المحتملة) بدل language، ومعاها keywords
-        لكلمات القاموس. باقي الموديلات: من غير language خالص (مش None) عشان Whisper
-        يشغّل التعرّف التلقائي على اللغة.
+        لكلمات القاموس. لو اللغة تلقائي: من غير language/languages خالص (مش None ولا
+        قايمة ثابتة) عشان الموديل يتعرّف على أي لغة بنفسه.
         """
         if model == "gpt-transcribe":
-            extra = {"languages": [language] if language else ["ar", "en"]}
+            extra = {"languages": [language]} if language else {}
             # OpenAI بيرفض الطلب كله لو كلمة فيها < أو > أو سطر جديد — نسيب الكلمة دي بس
             terms = [t for t in self._vocab_terms(100) if not _OA_KEYWORD_BAD.search(t)]
             if terms:
                 extra["keywords"] = terms
-            return {"extra_body": extra}
+            return {"extra_body": extra} if extra else {}
         return {"language": language} if language else {}
 
     def _stt_timeout(self):
@@ -1671,8 +1677,8 @@ def verify(provider_id, key):
                 raise last_err
         elif provider_id == "deepgram":
             _get_json(DEEPGRAM_API + "/projects", {"Authorization": "Token " + key}, timeout=15)
-        elif m.get("tts"):
-            _verify_tts(provider_id, key)
+        elif provider_id in KEY_CHECK_URLS:
+            _verify_by_key_endpoint(provider_id, key)
         elif not m["chat"]:
             _verify_by_silent_stt(provider_id, key)
         else:
@@ -1751,16 +1757,15 @@ def _verify_by_silent_stt(provider_id, key):
                 raise
 
 
-def _verify_tts(provider_id, key):
+def _verify_by_key_endpoint(provider_id, key):
     """
-    مزوّد قراية بصوت: كلمة واحدة بأرخص موديل (المفتاح بيتحاسب على حرفين تقريبًا).
-    400 معناها المفتاح عدّى والطلب نفسه اترفض — يعني المفتاح شغّال.
+    endpoint مجاني بيرجّع بيانات المفتاح نفسه — من غير طلب مدفوع ومن غير ما يعدّي على
+    موديل (موديل اتشال مبيوقفش مفتاح سليم). 401/403 بتطلع ويترجمها verify.
     """
-    try:
-        Client(provider_id, key).speak("hi", meta(provider_id)["tts"])
-    except RuntimeError as e:
-        if not str(e).startswith("HTTP 400"):
-            raise
+    info = _get_json(KEY_CHECK_URLS[provider_id], {"Authorization": "Bearer " + key}, timeout=15)
+    # xAI بيرجّع 200 لمفتاح متوقف أو متقفل، والحالة في الرد
+    if any(info.get(f) for f in ("api_key_blocked", "api_key_disabled", "team_blocked")):
+        raise RuntimeError("HTTP 403: key blocked or disabled")
 
 
 _ARABIC_RE = re.compile(r"[؀-ۿ]")

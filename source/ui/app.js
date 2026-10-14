@@ -333,8 +333,7 @@ function stopSpeech() {
   tts.audio = null;
 }
 async function speakItem(id) {
-  stopSpeech();
-  stopPlayer();
+  invalidatePlayback();          // كمان بيلغي رد تسجيل لسه رايح — غير كده كان يشتغل فوق الصوت
   const token = tts.token;
   toast("بيجهّز الصوت…");
   let r;
@@ -359,7 +358,7 @@ function histRowHTML(i, d) {
   const act = failed
     ? `<button class="ghost-btn retry" data-act="retry"${busy ? " disabled" : ""}>${busy ? "بيفرّغ…" : "تفريغ يدوي"}</button>`
     : `<button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>`;
-  const speak = !failed && i.result && ttsReady()
+  const speak = !failed && i.result && i.result.length <= S.boot.ttsMaxChars && ttsReady()
     ? `<button class="icon-btn" data-act="speak" title="اقرا بصوت">${ICON.speaker}</button>` : "";
   return `<div class="frow${sel ? " selected" : ""}${failed ? " failed" : ""}" data-id="${i.id}">
       <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>

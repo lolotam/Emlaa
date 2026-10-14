@@ -85,21 +85,6 @@ class TestSpeak(unittest.TestCase):
                 cl.speak("أهلًا", "openai/tts-1")
 
 
-class TestVerifyVercel(unittest.TestCase):
-    def setUp(self):
-        providers._KEY_STATE.clear()
-        self.addCleanup(providers._KEY_STATE.clear)
-
-    def test_verification_uses_the_speech_endpoint(self):
-        for err, expected in ((None, (True, "")), (_http_error(400), (True, "")),
-                              (_http_error(401), (False, "المفتاح مش مقبول — اتأكد إنك نسخته كامل"))):
-            with self.subTest(err=err), mock.patch.object(
-                    providers, "_post_json", side_effect=[err] if err else [_speech()]) as post:
-                self.assertEqual(providers.verify("vercel", "v-key"), expected)
-                self.assertEqual(post.call_args.args[0], providers.VERCEL_TTS_URL)
-                self.assertEqual(post.call_args.args[2]["ai-model-id"], "openai/tts-1")
-
-
 class TestHelpers(unittest.TestCase):
     def test_audio_mime_from_magic_bytes(self):
         for data, mime in ((b"RIFF....WAVE", "audio/wav"), (b"OggS....", "audio/ogg"),
@@ -207,6 +192,14 @@ class TestAppWebTts(unittest.TestCase):
                              "data": base64.b64encode(MP3).decode("ascii")})
         self.assertEqual(post.call_args.args[1]["text"], "النص النهائي")
         self.assertEqual(post.call_args.args[2]["ai-model-id"], "microsoft/mai-voice-2.1")
+
+    def test_history_speak_falls_back_to_default_for_a_stale_saved_model(self):
+        self._keys("AI_GATEWAY_API_KEY=v-key\n")
+        core.CFG["tts_model"] = "removed/old-voice"          # config قديم أو متعدّل يدوي
+        with self._entry(result="نص", status="ok"), \
+                mock.patch.object(providers, "_post_json", return_value=_speech()) as post:
+            self.assertTrue(self.api.history_speak(7)["ok"])
+        self.assertEqual(post.call_args.args[2]["ai-model-id"], "openai/tts-1")
 
     def test_history_speak_refuses_without_key_or_text(self):
         cases = [("", dict(result="نص", status="ok"), "ضيف مفتاح Vercel AI Gateway الأول"),

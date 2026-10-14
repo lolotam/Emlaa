@@ -250,7 +250,9 @@ class TestOpenAiLanguageArgs(unittest.TestCase):
             # gpt-transcribe: languages بدل language، وكلمات القاموس في keywords
             ("gpt-transcribe", "ar", ["Emlaa"],
              {"extra_body": {"languages": ["ar"], "keywords": ["Emlaa"]}}),
-            ("gpt-transcribe", None, [], {"extra_body": {"languages": ["ar", "en"]}}),
+            # لغة تلقائي: من غير languages خالص عشان الموديل يتعرّف على أي لغة
+            ("gpt-transcribe", None, [], {}),
+            ("gpt-transcribe", None, ["Emlaa"], {"extra_body": {"keywords": ["Emlaa"]}}),
             # OpenAI بيرفض الطلب كله لو keyword فيها < > أو سطر جديد — بنسيبها والباقي يتبعت
             ("gpt-transcribe", "ar", ["vector<T>", "a\nb", "x\ry", "Emlaa"],
              {"extra_body": {"languages": ["ar"], "keywords": ["Emlaa"]}}),
@@ -344,16 +346,25 @@ class TestVerifySttOnlyProviders(unittest.TestCase):
         self.assertEqual(fields, [("model", "glm-asr-2512")])
         self.assertEqual(headers, {"Authorization": "Bearer zai-key"})
 
-    def test_openrouter_verifies_through_its_transcription_endpoint(self):
-        with mock.patch.object(providers, "_post_json", side_effect=_http_error(400)) as post:
-            self.assertEqual(providers.verify("openrouter", "sk-or-key"), (True, ""))
-        self.assertEqual(post.call_args.args[0], providers.OPENROUTER_STT_URL)
+    def test_key_is_checked_on_a_free_endpoint_without_any_paid_request(self):
+        cases = [("xai", "xai-key", "https://api.x.ai/v1/api-key"),
+                 ("openrouter", "sk-or-key", "https://openrouter.ai/api/v1/key"),
+                 ("vercel", "v-key", "https://ai-gateway.vercel.sh/v1/credits")]
+        for pid, key, url in cases:
+            with self.subTest(pid=pid),                     mock.patch.object(providers, "_get_json", return_value={}) as get,                     mock.patch.object(providers, "_post_json") as post_json,                     mock.patch.object(providers, "_post_multipart") as post_multi:
+                self.assertEqual(providers.verify(pid, key), (True, ""))
+                self.assertEqual(get.call_args.args[:2], (url, {"Authorization": "Bearer " + key}))
+                post_json.assert_not_called()
+                post_multi.assert_not_called()
 
-    def test_401_means_the_key_is_rejected(self):
-        with mock.patch.object(providers, "_post_multipart", side_effect=_http_error(401)):
-            ok, msg = providers.verify("xai", "xai-bad")
-        self.assertFalse(ok)
-        self.assertEqual(msg, "المفتاح مش مقبول — اتأكد إنك نسخته كامل")
+    def test_rejected_or_blocked_key_fails_verification(self):
+        cases = [(dict(side_effect=_http_error(401)), "المفتاح مش مقبول — اتأكد إنك نسخته كامل"),
+                 # xAI بيرجّع 200 لمفتاح متوقف — الحالة في الرد
+                 (dict(return_value={"api_key_blocked": False, "api_key_disabled": True}),
+                  "المفتاح مرفوض أو الصلاحية محظورة — اتأكد من صلاحيات الحساب")]
+        for stub, msg in cases:
+            with self.subTest(msg=msg), mock.patch.object(providers, "_get_json", **stub):
+                self.assertEqual(providers.verify("xai", "xai-bad"), (False, msg))
 
 
 # ── التسجيل في الإعدادات ─────────────────────────────────────────────────────
