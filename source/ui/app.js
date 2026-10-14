@@ -358,7 +358,8 @@ function histRowHTML(i, d) {
   const act = failed
     ? `<button class="ghost-btn retry" data-act="retry"${busy ? " disabled" : ""}>${busy ? "بيفرّغ…" : "تفريغ يدوي"}</button>`
     : `<button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>`;
-  const speak = !failed && i.result && i.result.length <= S.boot.ttsMaxChars && ttsReady()
+  // عدّ الحروف زي len() في بايثون (code points مش UTF-16) وبعد trim زي speak()
+  const speak = !failed && i.result && [...i.result.trim()].length <= S.boot.ttsMaxChars && ttsReady()
     ? `<button class="icon-btn" data-act="speak" title="اقرا بصوت">${ICON.speaker}</button>` : "";
   return `<div class="frow${sel ? " selected" : ""}${failed ? " failed" : ""}" data-id="${i.id}">
       <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
