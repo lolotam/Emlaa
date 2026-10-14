@@ -552,7 +552,7 @@ class CaptureSession:
 # ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
 FEATURES = ("normal", "prompt", "translate", "edit")
 LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
-STT_ONLY = ("deepgram", "xai", "zai", "openrouter", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
+STT_ONLY = ("deepgram", "zai", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
 KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter")
 _CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
 

@@ -24,6 +24,7 @@ const S = {
   features: null,        // نسخة الإعدادات اللي بنعدّل فيها لحد «حفظ»
   feat: "normal",        // التاب المفتوح
   capturing: false,      // مستنيين المستخدم يدوس الزرار
+  liveChat: {},          // pid → موديلات المعالجة من المزوّد نفسه (null = بنجيبها دلوقتي)
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
@@ -810,7 +811,23 @@ function feat() { return S.features[S.feat]; }
 function catalog(pid) { return (S.boot.catalog || {})[pid] || {}; }
 function chainModels(kind, pid) {
   const c = catalog(pid);
-  return (kind === "stt" ? c.sttModels : c.chatModels) || [];
+  if (kind === "stt") return c.sttModels || [];
+  // الثابتة الأول (ترتيبنا المجرّب) وبعدها اللي المزوّد بيعرضه دلوقتي
+  const fixed = c.chatModels || [];
+  return [...fixed, ...(S.liveChat[pid] || []).filter(m => !fixed.includes(m))];
+}
+// بنسأل كل مزوّد ليه مفتاح عن موديلاته مرة واحدة في الجلسة؛ الفشل بيسيب القايمة الثابتة
+async function loadLiveChat(pids) {
+  const todo = [...new Set(pids)].filter(pid =>
+    !(pid in S.liveChat) && catalog(pid).liveModels && catalog(pid).hasKey);
+  if (!todo.length) return;
+  todo.forEach(pid => { S.liveChat[pid] = null; });
+  await Promise.all(todo.map(async pid => {
+    let r = null;
+    try { r = await api().chat_models_live(pid); } catch (e) { /* القايمة الثابتة كفاية */ }
+    S.liveChat[pid] = r && r.ok ? r.models : [];
+  }));
+  if (S.features) renderChain("ai");
 }
 // اللي ينفع يتختار في القايمة: المعالجة بمزوّد بيكتب بس، والمحلي للتفريغ بس (ومش في نسخة الـStore)
 function chainProviders(kind, current) {
@@ -857,6 +874,7 @@ function renderChain(kind) {
   box.innerHTML = list.length
     ? list.map((it, i) => chainRowHTML(kind, it, i, list.length, list.length > minLen)).join("")
     : `<div class="chain-empty">${AI_EMPTY[S.feat]}</div>`;
+  if (kind === "ai") loadLiveChat(list.map(it => it.provider));
 }
 function renderFeat() {
   const f = feat();

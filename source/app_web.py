@@ -569,7 +569,8 @@ def _feature_catalog(pools, local):
                    "sttModels": providers.stt_catalog(p),
                    "chatModels": providers.chat_models(p),
                    "hasKey": bool(pools.get(p)),
-                   "sttOnly": not providers.PROVIDERS[p].get("chat")}
+                   "sttOnly": not providers.PROVIDERS[p].get("chat"),
+                   "liveModels": providers.lists_chat_models(p)}
                for p in providers.ORDER}
     catalog[smart.LOCAL] = {"name": LOCAL_NAME, "installed": local or None}
     return catalog
@@ -699,6 +700,19 @@ class Api:
             return {"ok": False, "err": providers.tts_error_message(e)}
         return {"ok": True, "mime": providers.audio_mime(audio),
                 "data": base64.b64encode(audio).decode("ascii")}
+
+    def chat_models_live(self, pid):
+        """موديلات المعالجة من المزوّد نفسه دلوقتي — الواجهة بتضيفها على القايمة الثابتة."""
+        if not providers.lists_chat_models(pid):
+            return {"ok": False, "err": "المزوّد ده مبيعرضش موديلاته"}
+        keys = providers.read_key_pools(core.ENV_PATH).get(pid)
+        if not keys:
+            return {"ok": False, "err": "ضيف مفتاح للمزوّد ده الأول"}
+        try:
+            return {"ok": True, "models": providers.list_chat_models(pid, keys[0])}
+        except Exception as e:
+            core.log_error(e, "chat/models_live")
+            return {"ok": False, "err": "مقدرتش أجيب قايمة الموديلات — القايمة الثابتة لسه موجودة"}
 
     def history_audio_save(self, rid):
         """نافذة «حفظ باسم» من ويندوز وبعدين نسخة من الـmp3 للمكان اللي اختاره."""
