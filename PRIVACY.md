@@ -25,7 +25,7 @@ Emlaa records audio **only while you are dictating**, after you press your hotke
 
 ## Third-party providers
 
-Depending on the provider you choose, your audio, and for text cleanup, prompt and translate features the transcribed text, is processed by that provider under its own privacy policy:
+Depending on the provider you choose, your audio, and for text cleanup, prompt and translate features the transcribed text, is processed by that provider under its own privacy policy. If you use "Read aloud" in History, the text of that entry is sent to Vercel AI Gateway to generate speech:
 
 | Provider | Privacy policy |
 |---|---|
@@ -33,6 +33,10 @@ Depending on the provider you choose, your audio, and for text cleanup, prompt a
 | OpenAI | https://openai.com/policies/privacy-policy/ |
 | Google Gemini | https://policies.google.com/privacy |
 | Deepgram | https://deepgram.com/privacy |
+| xAI | https://x.ai/legal/privacy-policy |
+| Z.ai | https://chat.z.ai/legal-agreement/privacy-policy |
+| OpenRouter | https://openrouter.ai/privacy |
+| Vercel | https://vercel.com/legal/privacy-policy |
 
 You choose the provider and can switch or remove it at any time in Settings.
 

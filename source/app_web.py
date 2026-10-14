@@ -595,6 +595,12 @@ def _hotkey_state(cfg):
             cfg.get("mode"))
 
 
+def _tts_model():
+    """موديل «اقرا بصوت» — لو المحفوظ اتشال من القايمة (config قديم أو متعدّل) نرجع للافتراضي."""
+    chosen = core.CFG.get("tts_model")
+    return chosen if chosen in providers.TTS_MODELS["vercel"] else providers.PROVIDERS["vercel"]["tts"]
+
+
 class Api:
     """كل الدوال دي بتتنده من الواجهة (JavaScript) — window.pywebview.api.*"""
 
@@ -632,14 +638,18 @@ class Api:
                 "models": [{"id": m, "size": round(sz / 1_000_000)}
                            for m, (_u, _h, sz) in offline.MODELS.items()],
             },
+            # المفاتيح: مزوّدين التفريغ/المعالجة وبعدهم القراية بصوت (tts) — الترحيب بيعرض اللي بيفرّغ بس
             "providers": [dict(id=p, name=providers.PROVIDERS[p]["name"],
                                tag=providers.PROVIDERS[p]["tag"], desc=providers.PROVIDERS[p]["desc"],
                                keyUrl=providers.PROVIDERS[p]["key_url"],
                                keyHint=providers.PROVIDERS[p]["key_hint"],
                                hasKey=bool(pools.get(p)),
                                keyCount=len(pools.get(p, [])),
-                               guide=providers.GUIDES.get(p, {}))
-                          for p in providers.ORDER],
+                               guide=providers.GUIDES.get(p, {}),
+                               tts=p in providers.TTS_ORDER)
+                          for p in providers.ORDER + providers.TTS_ORDER],
+            "ttsModels": providers.TTS_MODELS["vercel"],
+            "ttsMaxChars": providers.TTS_MAX_CHARS,
             # الواجهة بتعرض الاسم بس — save_settings بيرمي label لو رجعت معاها
             "features": {m: dict(core.feature(m), label=smart.hotkey_label(core.feature(m).get("hotkey"), lang))
                          for m in smart.FEATURES},
@@ -649,7 +659,7 @@ class Api:
                 "provider", "open_hotkey", "mode", "polish", "prompt_mode", "auto_paste", "insert_method", "beep",
                 "minimize_to_tray", "check_updates", "auto_update", "floating_button", "clipboard_history",
                 "dictionary", "theme", "lang", "history_keep_last10", "models",
-                "context_styles", "app_profiles", "snippets")},
+                "context_styles", "app_profiles", "snippets", "tts_model")},
             "stats": core.history_stats(),
         }
 
@@ -671,6 +681,24 @@ class Api:
                 return {"ok": True, "mime": "audio/mpeg", "data": base64.b64encode(f.read()).decode("ascii")}
         except (OSError, ValueError, TypeError):
             return {"ok": False}
+
+    def history_speak(self, rid):
+        """«اقرا بصوت»: النتيجة بصوت من Vercel بالموديل المختار — base64 للواجهة تشغّله."""
+        import base64
+        item = core.history_entry(rid) or {}
+        text = (item.get("result") or "").strip()
+        if item.get("status") == "failed" or not text:
+            return {"ok": False, "err": "مفيش نص يتقري"}
+        keys = providers.read_key_pools(core.ENV_PATH).get("vercel")
+        if not keys:
+            return {"ok": False, "err": "ضيف مفتاح Vercel AI Gateway الأول"}
+        try:
+            audio = providers.Client("vercel", keys=keys).speak(text, _tts_model())
+        except Exception as e:
+            core.log_error(e, "tts/history_speak")
+            return {"ok": False, "err": providers.tts_error_message(e)}
+        return {"ok": True, "mime": providers.audio_mime(audio),
+                "data": base64.b64encode(audio).decode("ascii")}
 
     def history_audio_save(self, rid):
         """نافذة «حفظ باسم» من ويندوز وبعدين نسخة من الـmp3 للمكان اللي اختاره."""
@@ -841,6 +869,8 @@ class Api:
                     seen.add(name)
                     clean[name] = prof
             cfg["app_profiles"] = dict(list(clean.items())[:100])
+        if data.get("tts_model") in providers.TTS_MODELS["vercel"]:
+            cfg["tts_model"] = data["tts_model"]
         if data.get("theme") in ("dark", "light", "system"):
             cfg["theme"] = data["theme"]
         old_lang = cfg.get("lang", "ar")
@@ -877,7 +907,7 @@ class Api:
         بس لو المزوّد ليه مفتاح أو فيه حاجة تانية تفرّغ (الموديل المحلي مثلًا).
         بيرجّع رسالة الغلط أو None.
         """
-        if pid not in providers.PROVIDERS:
+        if pid not in providers.ORDER:            # الترحيب بيختار اللي هيفرّغ — مش مزوّد قراية بصوت
             return "مزوّد مش معروف"
         if not new_key:
             cfg = core.CFG
@@ -1012,7 +1042,9 @@ class Api:
             # البصمة مش الشكل المقنّع: مفتاحين ممكن يبقوا بنفس البداية والنهاية
             if key_id is not None and providers.key_id(pool[index]) != key_id:
                 return {"ok": False, "err": KEY_STALE_ERR}
-            if not core.can_run(pools=dict(pools, **{pid: pool[:index] + pool[index + 1:]})):
+            # مزوّد القراية بصوت مبيفرّغش — شيل مفتاحه عمره ما يوقف التفريغ
+            if pid in providers.ORDER and \
+                    not core.can_run(pools=dict(pools, **{pid: pool[:index] + pool[index + 1:]})):
                 return {"ok": False, "err": LAST_STT_KEY_ERR}
             try:
                 providers.remove_provider_key(core.ENV_PATH, pid, index)

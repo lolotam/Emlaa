@@ -39,6 +39,7 @@ const ICON = {
   x: '<svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg>',
   edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10.5-6.5z"/></svg>',
+  speaker: '<svg viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/></svg>',
@@ -301,6 +302,7 @@ function stopPlayer() {
 function invalidatePlayback() {
   playToken++;
   stopPlayer();
+  stopSpeech();
 }
 async function togglePlay(id) {
   if (player.id === id && player.audio) {
@@ -322,6 +324,27 @@ async function togglePlay(id) {
   a.addEventListener("ended", stopPlayer);
   a.play().catch(() => { stopPlayer(); toast("مقدرتش أشغّل الصوت"); });
 }
+/* ═══════════ «اقرا بصوت» (Vercel AI Gateway) — صوت منفصل عن تشغيل التسجيل ═══════════ */
+const tts = { audio: null, token: 0 };
+function ttsReady() { return !!(S.boot.providers.find(p => p.tts) || {}).hasKey; }
+function stopSpeech() {
+  tts.token++;
+  if (tts.audio) tts.audio.pause();
+  tts.audio = null;
+}
+async function speakItem(id) {
+  invalidatePlayback();          // كمان بيلغي رد تسجيل لسه رايح — غير كده كان يشتغل فوق الصوت
+  const token = tts.token;
+  toast("بيجهّز الصوت…");
+  let r;
+  try { r = await api().history_speak(id); }
+  catch (e) { r = { ok: false, err: "مقدرتش أقرا النص — جرّب تاني" }; }
+  if (token !== tts.token) return;                 // دوسة تانية أو مسح الصف ألغت الطلب ده
+  if (!r.ok) return toast(r.err);
+  tts.audio = new Audio(`data:${r.mime};base64,${r.data}`);
+  tts.audio.addEventListener("ended", () => { tts.audio = null; });
+  tts.audio.play().catch(() => { tts.audio = null; toast("مقدرتش أشغّل الصوت"); });
+}
 function histVisible() {
   const q = $("#histSearch").value.trim().toLowerCase();
   return S.history.filter(i => (S.histFilter === "all" || i.mode === S.histFilter)
@@ -335,6 +358,10 @@ function histRowHTML(i, d) {
   const act = failed
     ? `<button class="ghost-btn retry" data-act="retry"${busy ? " disabled" : ""}>${busy ? "بيفرّغ…" : "تفريغ يدوي"}</button>`
     : `<button class="icon-btn" data-act="copy" title="نسخ">${ICON.copy}</button>`;
+  // عدّ الحروف زي len() في بايثون (code points مش UTF-16) وبعد trim زي speak()
+  const said = failed ? "" : (i.result || "").trim();
+  const speak = said && [...said].length <= S.boot.ttsMaxChars && ttsReady()
+    ? `<button class="icon-btn" data-act="speak" title="اقرا بصوت">${ICON.speaker}</button>` : "";
   return `<div class="frow${sel ? " selected" : ""}${failed ? " failed" : ""}" data-id="${i.id}">
       <label class="check"><input type="checkbox" ${sel ? "checked" : ""}><span></span></label>
       <div class="row-body">
@@ -345,6 +372,7 @@ function histRowHTML(i, d) {
       ${waveHTML(i)}
       <div class="row-actions">
         ${i.audio ? `<button class="icon-btn" data-act="dl" title="تنزيل MP3">${ICON.download}</button>` : ""}
+        ${speak}
         ${act}
         <button class="icon-btn del" data-act="del" title="مسح">${ICON.trash}</button>
       </div></div>`;
@@ -405,7 +433,8 @@ $("#histList").addEventListener("click", async e => {
     return updateBulk();
   }
   const act = e.target.closest("[data-act]");
-  if (act?.dataset.act === "play") return togglePlay(id);
+  if (act?.dataset.act === "play") { stopSpeech(); return togglePlay(id); }
+  if (act?.dataset.act === "speak") return speakItem(id);
   if (act?.dataset.act === "dl") {
     const r = await api().history_audio_save(id);
     if (r.ok) toast("اتحفظ ✓");
@@ -726,7 +755,7 @@ $("#snipList").addEventListener("click", e => {
 
 /* ═══════════ الإعدادات ═══════════ */
 function provCards(container, onPick) {
-  container.innerHTML = S.boot.providers.map(p => `
+  container.innerHTML = S.boot.providers.filter(p => !p.tts).map(p => `
     <button type="button" class="prov${p.id === S.provider ? " active" : ""}" data-p="${p.id}">
       <span class="prov-top"><span class="prov-name">${esc(p.name)}</span><span class="prov-tag">${esc(p.tag)}</span></span>
       <span class="prov-desc">${esc(p.desc)}</span>
@@ -1015,6 +1044,7 @@ function fillSettings() {
   $("#sTheme").value = c.theme || "dark";
   $("#sLang").value = c.lang === "en" ? "en" : "ar";
   $("#sKeep10").checked = !!c.history_keep_last10;
+  fillSelect($("#sTts"), (S.boot.ttsModels || []).map(id => ({ id, label: id })), c.tts_model);
   $("#sTheme").onchange = e => applyTheme(e.target.value);      // معاينة فورية قبل الحفظ
   const sw = { sPolish: "polish", sStyle: "context_styles", sPaste: "auto_paste", sTray: "minimize_to_tray", sFloat: "floating_button",
                 sClip: "clipboard_history", sBeep: "beep", sUpd: "check_updates", sAutoUpd: "auto_update" };
@@ -1225,7 +1255,7 @@ function settingsPayload() {
     auto_paste: $("#sPaste").checked, minimize_to_tray: $("#sTray").checked,
     floating_button: $("#sFloat").checked, clipboard_history: $("#sClip").checked, beep: $("#sBeep").checked,
     check_updates: $("#sUpd").checked, auto_update: $("#sAutoUpd").checked, theme: $("#sTheme").value,
-    lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked,
+    lang: $("#sLang").value, history_keep_last10: $("#sKeep10").checked, tts_model: $("#sTts").value,
     // قايمة الموديل المحلي بتتملى بعد ما offline_status يرجع — قبلها مانبعتهاش، غير كده
     // حفظة بدري كانت هتمسح الموديل اللي المستخدم اختاره قبل كده
     ...($("#offlineModel").options.length ? { offline_model: $("#offlineModel").value } : {}),
