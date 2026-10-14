@@ -43,7 +43,9 @@ class TestLiveChatModels(unittest.TestCase):
                               {"id": "grok-voice-transcribe-2.0"}, {"id": "grok-4.7"}]},
              ["grok-4.7"]),
             ("groq", {"data": [{"id": "whisper-large-v3"}, {"id": "qwen/qwen3.8-27b"},
-                               {"id": "nomic-embed-text"}]},
+                               {"id": "nomic-embed-text"}, {"id": "playai-tts"},
+                               {"id": "canopylabs/orpheus-v1-english"}, {"id": "meta-llama/llama-guard-4-12b"},
+                               {"id": "openai/gpt-oss-safeguard-20b"}]},
              ["qwen/qwen3.8-27b"]),
         ]
         for pid, body, expected in cases:

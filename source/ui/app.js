@@ -1077,6 +1077,7 @@ function fillSettings() {
 // تعديلات الميزات اللي لسه ماتحفظتش
 async function refreshCatalog() {
   await refreshBoot();
+  S.liveChat = {};       // المفاتيح ممكن تكون اتغيّرت — القايمة الحيّة تتجاب تاني بالمفتاح الجديد
   if (S.page === "settings" && S.features) renderFeat();
 }
 

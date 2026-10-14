@@ -538,9 +538,10 @@ def chat_models(pid):
 
 
 # قايمة /models (OpenAI-compatible) فيها موديلات مش للشات: البوابات بتكتب النوع، وGroq
-# وxAI مبيكتبوهوش فبنعرف موديلات التفريغ من الاسم (Whisper و Transcribe).
+# وxAI مبيكتبوهوش فبنعرفهم من الاسم: تفريغ (Whisper/Transcribe) وصوت (TTS/Orpheus)
+# وتصنيف أمان (Llama Guard/Safeguard) — ردهم مش نص متنضّف
 _NON_CHAT_TYPES = {"embedding", "image", "video", "reranking", "speech", "transcription", "realtime"}
-_NON_CHAT_ID = re.compile(r"embed|rerank|whisper|transcribe", re.I)
+_NON_CHAT_ID = re.compile(r"embed|rerank|whisper|transcribe|tts|orpheus|guard", re.I)
 
 
 def lists_chat_models(pid):
