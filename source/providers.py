@@ -172,6 +172,7 @@ DEEPGRAM_API = "https://api.deepgram.com/v1"
 XAI_STT_URL = "https://api.x.ai/v1/stt"
 ZAI_STT_URL = "https://api.z.ai/api/paas/v4/audio/transcriptions"
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+_OA_KEYWORD_BAD = re.compile(r"[<>\r\n]")   # حروف ممنوعة في keywords بتاعة gpt-transcribe
 VERCEL_TTS_URL = "https://ai-gateway.vercel.sh/v4/ai/speech-model"
 TTS_MAX_CHARS = 4000     # OpenAI tts-1 بيقبل 4096 حرف — أقل حد بين موديلات البوابة
 
@@ -1287,8 +1288,9 @@ class Client(TextOps):
         return ""
 
     def _xai_transcribe(self, wav_path, language):
-        # language عند xAI بيظبط التنسيق بس (مع format=true) — التعرّف على اللغة تلقائي
-        hints = [("language", language)] if language else []
+        # language عند xAI بيظبط تنسيق الأرقام والعملات بس، ومبيشتغلش من غير format=true
+        # (الافتراضي false) — التعرّف على اللغة نفسه تلقائي
+        hints = [("format", "true"), ("language", language)] if language else []
         hints += [("keyterm", t[:50]) for t in self._vocab_terms(100)]
         with open(wav_path, "rb") as f:
             audio = f.read()
@@ -1393,7 +1395,8 @@ class Client(TextOps):
         """
         if model == "gpt-transcribe":
             extra = {"languages": [language] if language else ["ar", "en"]}
-            terms = self._vocab_terms(100)
+            # OpenAI بيرفض الطلب كله لو كلمة فيها < أو > أو سطر جديد — نسيب الكلمة دي بس
+            terms = [t for t in self._vocab_terms(100) if not _OA_KEYWORD_BAD.search(t)]
             if terms:
                 extra["keywords"] = terms
             return {"extra_body": extra}

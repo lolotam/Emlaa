@@ -130,15 +130,18 @@ class TestXaiTranscribe(unittest.TestCase):
         url, fields, _name, _audio, headers = post.call_args.args
         self.assertEqual(url, providers.XAI_STT_URL)
         self.assertEqual(headers, {"Authorization": "Bearer xai-test"})
-        self.assertEqual(fields, [("model", "grok-voice-transcribe-2.0"), ("language", "ar"),
-                                  ("keyterm", "Python"), ("keyterm", "x" * 50)])
+        # language بيشتغل مع format=true بس (الافتراضي false)
+        self.assertEqual(fields, [("model", "grok-voice-transcribe-2.0"), ("format", "true"),
+                                  ("language", "ar"), ("keyterm", "Python"), ("keyterm", "x" * 50)])
         self.assertEqual(self.cl.last_stt_model, "grok-voice-transcribe-2.0")
 
-    def test_auto_language_sends_no_language_field(self):
+    def test_auto_language_sends_no_language_or_format_field(self):
         with _TmpWav() as wav, \
                 mock.patch.object(providers, "_post_multipart", return_value={"text": "hi"}) as post:
             self.cl._xai_transcribe(wav, None)
-        self.assertNotIn("language", _field_names(post.call_args.args[1]))
+        names = _field_names(post.call_args.args[1])
+        self.assertNotIn("language", names)
+        self.assertNotIn("format", names)
 
     def test_400_retries_same_model_without_hints(self):
         with _TmpWav() as wav, \
@@ -248,6 +251,10 @@ class TestOpenAiLanguageArgs(unittest.TestCase):
             ("gpt-transcribe", "ar", ["Emlaa"],
              {"extra_body": {"languages": ["ar"], "keywords": ["Emlaa"]}}),
             ("gpt-transcribe", None, [], {"extra_body": {"languages": ["ar", "en"]}}),
+            # OpenAI بيرفض الطلب كله لو keyword فيها < > أو سطر جديد — بنسيبها والباقي يتبعت
+            ("gpt-transcribe", "ar", ["vector<T>", "a\nb", "x\ry", "Emlaa"],
+             {"extra_body": {"languages": ["ar"], "keywords": ["Emlaa"]}}),
+            ("gpt-transcribe", "ar", ["a>b"], {"extra_body": {"languages": ["ar"]}}),
             ("gpt-4o-transcribe", "ar", ["Emlaa"], {"language": "ar"}),
             ("whisper-1", None, [], {}),
         ]
