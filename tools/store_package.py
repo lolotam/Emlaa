@@ -16,6 +16,7 @@
 import base64
 import glob
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -50,8 +51,11 @@ def app_version():
 
 
 def sha512_b64(path):
+    h = hashlib.sha512()
     with open(path, "rb") as f:
-        return base64.b64encode(hashlib.file_digest(f, "sha512").digest()).decode()
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return base64.b64encode(h.digest()).decode()
 
 
 def fetch_buildtools():
@@ -67,7 +71,8 @@ def fetch_buildtools():
             os.remove(pkg)
             return
         problem = "الـhash مش مطابق للإصدار المثبّت"
-    except (OSError, zipfile.BadZipFile) as e:     # OSError بيشمل URLError والـtimeout
+    # OSError بيشمل URLError والـtimeout؛ HTTPException لو التحميل اتقطع في النص (IncompleteRead)
+    except (OSError, http.client.HTTPException, zipfile.BadZipFile) as e:
         problem = e
     shutil.rmtree(CACHE, ignore_errors=True)
     sys.exit(f"فشل تجهيز أدوات التغليف ({problem}): {NUGET}")
