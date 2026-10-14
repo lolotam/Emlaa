@@ -60,9 +60,9 @@
 | **OpenAI** | الأدق | أحسن فهم للعامية · مدفوع | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | **Google Gemini** | مجاني | باقة يومية كبيرة من جوجل | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | **Deepgram** | رصيد $200 | رصيد مجاني كبير · بيدعم العامية المصرية | [console.deepgram.com](https://console.deepgram.com/) |
-| **xAI Grok** | بالساعة | تفريغ بس · بيدعم العربي · مدفوع | [console.x.ai](https://console.x.ai/) |
+| **xAI Grok** | تفريغ ومعالجة | تفريغ بيدعم العربي (بالساعة) · ومعالجة بموديلات Grok · مدفوع | [console.x.ai](https://console.x.ai/) |
 | **Z.ai GLM** | تجريبي | تفريغ بس · العربي مش في لغاته الرسمية · مدفوع | [z.ai](https://z.ai/manage-apikey/apikey-list) |
-| **OpenRouter** | موديلات كتير | تفريغ بس · مفتاح واحد لموديلات تفريغ من شركات كتير · مدفوع | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
+| **OpenRouter** | موديلات كتير | مفتاح واحد لموديلات تفريغ ومعالجة من شركات كتير · مدفوع | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) |
 
 في الإعدادات، قسم **«المفاتيح»** فيه كل مزوّد لوحده — تقدر تحط كذا مفتاح لنفس المزوّد، وتحت كل واحد **«إزاي أجيب مفتاح»**: 3 خطوات + زرار لصفحة المفاتيح وزرار للتوثيق. المفاتيح مشتركة بين كل الميزات.
 
@@ -78,7 +78,14 @@
 | Z.ai GLM | `glm-asr-2512` | — |
 | OpenRouter | `openai/whisper-large-v3-turbo` | `openai/gpt-transcribe` · `openai/gpt-4o-transcribe` · `google/gemini-3.5-transcribe` · `elevenlabs/scribe-v2` · `x-ai/grok-stt-1.0` · `deepgram/nova-3` · وغيرهم |
 
-> **Deepgram و xAI Grok و Z.ai GLM و OpenRouter والـWhisper المحلي بيفرّغوا بس** — مينفعش يبقوا في قايمة المعالجة. المعالجة (التنظيف والبرومبت والترجمة والتعديل) بتشتغل بـGroq أو Gemini أو OpenAI.
+> **Deepgram و Z.ai GLM والـWhisper المحلي بيفرّغوا بس** — مينفعش يبقوا في قايمة المعالجة. المعالجة (التنظيف والبرومبت والترجمة والتعديل) بتشتغل بـGroq أو Gemini أو OpenAI أو xAI Grok أو OpenRouter.
+
+**موديل المعالجة:** القايمة فيها الموديلات الموصى بيها، ولو المزوّد ليه مفتاح بتنضاف عليها الموديلات اللي المزوّد بيعرضها دلوقتي (Groq و xAI و OpenRouter):
+
+| المزوّد | الموصى به | بدائل |
+|---|---|---|
+| xAI Grok | `grok-4.7` | `grok-4.6` |
+| OpenRouter | `google/gemini-3.8-flash` | `anthropic/claude-haiku-5.5` · `x-ai/grok-4.7` |
 >
 > **Z.ai** بيقبل ٣٠ ثانية بس في الطلب، فإملاء بيقسّم الكلام الأطول كل ٢٨ ثانية — ممكن كلمة تتقطع عند الحد.
 
@@ -210,7 +217,7 @@
 
 - **4 features**, each on its own settings tab: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English), Edit selected text (speak an instruction).
 - **Record any hotkey** — one key, or Ctrl/Alt/Shift/Win plus a key. The hotkey is blocked from other apps; Ctrl/Alt/Shift/Win themselves still pass through.
-- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok, Z.ai GLM and OpenRouter (paid, transcription only), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
+- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok and OpenRouter (paid, transcription and AI processing), Z.ai GLM (paid, transcription only), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
 - **Failed recordings are kept:** if transcription fails (network, key, model, or no speech), the audio stays in History with the reason, a toast offers "Open History", and "Transcribe again" re-runs it once the problem is fixed. The result is shown for you to copy — never typed.
 - **Read aloud (Vercel AI Gateway, text-to-speech only):** a speaker button in History reads the result aloud with the voice model picked in Settings (`openai/tts-1` by default). Needs a Vercel AI Gateway key.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.

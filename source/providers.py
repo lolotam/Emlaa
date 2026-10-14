@@ -105,17 +105,17 @@ PROVIDERS = {
     },
     "xai": {
         "name":      "xAI Grok",
-        "tag":       "بالساعة",
-        "desc":      "تفريغ بس · بيدعم العربي · بيتحاسب بساعات الصوت",
+        "tag":       "تفريغ ومعالجة",
+        "desc":      "تفريغ بيدعم العربي (بيتحاسب بساعات الصوت) · ومعالجة بموديلات Grok",
         "key_url":   "https://console.x.ai/",
         "key_hint":  "المفتاح بيبدأ بحروف xai",
         "key_start": "xai-",
         "env":       "XAI_API_KEY",
-        "base_url":  None,
+        "base_url":  "https://api.x.ai/v1",      # المعالجة بس (Chat Completions) — التفريغ على XAI_STT_URL
         "stt":       "grok-voice-transcribe-2.0",
         "stt_alt":   ["grok-voice-transcribe-1.0"],
-        "chat":      None,
-        "chat_alt":  None,
+        "chat":      "grok-4.7",
+        "chat_alt":  ["grok-4.6"],
     },
     "zai": {
         "name":      "Z.ai GLM",
@@ -134,16 +134,16 @@ PROVIDERS = {
     "openrouter": {
         "name":      "OpenRouter",
         "tag":       "موديلات كتير",
-        "desc":      "تفريغ بس · مفتاح واحد لموديلات تفريغ من شركات كتير",
+        "desc":      "مفتاح واحد لموديلات تفريغ ومعالجة من شركات كتير",
         "key_url":   "https://openrouter.ai/settings/keys",
         "key_hint":  "المفتاح بيبدأ بحروف sk-or",
         "key_start": "sk-or-",
         "env":       "OPENROUTER_API_KEY",
-        "base_url":  None,
+        "base_url":  "https://openrouter.ai/api/v1",   # المعالجة بس — التفريغ على OPENROUTER_STT_URL
         "stt":       "openai/whisper-large-v3-turbo",
         "stt_alt":   ["openai/whisper-large-v3"],
-        "chat":      None,
-        "chat_alt":  None,
+        "chat":      "google/gemini-3.8-flash",
+        "chat_alt":  ["anthropic/claude-haiku-5.5", "x-ai/grok-4.7"],
     },
     # Vercel AI Gateway هنا للقراية بصوت (TTS) بس — مش في ORDER: مبيفرّغش ومبيعالجش
     "vercel": {
@@ -535,6 +535,37 @@ def chat_models(pid):
     """موديلات الشات بترتيب النهارده (chat ثم chat_alt) — ترتيب الترحيل وكتالوج المعالجة."""
     m = PROVIDERS.get(pid) or {}
     return _model_list(m.get("chat"), m.get("chat_alt")) if m.get("chat") else []
+
+
+# قايمة /models (OpenAI-compatible) فيها موديلات مش للشات: البوابات بتكتب النوع، وGroq
+# وxAI مبيكتبوهوش فبنعرفهم من الاسم: تفريغ (Whisper/Transcribe) وصوت (TTS/Orpheus)
+# وتصنيف أمان (Llama Guard/Safeguard) — ردهم مش نص متنضّف
+_NON_CHAT_TYPES = {"embedding", "image", "video", "reranking", "speech", "transcription", "realtime"}
+_NON_CHAT_ID = re.compile(r"embed|rerank|whisper|transcribe|tts|orpheus|guard", re.I)
+
+
+def lists_chat_models(pid):
+    """المزوّد بيعرض موديلات الشات بتاعته على {base_url}/models (OpenAI-compatible)."""
+    m = PROVIDERS.get(pid) or {}
+    return bool(m.get("chat") and m.get("base_url"))
+
+
+def list_chat_models(pid, key):
+    """موديلات الشات المتاحة دلوقتي عند المزوّد — للقايمة المنسدلة، بترتيب المزوّد ومن غير تكرار."""
+    body = _get_json(PROVIDERS[pid]["base_url"] + "/models", {"Authorization": "Bearer " + key}, timeout=15)
+    out = []
+    for m in body.get("data") or []:
+        mid = str(m.get("id") or "")
+        if mid and mid not in out and _is_chat_model(m, mid):
+            out.append(mid)
+    return out
+
+
+def _is_chat_model(m, mid):
+    # OpenRouter: ":batch" نسخة للـBatch API مش للنداء المباشر، وموديلات بتطلّع صور
+    outputs = (m.get("architecture") or {}).get("output_modalities") or []
+    return (m.get("type") not in _NON_CHAT_TYPES and not _NON_CHAT_ID.search(mid)
+            and not mid.endswith(":batch") and "image" not in outputs)
 
 
 def stt_order(pid, chosen=None):

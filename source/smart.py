@@ -552,7 +552,7 @@ class CaptureSession:
 # ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
 FEATURES = ("normal", "prompt", "translate", "edit")
 LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
-STT_ONLY = ("deepgram", "xai", "zai", "openrouter", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
+STT_ONLY = ("deepgram", "zai", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
 KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter")
 _CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
 
@@ -581,7 +581,9 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
             stt.append(local)
         stt = stt or [local]
 
-    candidates = [pid] + [p for p in _CHAT_FALLBACK_ORDER if p != pid]
+    # الإعدادات القديمة كانت بتعالج بـGroq/Gemini/OpenAI بس — مزوّد بقى بيعالج بعد كده
+    # (xAI/OpenRouter) مبيدخلش القايمة لوحده حتى لو المزوّد المختار ومعاه مفتاح
+    candidates = ([pid] if pid in _CHAT_FALLBACK_ORDER else []) + [p for p in _CHAT_FALLBACK_ORDER if p != pid]
     chat_capable = [p for p in candidates if chat_orders.get(p)]
     keyed = [p for p in chat_capable if pools.get(p)]
     ai_pid = keyed[0] if keyed else (chat_capable[0] if chat_capable else None)

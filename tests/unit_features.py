@@ -67,6 +67,16 @@ class TestMigration(unittest.TestCase):
         self.assertEqual({i["provider"] for i in f["prompt"]["ai"]}, {"gemini"})
         self.assertEqual(f["normal"]["stt"][0], {"provider": "deepgram", "model": "nova-3"})
 
+    def test_providers_that_gained_chat_later_are_never_picked_for_processing(self):
+        # PR #20 (Codex): مفتاح xAI/OpenRouter مخزّن مكانش لازم يبدأ نداءات معالجة مدفوعة لوحده
+        chat = dict(CHAT, xai=["grok-4.7"], openrouter=["google/gemini-3.8-flash"])
+        for pid in ("xai", "openrouter"):
+            with self.subTest(pid=pid):
+                f = smart.default_features({"provider": pid, "models": {}}, {pid: ["k"], "gemini": ["g"]},
+                                           None, dict(STT, **{pid: ["s"]}), chat)
+                self.assertEqual({i["provider"] for m in smart.FEATURES for i in f[m]["ai"]}, {"gemini"})
+                self.assertEqual(f["normal"]["stt"][0]["provider"], pid)
+
     def test_no_chat_key_normal_is_raw_others_keep_a_provider(self):
         f = mig(provider="deepgram", pools={"deepgram": ["d"]})
         self.assertEqual(f["normal"]["ai"], [])
