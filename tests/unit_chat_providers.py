@@ -35,6 +35,17 @@ def _http_error(code):
     return urllib.error.HTTPError("https://x", code, "err", {}, io.BytesIO(b"{}"))
 
 
+def _anthropic_http_error(code, message):
+    body = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": message}}).encode()
+    return urllib.error.HTTPError("https://x", code, "err", {}, io.BytesIO(body))
+
+
+ANTHROPIC_CREDIT_MSG = (
+    "Your credit balance is too low to access the Anthropic API. "
+    "Please go to Plans & Billing to upgrade or purchase credits."
+)
+
+
 class TestLiveChatModels(unittest.TestCase):
     def test_list_keeps_only_models_the_chat_call_can_use(self):
         cases = [
@@ -355,9 +366,73 @@ class TestAnthropicNative(unittest.TestCase):
     def test_success_sets_last_chat(self):
         c = providers.Client("anthropic", "sk-ant-1")
         with mock.patch.object(providers, "_post_json",
-                               return_value={"content": [{"type": "text", "text": "تم"}]}):
+                               return_value={"content": [{"type": "text", "text": "تم"}],
+                                             "stop_reason": "end_turn"}):
             c.translate("x")
         self.assertEqual(c.last_chat, ("Anthropic Claude", "claude-haiku-5-5"))
+
+    def test_stop_reason_end_turn_still_returns_text(self):
+        with mock.patch.object(providers, "_post_json",
+                               return_value={"content": [{"type": "text", "text": "كامل"}],
+                                             "stop_reason": "end_turn"}):
+            self.assertEqual(providers.Client("anthropic", "sk-ant-1").translate("مدخل"), "كامل")
+
+    def test_max_tokens_truncation_treated_as_failure_not_success(self):
+        truncated = {"content": [{"type": "text", "text": "نص مقطوع"}],
+                     "stop_reason": "max_tokens"}
+        for mode in ("translate", "chat_raw"):
+            with self.subTest(mode=mode), \
+                 mock.patch.object(providers, "_post_json", return_value=truncated) as post, \
+                 mock.patch("core.log_error"):
+                c = providers.Client("anthropic", "sk-ant-1")
+                if mode == "translate":
+                    self.assertEqual(c.translate("المدخل الأصلي"), "المدخل الأصلي")
+                else:
+                    self.assertIsNone(c._chat_raw(providers.EDIT_SYSTEM, "المدخل الأصلي"))
+                self.assertIsNone(c.last_chat)
+                self.assertEqual(post.call_count, 1)
+
+    def test_max_tokens_on_first_processing_item_falls_through_feature_chain(self):
+        feature = {"hotkey": [], "stt": [],
+                   "ai": [{"provider": "anthropic", "model": "claude-haiku-5-5"},
+                          {"provider": "anthropic", "model": "claude-sonnet-5-5"}]}
+        fc = chains.FeatureClient(feature, {"anthropic": ["sk-ant-1"]}, log=lambda e, where: None)
+
+        def post_side(url, payload, headers, timeout=120):
+            if payload["model"] == "claude-haiku-5-5":
+                return {"content": [{"type": "text", "text": "مقطوع"}], "stop_reason": "max_tokens"}
+            return {"content": [{"type": "text", "text": "من العنصر التاني"}], "stop_reason": "end_turn"}
+
+        with mock.patch.object(providers, "_post_json", side_effect=post_side) as post, \
+             mock.patch("core.log_error"):
+            self.assertEqual(fc.translate("أهلًا"), "من العنصر التاني")
+        self.assertEqual([c.args[1]["model"] for c in post.call_args_list],
+                         ["claude-haiku-5-5", "claude-sonnet-5-5"])
+        self.assertEqual(fc.last_chat, ("Anthropic Claude", "claude-sonnet-5-5"))
+
+    def test_credit_exhausted_rotates_to_next_key_in_pool(self):
+        credit_err = _anthropic_http_error(400, ANTHROPIC_CREDIT_MSG)
+        cl = providers.Client("anthropic", keys=["sk-ant-a", "sk-ant-b"])
+        with mock.patch.object(providers, "_post_json",
+                               side_effect=[credit_err,
+                                            {"content": [{"type": "text", "text": "من المفتاح التاني"}],
+                                             "stop_reason": "end_turn"}]) as post:
+            self.assertEqual(cl.translate("x"), "من المفتاح التاني")
+        self.assertEqual([c.args[2]["x-api-key"] for c in post.call_args_list],
+                         ["sk-ant-a", "sk-ant-b"])
+        status = providers.key_status("anthropic", "sk-ant-a")
+        self.assertEqual(status["status"], "rate_limited")
+        # الرصيد مبيرجعش في دقيقة — المفتاح يفضل مستبعد ساعة مش ٦٠ ثانية
+        self.assertGreater(status["retry_in"], 3000)
+
+    def test_plain_http_400_does_not_rotate_keys(self):
+        err = _anthropic_http_error(400, "bad")
+        cl = providers.Client("anthropic", keys=["sk-ant-a", "sk-ant-b"])
+        with mock.patch.object(providers, "_post_json", side_effect=err) as post, \
+             mock.patch("core.log_error"):
+            self.assertEqual(cl.translate("المدخل"), "المدخل")
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[2]["x-api-key"], "sk-ant-a")
 
     def test_list_chat_models_uses_anthropic_headers_and_filters_lifecycle(self):
         with mock.patch.object(providers, "_get_json", return_value=ANTHROPIC_MODELS) as get:

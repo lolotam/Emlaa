@@ -692,6 +692,8 @@ _RATE_PHRASES = ("rate_limit", "rate limit", "quota", "resource_exhausted",
 _INVALID_PHRASES = ("invalid api key", "invalid_api_key", "incorrect api key",
                     "api key not valid", "invalid x-api-key", "unauthorized",
                     "invalid credentials")
+# Anthropic بيرجّع 400 لما الرصيد يخلص — مش مفتاح باطل، يتبدّل للمفتاح التاني
+_CREDIT_EXHAUSTED_PHRASES = ("credit balance is too low",)
 _LEADING_STATUS_RE = re.compile(r"^\s*(?:http|error code:?)\s*(\d{3})\b", re.I)
 _RETRY_AFTER_RE = re.compile(r"retry[ -]after[:\s]*(\d+(?:\.\d+)?)", re.I)
 # المدة نفسها بس اللي بعد «try again in» (2m59.56s / 340ms / 5 minutes) — مش باقي الرسالة،
@@ -748,6 +750,8 @@ def _key_error_kind(e):
     if status in (400, 403):
         # Gemini بيرجّع المفتاح الغلط 400 «API key not valid» — من غير العبارة يبقى خطأ عادي
         s = str(e).lower()
+        if any(p in s for p in _CREDIT_EXHAUSTED_PHRASES):
+            return "rate"
         return "invalid" if any(p in s for p in _INVALID_PHRASES) else None
     if status is not None:
         return None
@@ -795,7 +799,7 @@ def _cooldown_for(msg):
         total = _parse_duration(m.group(1))
         if total:
             return _clamp_cooldown(total)
-    if "quota" in s or "daily" in s:
+    if any(p in s for p in _CREDIT_EXHAUSTED_PHRASES) or "quota" in s or "daily" in s:
         return 3600.0
     return 60.0
 
@@ -1772,6 +1776,9 @@ class Client(TextOps):
             }
             try:
                 r = _post_json(f"{self.m['base_url']}/messages", payload, hdr)
+                # max_tokens = الرد اتقطع — نص ناقص أسوأ من الفشل: العنصر الجاي في قايمة الميزة هو اللي يرد
+                if r.get("stop_reason") == "max_tokens":
+                    raise RuntimeError("الرد اتقطع قبل ما يكمّل")
                 self.last_chat = (self.m["name"], model)
                 return _anthropic_text(r) or ("" if raw else text)
             except urllib.error.HTTPError as e:
