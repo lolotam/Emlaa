@@ -97,6 +97,8 @@
 | **Xiaomi MiMo (سنغافورة)** | موديلات MiMo من اشتراك Token Plan على سيرفر سنغافورة · المفتاح بيبدأ بـ `tp-` أو `ttp-` | [platform.xiaomimimo.com](https://platform.xiaomimimo.com/#/console/plan-manage) |
 
 في الاتنين التفكير (thinking) بيتقفل: التنضيف مش محتاجه وبيبطّأ الرد.
+
+> ⚠️ **شروط الاشتراكات:** Z.ai بيقول إن GLM Coding Plan [مقصور على أدوات معيّنة](https://docs.z.ai/devpack/tool/others) وإملاء مش منها، و Xiaomi بيوصف [Token Plan](https://mimo.mi.com/docs/en-US/price/token-plan) إنه معمول للبرمجة. استخدامهم في إملاء على مسؤوليتك — لو عايز تبعد عن الخطر استخدم Z.ai GLM العادي أو OpenRouter.
 >
 > **Z.ai** بيقبل ٣٠ ثانية بس في الطلب، فإملاء بيقسّم الكلام الأطول كل ٢٨ ثانية — ممكن كلمة تتقطع عند الحد.
 

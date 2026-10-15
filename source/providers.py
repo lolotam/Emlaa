@@ -149,7 +149,7 @@ PROVIDERS = {
     "zai_coding": {
         "name":      "Z.ai GLM Coding Plan",
         "tag":       "معالجة بس",
-        "desc":      "معالجة بموديلات GLM من اشتراك Coding Plan · مفتاح منفصل عن مفتاح Z.ai العادي",
+        "desc":      "معالجة بموديلات GLM من اشتراك Coding Plan · مفتاح منفصل · ⚠️ Z.ai بيقصر الخطة على أدوات معيّنة وإملاء مش منها",
         "key_url":   "https://z.ai/manage-apikey/apikey-list",
         "key_hint":  "مفتاح اشتراك GLM Coding Plan من z.ai",
         "key_start": None,
@@ -164,7 +164,7 @@ PROVIDERS = {
     "xiaomi": {
         "name":      "Xiaomi MiMo (Singapore)",
         "tag":       "معالجة بس",
-        "desc":      "معالجة بموديلات MiMo من اشتراك Token Plan · سيرفر سنغافورة",
+        "desc":      "معالجة بموديلات MiMo من اشتراك Token Plan · سيرفر سنغافورة · ⚠️ Xiaomi بيقول الخطة معمولة للبرمجة",
         "key_url":   "https://platform.xiaomimimo.com/#/console/plan-manage",
         "key_hint":  "مفتاح Token Plan بيبدأ بحروف tp أو ttp",
         "key_start": ("tp-", "ttp-"),
