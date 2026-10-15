@@ -322,6 +322,19 @@ class TestStaticUiChecks(unittest.TestCase):
         ]:
             self.assertIn('"%s": "%s"' % (ar, en), self.i18n, ar)
 
+    def test_every_provider_text_shown_in_the_ui_has_an_en_entry(self):
+        # PR #23 (Codex): نصوص المزوّدين الجداد كانت بتفضل عربي في الواجهة الإنجليزي
+        import re
+        import providers
+        patterns = ("المفتاح بيبدأ بحروف ", "هاته من ")   # EN_PATTERNS في i18n.js
+        missing = []
+        for pid in providers.ORDER + providers.CHAT_ONLY_ORDER + providers.TTS_ORDER:
+            m, guide = providers.PROVIDERS[pid], providers.GUIDES.get(pid, {})
+            for ar in [m["tag"], m["desc"], m["key_hint"], guide.get("free", "")] + guide.get("steps", []):
+                if re.search(r"[؀-ۿ]", ar) and '"%s":' % ar not in self.i18n                         and not ar.startswith(patterns):
+                    missing.append((pid, ar))
+        self.assertEqual(missing, [])
+
     def test_every_arabic_text_in_index_html_has_an_en_entry(self):
         import re
         no_dict = re.sub(r"<script[\s\S]*?</script>", "", self.html)
