@@ -351,7 +351,10 @@ class TestVerifySttOnlyProviders(unittest.TestCase):
                  ("openrouter", "sk-or-key", "https://openrouter.ai/api/v1/key"),
                  ("vercel", "v-key", "https://ai-gateway.vercel.sh/v1/credits")]
         for pid, key, url in cases:
-            with self.subTest(pid=pid),                     mock.patch.object(providers, "_get_json", return_value={}) as get,                     mock.patch.object(providers, "_post_json") as post_json,                     mock.patch.object(providers, "_post_multipart") as post_multi:
+            with self.subTest(pid=pid), \
+                    mock.patch.object(providers, "_get_json", return_value={}) as get, \
+                    mock.patch.object(providers, "_post_json") as post_json, \
+                    mock.patch.object(providers, "_post_multipart") as post_multi:
                 self.assertEqual(providers.verify(pid, key), (True, ""))
                 self.assertEqual(get.call_args.args[:2], (url, {"Authorization": "Bearer " + key}))
                 post_json.assert_not_called()

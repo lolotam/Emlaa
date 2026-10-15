@@ -553,7 +553,7 @@ class CaptureSession:
 FEATURES = ("normal", "prompt", "translate", "edit")
 LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
 STT_ONLY = ("deepgram", "zai", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
-CHAT_ONLY = ("zai_coding", "xiaomi")   # بيعالجوا بس — ممنوعين في قايمة التفريغ
+CHAT_ONLY = ("zai_coding", "xiaomi", "anthropic")   # بيعالجوا بس — ممنوعين في قايمة التفريغ
 KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter") + CHAT_ONLY
 _CHAT_FALLBACK_ORDER = ("groq", "gemini", "openai")
 
@@ -567,7 +567,8 @@ def default_features(cfg, pools, local_model, stt_orders, chat_orders):
     names = {"normal": cfg.get("hotkey_normal") or cfg.get("hotkey"),
              "prompt": cfg.get("hotkey_prompt"), "translate": cfg.get("hotkey_translate"),
              "edit": cfg.get("hotkey_edit")}
-    pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS and cfg.get("provider") not in CHAT_ONLY         else "groq"
+    pid = cfg.get("provider") if cfg.get("provider") in KNOWN_PROVIDERS and cfg.get("provider") not in CHAT_ONLY \
+            else "groq"
     local = {"provider": LOCAL, "model": ""}
 
     # «من غير إنترنت دايمًا» كان اختيار خصوصية: لا الصوت ولا النص عمرهم خرجوا من الجهاز —
@@ -616,7 +617,8 @@ def validate_features(features, known=KNOWN_PROVIDERS):
         if not isinstance(ai, list):     # فاضية مسموحة: العادي خام، والباقي من غير تحويل
             return "إعدادات الميزات ناقصة"
         for item in stt:
-            if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,)                     or item.get("provider") in CHAT_ONLY:
+            if not isinstance(item, dict) or item.get("provider") not in tuple(known) + (LOCAL,) \
+                    or item.get("provider") in CHAT_ONLY:
                 return "مزوّد تفريغ مش معروف"
             if item["provider"] != LOCAL and not item.get("model"):
                 return "اختار موديل لكل مزوّد تفريغ"

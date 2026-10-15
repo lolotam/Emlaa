@@ -520,7 +520,8 @@ class TestSameTarget(unittest.TestCase):
 
     def test_hwnd_mismatch(self):
         import winput
-        with mock.patch.object(winput, "foreground_hwnd", return_value=8),                 mock.patch.object(winput, "_focused_element", return_value=None):
+        with mock.patch.object(winput, "foreground_hwnd", return_value=8), \
+                mock.patch.object(winput, "_focused_element", return_value=None):
             self.assertFalse(winput.same_target(self._op()))
 
     def test_runtime_id_mismatch(self):
