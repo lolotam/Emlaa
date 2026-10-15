@@ -326,12 +326,14 @@ class TestStaticUiChecks(unittest.TestCase):
         # PR #23 (Codex): نصوص المزوّدين الجداد كانت بتفضل عربي في الواجهة الإنجليزي
         import re
         import providers
-        patterns = ("المفتاح بيبدأ بحروف ", "هاته من ")   # EN_PATTERNS في i18n.js
+        # نفس الـregex اللي في EN_PATTERNS (i18n.js) — بتتقرا من الملف عشان متتنسخش وتختلف
+        patterns = [re.compile(src) for src in re.findall(r"^\s*\[/(\^.*?\$)/,", self.i18n, re.M)]
+        self.assertTrue(patterns, "EN_PATTERNS مش موجودة في i18n.js")
         missing = []
         for pid in providers.ORDER + providers.CHAT_ONLY_ORDER + providers.TTS_ORDER:
             m, guide = providers.PROVIDERS[pid], providers.GUIDES.get(pid, {})
             for ar in [m["tag"], m["desc"], m["key_hint"], guide.get("free", "")] + guide.get("steps", []):
-                if re.search(r"[؀-ۿ]", ar) and '"%s":' % ar not in self.i18n                         and not ar.startswith(patterns):
+                if re.search(r"[؀-ۿ]", ar) and '"%s":' % ar not in self.i18n                         and not any(p.match(ar) for p in patterns):
                     missing.append((pid, ar))
         self.assertEqual(missing, [])
 
