@@ -211,8 +211,10 @@ class TestVerifyChatOnly(unittest.TestCase):
             post.assert_not_called()
 
     def test_missing_model_list_falls_back_to_a_one_token_reply(self):
-        with mock.patch.object(providers, "_get_json", side_effect=_http_error(404)),                 mock.patch.object(providers, "_post_json", return_value={"choices": []}) as post:
-            self.assertEqual(providers.verify("xiaomi", "ttp-1"), (True, ""))
+        # PR #22 (MergePilot): أي رد غير رفض المفتاح على /models — مش 404 بس — بيكمّل للرد
+        for list_err in (_http_error(404), _http_error(405), _http_error(501), ValueError("not json")):
+            with self.subTest(err=list_err), mock.patch.object(providers, "_get_json", side_effect=list_err),                     mock.patch.object(providers, "_post_json", return_value={"choices": []}) as post:
+                self.assertEqual(providers.verify("xiaomi", "ttp-1"), (True, ""))
         url, body, headers = post.call_args.args
         self.assertEqual(url, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
         self.assertEqual((body["model"], body["max_tokens"], body["thinking"]), ("mimo-v2.6-flash", 1, {"type": "disabled"}))
@@ -227,6 +229,7 @@ class TestVerifyChatOnly(unittest.TestCase):
 
     def test_rejected_key_fails_without_a_paid_request(self):
         cases = [("zai_coding", "z-1", _http_error(401), "المفتاح مش مقبول — اتأكد إنك نسخته كامل"),
+                 ("zai_coding", "z-1", _http_error(429), "المفتاح شغّال بس الرصيد/الحد خلص"),
                  ("xiaomi", "sk-payg", None, "مفتاح Token Plan بيبدأ بحروف tp أو ttp — اتأكد إنك نسخته كامل")]
         for pid, key, err, msg in cases:
             with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", side_effect=err) as get,                     mock.patch.object(providers, "_post_json") as post:
