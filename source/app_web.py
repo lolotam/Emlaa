@@ -570,8 +570,9 @@ def _feature_catalog(pools, local):
                    "chatModels": providers.chat_models(p),
                    "hasKey": bool(pools.get(p)),
                    "sttOnly": not providers.PROVIDERS[p].get("chat"),
-                   "liveModels": providers.lists_chat_models(p)}
-               for p in providers.ORDER}
+                   "liveModels": providers.lists_chat_models(p),
+                   "chatOnly": p in providers.CHAT_ONLY_ORDER}
+               for p in providers.ORDER + providers.CHAT_ONLY_ORDER}
     catalog[smart.LOCAL] = {"name": LOCAL_NAME, "installed": local or None}
     return catalog
 
@@ -647,8 +648,9 @@ class Api:
                                hasKey=bool(pools.get(p)),
                                keyCount=len(pools.get(p, [])),
                                guide=providers.GUIDES.get(p, {}),
-                               tts=p in providers.TTS_ORDER)
-                          for p in providers.ORDER + providers.TTS_ORDER],
+                               tts=p in providers.TTS_ORDER,
+                               chatOnly=p in providers.CHAT_ONLY_ORDER)
+                          for p in providers.ORDER + providers.CHAT_ONLY_ORDER + providers.TTS_ORDER],
             "ttsModels": providers.TTS_MODELS["vercel"],
             "ttsMaxChars": providers.TTS_MAX_CHARS,
             # الواجهة بتعرض الاسم بس — save_settings بيرمي label لو رجعت معاها

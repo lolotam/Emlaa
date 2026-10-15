@@ -756,7 +756,7 @@ $("#snipList").addEventListener("click", e => {
 
 /* ═══════════ الإعدادات ═══════════ */
 function provCards(container, onPick) {
-  container.innerHTML = S.boot.providers.filter(p => !p.tts).map(p => `
+  container.innerHTML = S.boot.providers.filter(p => !p.tts && !p.chatOnly).map(p => `
     <button type="button" class="prov${p.id === S.provider ? " active" : ""}" data-p="${p.id}">
       <span class="prov-top"><span class="prov-name">${esc(p.name)}</span><span class="prov-tag">${esc(p.tag)}</span></span>
       <span class="prov-desc">${esc(p.desc)}</span>
@@ -833,7 +833,7 @@ async function loadLiveChat(pids) {
 function chainProviders(kind, current) {
   return Object.keys(S.boot.catalog || {}).filter(pid => {
     if (pid === LOCAL) return kind === "stt" && (!S.boot.offline?.packaged || current === LOCAL);
-    return kind === "stt" || !catalog(pid).sttOnly;
+    return kind === "stt" ? !catalog(pid).chatOnly : !catalog(pid).sttOnly;
   });
 }
 function chainWarn(item) {
