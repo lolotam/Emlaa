@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "source"))
 
+import chains     # noqa: E402
 import core       # noqa: E402
 import smart      # noqa: E402
 import providers  # noqa: E402
@@ -72,6 +73,33 @@ class TestChatThroughNewProviders(unittest.TestCase):
             self.assertEqual(ctor.call_args.kwargs["base_url"], url)
             self.assertEqual(ctor.call_args.kwargs["api_key"], "k-1")
             self.assertEqual(fake.with_options.return_value.chat.completions.create.call_args.kwargs["model"], model)
+
+    def test_simulated_temperature_rejection_falls_back_to_the_next_item(self):
+        # الرفض هنا متخيّل — مش سلوك اتشاف: OpenRouter موثّق إنه بيتجاهل البارامتر اللي المزوّد
+        # مبيدعموش (require_parameters=false)، وClaude 5.5 مفيهوش temperature في supported_parameters
+        # (قايمة /models العامة، أكتوبر ٢٠٢٦). الاختبار بيثبّت إن لو جه 400 بدل التجاهل، العنصر
+        # الجاي في قايمة الميزة هو اللي يرد — مش النص الخام. رسالة الخطأ تأليف للاختبار
+        import httpx
+        import openai
+        sent = []
+
+        def create(**kw):
+            sent.append((kw["model"], kw["temperature"]))
+            if kw["model"].startswith("anthropic/"):
+                req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+                raise openai.BadRequestError("temperature: must be 1", response=httpx.Response(400, request=req),
+                                             body=None)
+            return mock.Mock(choices=[mock.Mock(message=mock.Mock(content="Hello there"))])
+
+        fake = mock.MagicMock()
+        fake.with_options.return_value.chat.completions.create.side_effect = create
+        feature = {"hotkey": [], "stt": [], "ai": [{"provider": "openrouter", "model": "anthropic/claude-haiku-5.5"},
+                                                  {"provider": "openrouter", "model": "x-ai/grok-4.7"}]}
+        fc = chains.FeatureClient(feature, {"openrouter": ["sk-or-1"]}, log=lambda e, where: None)
+        with mock.patch("openai.OpenAI", return_value=fake), mock.patch("core.log_error"):
+            self.assertEqual(fc.translate("أهلًا يا جماعة"), "Hello there")
+        self.assertEqual(sent, [("anthropic/claude-haiku-5.5", 0.2), ("x-ai/grok-4.7", 0.2)])
+        self.assertEqual(fc.last_chat, ("OpenRouter", "x-ai/grok-4.7"))
 
     def test_new_chat_providers_are_accepted_in_the_processing_list(self):
         stt = [{"provider": "groq", "model": "whisper-large-v3-turbo"}]
