@@ -114,7 +114,7 @@ Emlaa is completely free. It needs an API key from your chosen provider (Groq an
 ### الصور
 ارفع الصور من `tools/store/screenshots/` (1366×768):
 1. `01-home-ar.png` — الرئيسية
-2. `02-models-ar.png` — ⚠ صورة قديمة لاختيار الموديل اللي اتشال: صوّر بدالها صفحة الإعدادات (تابات الميزات وقوايم البدائل) بنفس الاسم قبل النشر
+2. `02-models-ar.png` — الإعدادات: تابات الميزات وقوايم البدائل (التفريغ والمعالجة بالـAI)
 3. `03-history-ar.png` — السجل
 4. `04-home-en.png` — الواجهة بالإنجليزي
 5. `05-clipboard-en.png` — مدير الحافظة
