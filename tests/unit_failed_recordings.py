@@ -764,7 +764,9 @@ class TestRetranscribe(_Store):
     def test_default_client_is_a_fresh_feature_client(self):
         rid = self.keep(mode="translate")
         client = _RetryClient(text="اترجم ده")
-        with mock.patch.object(core.chains, "FeatureClient", return_value=client) as make,                 mock.patch.object(core.providers, "read_key_pools", return_value={"groq": ["k"]}),                 mock.patch.dict(core.CFG, dictionary=["إملاء"]):
+        with mock.patch.object(core.chains, "FeatureClient", return_value=client) as make, \
+                mock.patch.object(core.providers, "read_key_pools", return_value={"groq": ["k"]}), \
+                mock.patch.dict(core.CFG, dictionary=["إملاء"]):
             self.assertTrue(core.retranscribe(rid)["ok"])
         make.assert_called_once_with(core.feature("translate"), {"groq": ["k"]})
         self.assertEqual(client.vocab, ["إملاء"])
@@ -795,7 +797,8 @@ class TestBridge(_Store):
 
     def test_retry_resolves_through_the_bridge(self):
         rid = self.keep()
-        with mock.patch.object(core.chains, "FeatureClient", return_value=_RetryClient()),                 mock.patch.object(core.providers, "read_key_pools", return_value={}):
+        with mock.patch.object(core.chains, "FeatureClient", return_value=_RetryClient()), \
+                mock.patch.object(core.providers, "read_key_pools", return_value={}):
             res = self.app_web.Api(None).history_retry(rid)
         self.assertTrue(res["ok"])
         self.assertNotIn("status", self.items()[0])

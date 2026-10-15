@@ -206,7 +206,8 @@ class TestVerifyChatOnly(unittest.TestCase):
 
     def test_key_works_when_the_model_list_answers_without_any_paid_request(self):
         for pid, key in (("zai_coding", "z-1"), ("xiaomi", "tp-1")):
-            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", return_value={"data": []}) as get,                     mock.patch.object(providers, "_post_json") as post:
+            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", return_value={"data": []}) as get, \
+                    mock.patch.object(providers, "_post_json") as post:
                 self.assertEqual(providers.verify(pid, key), (True, ""))
             self.assertEqual(get.call_args.args, (providers.PROVIDERS[pid]["base_url"] + "/models",
                                                   {"Authorization": "Bearer " + key}))
@@ -215,7 +216,8 @@ class TestVerifyChatOnly(unittest.TestCase):
     def test_missing_model_list_falls_back_to_a_one_token_reply(self):
         # PR #22 (MergePilot): أي رد غير رفض المفتاح على /models — مش 404 بس — بيكمّل للرد
         for list_err in (_http_error(404), _http_error(405), _http_error(501), ValueError("not json")):
-            with self.subTest(err=list_err), mock.patch.object(providers, "_get_json", side_effect=list_err),                     mock.patch.object(providers, "_post_json", return_value={"choices": []}) as post:
+            with self.subTest(err=list_err), mock.patch.object(providers, "_get_json", side_effect=list_err), \
+                    mock.patch.object(providers, "_post_json", return_value={"choices": []}) as post:
                 self.assertEqual(providers.verify("xiaomi", "ttp-1"), (True, ""))
         url, body, headers = post.call_args.args
         self.assertEqual(url, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
@@ -226,7 +228,9 @@ class TestVerifyChatOnly(unittest.TestCase):
         # 400 على رد التوكن الواحد (مثلًا max_tokens مش مقبول) = المفتاح عدّى؛ 401 = مرفوض
         cases = [(_http_error(400), (True, "")), (_http_error(401), (False, "المفتاح مش مقبول — اتأكد إنك نسخته كامل"))]
         for probe_err, expected in cases:
-            with self.subTest(code=probe_err.code),                     mock.patch.object(providers, "_get_json", side_effect=_http_error(404)),                     mock.patch.object(providers, "_post_json", side_effect=probe_err):
+            with self.subTest(code=probe_err.code), \
+                    mock.patch.object(providers, "_get_json", side_effect=_http_error(404)), \
+                            mock.patch.object(providers, "_post_json", side_effect=probe_err):
                 self.assertEqual(providers.verify("zai_coding", "z-1"), expected)
 
     def test_rejected_key_fails_without_a_paid_request(self):
@@ -234,7 +238,8 @@ class TestVerifyChatOnly(unittest.TestCase):
                  ("zai_coding", "z-1", _http_error(429), "المفتاح شغّال بس الرصيد/الحد خلص"),
                  ("xiaomi", "sk-payg", None, "مفتاح Token Plan بيبدأ بحروف tp أو ttp — اتأكد إنك نسخته كامل")]
         for pid, key, err, msg in cases:
-            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", side_effect=err) as get,                     mock.patch.object(providers, "_post_json") as post:
+            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", side_effect=err) as get, \
+                    mock.patch.object(providers, "_post_json") as post:
                 self.assertEqual(providers.verify(pid, key), (False, msg))
             post.assert_not_called()
             if err is None:

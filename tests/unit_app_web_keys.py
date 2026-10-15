@@ -333,7 +333,8 @@ class TestStaticUiChecks(unittest.TestCase):
         for pid in providers.ORDER + providers.CHAT_ONLY_ORDER + providers.TTS_ORDER:
             m, guide = providers.PROVIDERS[pid], providers.GUIDES.get(pid, {})
             for ar in [m["tag"], m["desc"], m["key_hint"], guide.get("free", "")] + guide.get("steps", []):
-                if re.search(r"[؀-ۿ]", ar) and '"%s":' % ar not in self.i18n                         and not any(p.match(ar) for p in patterns):
+                if re.search(r"[؀-ۿ]", ar) and '"%s":' % ar not in self.i18n \
+                        and not any(p.match(ar) for p in patterns):
                     missing.append((pid, ar))
         self.assertEqual(missing, [])
 

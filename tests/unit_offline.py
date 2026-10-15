@@ -481,7 +481,9 @@ class TestTranscribe(_BaseCase):
         with open(stale, "w", encoding="utf-8") as f:
             f.write("نص قديم")
         os.utime(stale, (1234.6, 1234.6))   # mtime "بعد" start — الحارس لوحده ميكفيش
-        with mock.patch.object(offline.tempfile, "gettempdir", return_value=self._tmp.name),                 mock.patch.object(offline.time, "time", return_value=1234.567),                 mock.patch.object(offline, "_run", _run):
+        with mock.patch.object(offline.tempfile, "gettempdir", return_value=self._tmp.name), \
+                mock.patch.object(offline.time, "time", return_value=1234.567), \
+                mock.patch.object(offline, "_run", _run):
             with self.assertRaises(RuntimeError):
                 offline.transcribe("w.wav", "ar")
         self.assertFalse(seen["existed"])
@@ -623,7 +625,8 @@ class TestVerify(_BaseCase):
                 f.write("نص")
             return SimpleNamespace(returncode=0)
 
-        with mock.patch.object(offline, "_run", fake_run),                 mock.patch.object(offline, "_sha256_file", wraps=offline._sha256_file) as h:
+        with mock.patch.object(offline, "_run", fake_run), \
+                mock.patch.object(offline, "_sha256_file", wraps=offline._sha256_file) as h:
             offline.transcribe("w.wav", "ar")
             first = h.call_count
             offline.transcribe("w.wav", "ar")
