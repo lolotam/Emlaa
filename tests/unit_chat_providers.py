@@ -4,6 +4,7 @@
 providers._get_json (قايمة /models) و openai.OpenAI (نداء الشات) متزوّدين stub.
 """
 import io
+import json
 import os
 import sys
 import tempfile
@@ -189,8 +190,9 @@ class TestChatModelsLiveApi(unittest.TestCase):
         catalog = app_web._feature_catalog({}, None)
         pids = providers.ORDER + providers.CHAT_ONLY_ORDER
         self.assertEqual({p for p in pids if catalog[p]["liveModels"]},
-                         {"groq", "xai", "openrouter", "zai_coding", "xiaomi"})
-        self.assertEqual({p for p in pids if catalog[p]["chatOnly"]}, {"zai_coding", "xiaomi"})
+                         {"groq", "xai", "openrouter", "zai_coding", "xiaomi", "anthropic"})
+        self.assertEqual({p for p in pids if catalog[p]["chatOnly"]},
+                         {"zai_coding", "xiaomi", "anthropic"})
         self.assertFalse(catalog["xai"]["sttOnly"])
         self.assertEqual(catalog["xiaomi"]["sttModels"], [])
 
@@ -237,6 +239,153 @@ class TestVerifyChatOnly(unittest.TestCase):
             post.assert_not_called()
             if err is None:
                 get.assert_not_called()
+
+
+ANTHROPIC_MODELS = {"data": [
+    {"id": "claude-haiku-5-5", "lifecycle": "active"},
+    {"id": "claude-sonnet-5-5", "lifecycle": "active"},
+    {"id": "claude-opus-5-5"},
+    {"id": "claude-3-5-haiku-20241022", "lifecycle": "deprecated"},
+    {"id": "claude-2.1", "lifecycle": "retired"},
+]}
+
+
+class TestAnthropicNative(unittest.TestCase):
+    """Anthropic Messages API — معالجة بس، من غير طبقة OpenAI."""
+
+    def setUp(self):
+        providers._KEY_STATE.clear()
+        providers._UNAVAILABLE_MODELS.clear()
+        self.addCleanup(providers._KEY_STATE.clear)
+        self.addCleanup(providers._UNAVAILABLE_MODELS.clear)
+
+    def test_messages_request_shape(self):
+        with mock.patch.object(providers, "_post_json",
+                               return_value={"content": [{"type": "text", "text": "مرحبًا"}]}) as post:
+            self.assertEqual(providers.Client("anthropic", "sk-ant-abc").translate("أهلًا"), "مرحبًا")
+        url, body, headers = post.call_args.args
+        self.assertEqual(url, "https://api.anthropic.com/v1/messages")
+        self.assertEqual(headers, {"x-api-key": "sk-ant-abc", "anthropic-version": "2023-06-01"})
+        self.assertEqual(body["model"], "claude-haiku-5-5")
+        self.assertEqual(body["max_tokens"], 16384)
+        self.assertIn(providers.TRANSLATE_SYSTEM[:40], body["system"])
+        self.assertEqual(body["messages"], [{"role": "user", "content": "أهلًا"}])
+        self.assertNotIn("temperature", body)
+        self.assertNotIn("top_p", body)
+
+    def test_multi_block_response_joins_text_and_skips_other_types(self):
+        body = {"content": [
+            {"type": "text", "text": "جزء "},
+            {"type": "tool_use", "id": "x", "name": "n", "input": {}},
+            {"type": "text", "text": "تاني"},
+        ]}
+        with mock.patch.object(providers, "_post_json", return_value=body):
+            self.assertEqual(providers.Client("anthropic", "sk-ant-1").translate("x"), "جزء تاني")
+
+    def test_empty_content_raw_returns_none_normal_returns_original(self):
+        with mock.patch.object(providers, "_post_json", return_value={"content": []}):
+            c = providers.Client("anthropic", "sk-ant-1")
+            self.assertEqual(c.translate("النص الأصلي"), "النص الأصلي")
+            self.assertIsNone(c._chat_raw(providers.EDIT_SYSTEM, "النص الأصلي"))
+
+    def test_strict_mode_uses_only_chosen_model(self):
+        with mock.patch.object(providers, "_post_json",
+                               return_value={"content": [{"type": "text", "text": "ok"}]}) as post:
+            providers.Client("anthropic", "sk-ant-1", chat_model="claude-sonnet-5-5", strict=True).translate("x")
+        self.assertEqual(post.call_args.args[1]["model"], "claude-sonnet-5-5")
+        self.assertEqual(post.call_count, 1)
+
+    def test_404_on_first_candidate_falls_back_to_second(self):
+        def post_side(url, payload, headers, timeout=120):
+            if payload["model"] == "claude-haiku-5-5":
+                raise _http_error(404)
+            return {"content": [{"type": "text", "text": "من البديل"}]}
+
+        with mock.patch.object(providers, "_post_json", side_effect=post_side) as post:
+            out = providers.Client("anthropic", "sk-ant-1").translate("x")
+        self.assertEqual(out, "من البديل")
+        self.assertEqual([c.args[1]["model"] for c in post.call_args_list],
+                         ["claude-haiku-5-5", "claude-sonnet-5-5"])
+
+    def test_post_failures_map_to_network_or_runtime_error(self):
+        client = providers.Client("anthropic", "sk-ant-1")
+        cases = [
+            (urllib.error.URLError("dns fail"), providers.NetworkError),
+            (TimeoutError("timed out"), providers.NetworkError),
+            (ValueError("boom"), RuntimeError),
+        ]
+        for exc, err_cls in cases:
+            with self.subTest(exc=type(exc).__name__), \
+                 mock.patch.object(providers, "_post_json", side_effect=exc):
+                with self.assertRaises(err_cls) as ctx:
+                    client._anthropic_chat(providers.POLISH_SYSTEM, "x", 0.2)
+                if err_cls is RuntimeError:
+                    self.assertNotIsInstance(ctx.exception, providers.NetworkError)
+                    self.assertEqual(str(ctx.exception), "boom")
+
+    def test_strict_404_single_request_raw_none_and_no_last_chat(self):
+        c = providers.Client("anthropic", "sk-ant-1", chat_model="claude-sonnet-5-5", strict=True)
+        with mock.patch.object(providers, "_post_json", side_effect=_http_error(404)) as post, \
+             mock.patch("core.log_error"):
+            self.assertIsNone(c._chat_raw(providers.EDIT_SYSTEM, "نص"))
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[1]["model"], "claude-sonnet-5-5")
+        self.assertIsNone(c.last_chat)
+
+    def test_both_candidates_404_raw_none_after_two_requests(self):
+        c = providers.Client("anthropic", "sk-ant-1")
+        with mock.patch.object(providers, "_post_json", side_effect=_http_error(404)) as post, \
+             mock.patch("core.log_error"):
+            self.assertIsNone(c._chat_raw(providers.EDIT_SYSTEM, "نص"))
+        self.assertEqual(post.call_count, 2)
+
+    def test_http_400_error_body_surfaces_in_runtime_error(self):
+        body = json.dumps({"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}).encode()
+        err = urllib.error.HTTPError("https://x", 400, "err", {}, io.BytesIO(body))
+        with mock.patch.object(providers, "_post_json", side_effect=err):
+            with self.assertRaises(RuntimeError) as ctx:
+                providers.Client("anthropic", "sk-ant-1")._anthropic_chat(providers.POLISH_SYSTEM, "x", 0.2)
+        self.assertEqual(str(ctx.exception), "HTTP 400: bad")
+
+    def test_success_sets_last_chat(self):
+        c = providers.Client("anthropic", "sk-ant-1")
+        with mock.patch.object(providers, "_post_json",
+                               return_value={"content": [{"type": "text", "text": "تم"}]}):
+            c.translate("x")
+        self.assertEqual(c.last_chat, ("Anthropic Claude", "claude-haiku-5-5"))
+
+    def test_list_chat_models_uses_anthropic_headers_and_filters_lifecycle(self):
+        with mock.patch.object(providers, "_get_json", return_value=ANTHROPIC_MODELS) as get:
+            models = providers.list_chat_models("anthropic", "sk-ant-k")
+        self.assertEqual(models, ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"])
+        url, headers = get.call_args.args
+        self.assertEqual(url, "https://api.anthropic.com/v1/models?limit=1000")
+        self.assertEqual(headers, {"x-api-key": "sk-ant-k", "anthropic-version": "2023-06-01"})
+        self.assertNotIn("Authorization", headers)
+
+    def test_verify_get_only_no_post_and_rejects_wrong_prefix(self):
+        with mock.patch.object(providers, "_get_json", return_value={"data": []}) as get, \
+             mock.patch.object(providers, "_post_json") as post:
+            self.assertEqual(providers.verify("anthropic", "sk-ant-ok"), (True, ""))
+        get.assert_called_once_with(
+            "https://api.anthropic.com/v1/models?limit=1",
+            {"x-api-key": "sk-ant-ok", "anthropic-version": "2023-06-01"},
+            timeout=15,
+        )
+        post.assert_not_called()
+
+        with mock.patch.object(providers, "_get_json") as get2, mock.patch.object(providers, "_post_json") as post2:
+            msg = providers.verify("anthropic", "sk-openai-1")[1]
+        self.assertIn("sk-ant", msg)
+        get2.assert_not_called()
+        post2.assert_not_called()
+
+    def test_verify_401_maps_to_arabic_message(self):
+        with mock.patch.object(providers, "_get_json", side_effect=_http_error(401)), \
+             mock.patch.object(providers, "_post_json") as post:
+            self.assertEqual(providers.verify("anthropic", "sk-ant-bad"),
+                             (False, "المفتاح مش مقبول — اتأكد إنك نسخته كامل"))
+        post.assert_not_called()
 
 
 if __name__ == "__main__":

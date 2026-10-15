@@ -176,6 +176,20 @@ PROVIDERS = {
         "chat_alt":  ["mimo-v2.6-pro"],
         "chat_extra": {"thinking": {"type": "disabled"}},
     },
+    "anthropic": {
+        "name":      "Anthropic Claude",
+        "tag":       "معالجة بس",
+        "desc":      "معالجة بموديلات Claude من حساب Anthropic · مفتاح من platform.claude.com",
+        "key_url":   "https://platform.claude.com/settings/keys",
+        "key_hint":  "المفتاح بيبدأ بحروف sk-ant",
+        "key_start": "sk-ant-",
+        "env":       "ANTHROPIC_API_KEY",
+        "base_url":  "https://api.anthropic.com/v1",
+        "stt":       None,
+        "stt_alt":   None,
+        "chat":      "claude-haiku-5-5",
+        "chat_alt":  ["claude-sonnet-5-5"],
+    },
     # Vercel AI Gateway هنا للقراية بصوت (TTS) بس — مش في ORDER: مبيفرّغش ومبيعالجش
     "vercel": {
         "name":      "Vercel AI Gateway",
@@ -195,7 +209,7 @@ PROVIDERS = {
 }
 
 ORDER = ["groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter"]   # بيفرّغوا/بيعالجوا
-CHAT_ONLY_ORDER = ["zai_coding", "xiaomi"]                                       # بيعالجوا بس
+CHAT_ONLY_ORDER = ["zai_coding", "xiaomi", "anthropic"]                          # بيعالجوا بس
 TTS_ORDER = ["vercel"]                                                           # بيقروا النص بصوت بس
 DEFAULT = "groq"
 
@@ -339,6 +353,13 @@ GUIDES = {
                   "الصقه هنا — إملاء بيستخدم سيرفر سنغافورة"],
         "docs": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
         "free": "اشتراك",
+    },
+    "anthropic": {
+        "steps": ["سجّل دخول على platform.claude.com",
+                  "Settings ← API Keys ← Create Key وانسخه (بيبدأ بـ sk-ant-)",
+                  "الصقه هنا — معالجة بس (مبيفرّغش)"],
+        "docs": "https://platform.claude.com/docs/en/api/overview",
+        "free": "مدفوع",
     },
     "vercel": {
         "steps": ["سجّل دخول على vercel.com",
@@ -598,11 +619,21 @@ def lists_chat_models(pid):
 
 def list_chat_models(pid, key):
     """موديلات الشات المتاحة دلوقتي عند المزوّد — للقايمة المنسدلة، بترتيب المزوّد ومن غير تكرار."""
-    body = _get_json(PROVIDERS[pid]["base_url"] + "/models", {"Authorization": "Bearer " + key}, timeout=15)
+    prov = PROVIDERS[pid]
+    if pid == "anthropic":
+        url = prov["base_url"] + "/models?limit=1000"
+        headers = _anthropic_headers(key)
+    else:
+        url = prov["base_url"] + "/models"
+        headers = {"Authorization": "Bearer " + key}
+    body = _get_json(url, headers, timeout=15)
     out = []
-    for m in body.get("data") or []:
-        mid = str(m.get("id") or "")
-        if mid and mid not in out and _is_chat_model(m, mid):
+    for item in body.get("data") or []:
+        # Anthropic بيعلّم المتقاعد — باقي المزوّدين مفيهوش الحقل فبيتجاهل الشرط
+        if item.get("lifecycle") not in (None, "active"):
+            continue
+        mid = str(item.get("id") or "")
+        if mid and mid not in out and _is_chat_model(item, mid):
             out.append(mid)
     return out
 
@@ -879,6 +910,19 @@ def _gemini_text(resp):
         return "".join(p.get("text", "") for p in parts).strip()
     except Exception:
         return ""
+
+
+def _anthropic_headers(key):
+    return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+
+
+def _anthropic_text(resp):
+    """يطلّع النص من بلوكات content في رد Messages API — بلوكات غير text بتتجاهل."""
+    parts = []
+    for block in resp.get("content") or []:
+        if block.get("type") == "text":
+            parts.append(block.get("text") or "")
+    return "".join(parts).strip()
 
 
 _THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S | re.I)
@@ -1582,6 +1626,8 @@ class Client(TextOps):
             def run():
                 if self.id == "gemini":
                     return _clean_output(text, self._gemini_chat(system, text, temperature))
+                if self.id == "anthropic":
+                    return _clean_output(text, self._anthropic_chat(system, text, temperature))
                 return _clean_output(text, self._oa_chat(system, text, temperature))
             return self._run(run)
         except Exception as e:
@@ -1615,6 +1661,8 @@ class Client(TextOps):
             def run():
                 if self.id == "gemini":
                     return self._gemini_chat(system, text, temperature, raw=True)
+                if self.id == "anthropic":
+                    return self._anthropic_chat(system, text, temperature, raw=True)
                 return self._oa_chat(system, text, temperature, raw=True)
             out = self._run(run)
         except Exception as e:
@@ -1710,6 +1758,31 @@ class Client(TextOps):
                 raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
         raise last or RuntimeError("مفيش موديل متاح")
 
+    def _anthropic_chat(self, system, text, temperature, raw=False):
+        # Claude 4.7+ بيرفض temperature أقل من ١ — مش بنبعتها خالص في الـMessages API
+        hdr = _anthropic_headers(self.key)
+        candidates = self._chat_candidates()
+        last = None
+        for i, model in enumerate(candidates):
+            payload = {
+                "model": model,
+                "max_tokens": 16384,
+                "system": system,
+                "messages": [{"role": "user", "content": text}],
+            }
+            try:
+                r = _post_json(f"{self.m['base_url']}/messages", payload, hdr)
+                self.last_chat = (self.m["name"], model)
+                return _anthropic_text(r) or ("" if raw else text)
+            except urllib.error.HTTPError as e:
+                last = RuntimeError(_http_msg(e))
+                if e.code == 404 and i < len(candidates) - 1:
+                    continue
+                raise last
+            except Exception as e:
+                raise NetworkError(str(e)) if smart.is_network_error(e) else RuntimeError(_http_msg(e))
+        raise last or RuntimeError("مفيش موديل متاح")
+
 
 # ── التأكد إن المفتاح شغّال (قبل ما نبدأ) ────────────────────────────────────
 def verify(provider_id, key):
@@ -1758,6 +1831,8 @@ def verify(provider_id, key):
             _get_json(DEEPGRAM_API + "/projects", {"Authorization": "Token " + key}, timeout=15)
         elif provider_id in KEY_CHECK_URLS:
             _verify_by_key_endpoint(provider_id, key)
+        elif provider_id == "anthropic":
+            _get_json(m["base_url"] + "/models?limit=1", _anthropic_headers(key), timeout=15)
         elif provider_id in CHAT_ONLY_ORDER:
             _verify_chat_only(provider_id, key)
         elif not m["chat"]:
