@@ -1825,6 +1825,8 @@ def _verify_chat_only(provider_id, key):
     """
     مزوّد بيعالج بس: قايمة {base_url}/models الأول (ببلاش). سيرفرات Coding Plan و Token Plan
     مش موثّق إن عندها القايمة — فلو ردّت 404 بنبعت رد بتوكن واحد على الموديل الأساسي.
+    400 على الرد ده معناها المفتاح عدّى والطلب نفسه اترفض (زي _verify_by_silent_stt)؛
+    401/403/429 بتطلع.
     """
     m = meta(provider_id)
     auth = {"Authorization": "Bearer " + key}
@@ -1833,10 +1835,14 @@ def _verify_chat_only(provider_id, key):
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-        _post_json(m["base_url"] + "/chat/completions",
-                   {"model": m["chat"], "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
-                    **(m.get("chat_extra") or {})},
-                   auth, timeout=15)
+        try:
+            _post_json(m["base_url"] + "/chat/completions",
+                       {"model": m["chat"], "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
+                        **(m.get("chat_extra") or {})},
+                       auth, timeout=15)
+        except urllib.error.HTTPError as probe_err:
+            if probe_err.code != 400:
+                raise
 
 
 def _verify_by_silent_stt(provider_id, key):

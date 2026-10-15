@@ -218,6 +218,13 @@ class TestVerifyChatOnly(unittest.TestCase):
         self.assertEqual((body["model"], body["max_tokens"], body["thinking"]), ("mimo-v2.6-flash", 1, {"type": "disabled"}))
         self.assertEqual(headers, {"Authorization": "Bearer ttp-1"})
 
+    def test_probe_request_shape_rejected_still_means_the_key_works(self):
+        # 400 على رد التوكن الواحد (مثلًا max_tokens مش مقبول) = المفتاح عدّى؛ 401 = مرفوض
+        cases = [(_http_error(400), (True, "")), (_http_error(401), (False, "المفتاح مش مقبول — اتأكد إنك نسخته كامل"))]
+        for probe_err, expected in cases:
+            with self.subTest(code=probe_err.code),                     mock.patch.object(providers, "_get_json", side_effect=_http_error(404)),                     mock.patch.object(providers, "_post_json", side_effect=probe_err):
+                self.assertEqual(providers.verify("zai_coding", "z-1"), expected)
+
     def test_rejected_key_fails_without_a_paid_request(self):
         cases = [("zai_coding", "z-1", _http_error(401), "المفتاح مش مقبول — اتأكد إنك نسخته كامل"),
                  ("xiaomi", "sk-payg", None, "مفتاح Token Plan بيبدأ بحروف tp أو ttp — اتأكد إنك نسخته كامل")]
