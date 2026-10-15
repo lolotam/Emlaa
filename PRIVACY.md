@@ -36,6 +36,7 @@ Depending on the provider you choose, your audio, and for text cleanup, prompt a
 | xAI | https://x.ai/legal/privacy-policy |
 | Z.ai | https://chat.z.ai/legal-agreement/privacy-policy |
 | OpenRouter | https://openrouter.ai/privacy |
+| Xiaomi MiMo | https://privacy.mi.com/XiaomiMiMoPlatform/en_GB/ |
 | Vercel | https://vercel.com/legal/privacy-policy |
 
 You choose the provider and can switch or remove it at any time in Settings.

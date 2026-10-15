@@ -34,7 +34,7 @@
 | 🛟 **التسجيل مايضيعش** | لو التفريغ فشل (نت، مفتاح، موديل، أو مطلعش نص) الصوت بيتحفظ في السجل بالسبب ورسالة بزرار «افتح السجل» — ومن هناك «تفريغ يدوي» لما المشكلة تتحل، والنتيجة بتنسخها انت (مبتتكتبش لوحدها) |
 | 📎 **مدير الحافظة** | كل حاجة بتتنسخ في جدول: فلترة، بحث، نسخ، ومسح أكتر من سطر مرة واحدة |
 | 📖 **القاموس** | أسماء ومصطلحات بتاعتك عشان تتكتب صح كل مرة |
-| 🤖 **7 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · xAI Grok · Z.ai GLM · OpenRouter · Whisper محلي — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
+| 🤖 **9 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · xAI Grok · Z.ai GLM · OpenRouter · Whisper محلي، وللمعالجة كمان Z.ai GLM Coding Plan و Xiaomi MiMo — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
 | 🌗 **فاتح / غامق** · 🌐 **عربي / English** | زرارين صغيرين فوق |
 | 🔄 **تحديث تلقائي** | لما ينزل إصدار جديد: «نزّل وثبّت» بدوسة — أو لوحده خالص |
 | ⚡ **افتح البرنامج من أي مكان** | اختصار (افتراضي `Ctrl + Alt + N`) |
@@ -80,12 +80,25 @@
 
 > **Deepgram و Z.ai GLM والـWhisper المحلي بيفرّغوا بس** — مينفعش يبقوا في قايمة المعالجة. المعالجة (التنظيف والبرومبت والترجمة والتعديل) بتشتغل بـGroq أو Gemini أو OpenAI أو xAI Grok أو OpenRouter.
 
-**موديل المعالجة:** القايمة فيها الموديلات الموصى بيها، ولو المزوّد ليه مفتاح بتنضاف عليها الموديلات اللي المزوّد بيعرضها دلوقتي (Groq و xAI و OpenRouter):
+**موديل المعالجة:** القايمة فيها الموديلات الموصى بيها، ولو المزوّد ليه مفتاح بتنضاف عليها الموديلات اللي المزوّد بيعرضها دلوقتي (Groq و xAI و OpenRouter، و Z.ai Coding Plan و Xiaomi MiMo لو سيرفرهم بيعرض القايمة — غير كده بتفضل القايمة الثابتة):
 
 | المزوّد | الموصى به | بدائل |
 |---|---|---|
 | xAI Grok | `grok-4.7` | `grok-4.6` |
 | OpenRouter | `google/gemini-3.8-flash` | `anthropic/claude-haiku-5.5` · `x-ai/grok-4.7` |
+| Z.ai GLM Coding Plan | `glm-5.3` | `glm-5.3-flash` |
+| Xiaomi MiMo (سنغافورة) | `mimo-v2.6-flash` | `mimo-v2.6-pro` |
+
+**مزوّدين للمعالجة بس (باشتراك، مبيفرّغوش):**
+
+| المزوّد | ليه تختاره | المفتاح |
+|---|---|---|
+| **Z.ai GLM Coding Plan** | موديلات GLM من اشتراك Coding Plan · مفتاح منفصل عن مفتاح Z.ai بتاع التفريغ | [z.ai](https://z.ai/manage-apikey/apikey-list) |
+| **Xiaomi MiMo (سنغافورة)** | موديلات MiMo من اشتراك Token Plan على سيرفر سنغافورة · المفتاح بيبدأ بـ `tp-` أو `ttp-` | [platform.xiaomimimo.com](https://platform.xiaomimimo.com/#/console/plan-manage) |
+
+في الاتنين التفكير (thinking) بيتقفل: التنضيف مش محتاجه وبيبطّأ الرد.
+
+> ⚠️ **شروط الاشتراكات:** Z.ai بيقول إن GLM Coding Plan [مقصور على أدوات معيّنة](https://docs.z.ai/devpack/tool/others) وإملاء مش منها، و Xiaomi بيوصف [Token Plan](https://mimo.mi.com/docs/en-US/price/token-plan) إنه معمول للبرمجة. استخدامهم في إملاء على مسؤوليتك — لو عايز تبعد عن الخطر استخدم Z.ai GLM العادي أو OpenRouter.
 >
 > **Z.ai** بيقبل ٣٠ ثانية بس في الطلب، فإملاء بيقسّم الكلام الأطول كل ٢٨ ثانية — ممكن كلمة تتقطع عند الحد.
 
@@ -177,6 +190,7 @@
 | **Deepgram** | رصيد $200 هدية عند التسجيل |
 | **OpenAI** | مدفوع من أول طلب (رخيص) |
 | **xAI Grok** · **Z.ai GLM** · **OpenRouter** · **Vercel AI Gateway** (القراية بصوت) | مدفوع حسب الاستهلاك |
+| **Z.ai GLM Coding Plan** · **Xiaomi MiMo** (معالجة بس) | اشتراك |
 
 ---
 
@@ -217,7 +231,7 @@
 
 - **4 features**, each on its own settings tab: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English), Edit selected text (speak an instruction).
 - **Record any hotkey** — one key, or Ctrl/Alt/Shift/Win plus a key. The hotkey is blocked from other apps; Ctrl/Alt/Shift/Win themselves still pass through.
-- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok and OpenRouter (paid, transcription and AI processing), Z.ai GLM (paid, transcription only), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
+- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok and OpenRouter (paid, transcription and AI processing), Z.ai GLM (paid, transcription only), Z.ai GLM Coding Plan and Xiaomi MiMo Singapore Token Plan (subscription, AI processing only), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
 - **Failed recordings are kept:** if transcription fails (network, key, model, or no speech), the audio stays in History with the reason, a toast offers "Open History", and "Transcribe again" re-runs it once the problem is fixed. The result is shown for you to copy — never typed.
 - **Read aloud (Vercel AI Gateway, text-to-speech only):** a speaker button in History reads the result aloud with the voice model picked in Settings (`openai/tts-1` by default). Needs a Vercel AI Gateway key.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.

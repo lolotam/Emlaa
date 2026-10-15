@@ -48,6 +48,11 @@ class TestLiveChatModels(unittest.TestCase):
                                {"id": "canopylabs/orpheus-v1-english"}, {"id": "meta-llama/llama-guard-4-12b"},
                                {"id": "openai/gpt-oss-safeguard-20b"}]},
              ["qwen/qwen3.8-27b"]),
+            # شكل قايمة MiMo الموثّقة (list-models): موديلات التفريغ والصوت جنب الشات من غير نوع
+            ("xiaomi", {"object": "list", "data": [{"id": "mimo-v2.6-flash", "object": "model", "owned_by": "xiaomi"},
+                                                   {"id": "mimo-v2.5-asr"}, {"id": "mimo-v2.5-tts-voiceclone"},
+                                                   {"id": "mimo-v2.6-pro"}]},
+             ["mimo-v2.6-flash", "mimo-v2.6-pro"]),
         ]
         for pid, body, expected in cases:
             with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", return_value=body) as get:
@@ -63,8 +68,12 @@ class TestChatThroughNewProviders(unittest.TestCase):
         self.addCleanup(providers._KEY_STATE.clear)
 
     def test_chat_goes_to_the_provider_endpoint_with_its_first_model(self):
-        for pid, url, model in (("xai", "https://api.x.ai/v1", "grok-4.7"),
-                                ("openrouter", "https://openrouter.ai/api/v1", "google/gemini-3.8-flash")):
+        thinking_off = {"extra_body": {"thinking": {"type": "disabled"}}}
+        for pid, url, model, extra in (
+                ("xai", "https://api.x.ai/v1", "grok-4.7", {}),
+                ("openrouter", "https://openrouter.ai/api/v1", "google/gemini-3.8-flash", {}),
+                ("zai_coding", "https://api.z.ai/api/coding/paas/v4", "glm-5.3", thinking_off),
+                ("xiaomi", "https://token-plan-sgp.xiaomimimo.com/v1", "mimo-v2.6-flash", thinking_off)):
             fake = mock.MagicMock()
             fake.with_options.return_value.chat.completions.create.return_value.choices = [
                 mock.Mock(message=mock.Mock(content="Hello there"))]
@@ -72,7 +81,9 @@ class TestChatThroughNewProviders(unittest.TestCase):
                 self.assertEqual(providers.Client(pid, "k-1").translate("أهلًا يا جماعة"), "Hello there")
             self.assertEqual(ctor.call_args.kwargs["base_url"], url)
             self.assertEqual(ctor.call_args.kwargs["api_key"], "k-1")
-            self.assertEqual(fake.with_options.return_value.chat.completions.create.call_args.kwargs["model"], model)
+            sent = fake.with_options.return_value.chat.completions.create.call_args.kwargs
+            self.assertEqual(sent["model"], model)
+            self.assertEqual({k: v for k, v in sent.items() if k == "extra_body"}, extra)
 
     def test_simulated_temperature_rejection_falls_back_to_the_next_item(self):
         # الرفض هنا متخيّل — مش سلوك اتشاف: OpenRouter موثّق إنه بيتجاهل البارامتر اللي المزوّد
@@ -108,6 +119,23 @@ class TestChatThroughNewProviders(unittest.TestCase):
                         for i, m in enumerate(smart.FEATURES)}
             with self.subTest(pid=pid):
                 self.assertIsNone(smart.validate_features(features))
+
+    def test_chat_only_providers_are_refused_in_the_transcription_list(self):
+        for pid in providers.CHAT_ONLY_ORDER:
+            features = {m: {"hotkey": [0x70 + i], "stt": [{"provider": pid, "model": "x"}],
+                            "ai": [{"provider": pid, "model": "x"}]}
+                        for i, m in enumerate(smart.FEATURES)}
+            with self.subTest(pid=pid):
+                self.assertEqual(smart.validate_features(features), "مزوّد تفريغ مش معروف")
+                features = {m: dict(f, stt=[{"provider": "groq", "model": "whisper-large-v3-turbo"}])
+                            for m, f in features.items()}
+                self.assertIsNone(smart.validate_features(features))
+
+    def test_chat_only_list_matches_providers_without_a_transcription_model(self):
+        # نفس سبب STT_ONLY: smart مبيقدرش يستورد providers
+        self.assertEqual(smart.CHAT_ONLY, tuple(providers.CHAT_ONLY_ORDER))
+        self.assertEqual({p for p in providers.PROVIDERS if providers.PROVIDERS[p]["chat"]
+                          and not providers.PROVIDERS[p]["stt"]}, set(providers.CHAT_ONLY_ORDER))
 
     def test_stt_only_list_matches_providers_without_a_chat_model(self):
         # smart مبيقدرش يستورد providers (providers بيستورد smart) — فالقايمتين لازم يتطابقوا هنا
@@ -159,8 +187,56 @@ class TestChatModelsLiveApi(unittest.TestCase):
 
     def test_catalog_marks_which_providers_have_a_live_list(self):
         catalog = app_web._feature_catalog({}, None)
-        self.assertEqual({p for p in providers.ORDER if catalog[p]["liveModels"]}, {"groq", "xai", "openrouter"})
+        pids = providers.ORDER + providers.CHAT_ONLY_ORDER
+        self.assertEqual({p for p in pids if catalog[p]["liveModels"]},
+                         {"groq", "xai", "openrouter", "zai_coding", "xiaomi"})
+        self.assertEqual({p for p in pids if catalog[p]["chatOnly"]}, {"zai_coding", "xiaomi"})
         self.assertFalse(catalog["xai"]["sttOnly"])
+        self.assertEqual(catalog["xiaomi"]["sttModels"], [])
+
+
+class TestVerifyChatOnly(unittest.TestCase):
+    """التأكد من مفتاح Z.ai Coding Plan و Xiaomi: /models ببلاش، ولو مش موجودة رد بتوكن واحد."""
+
+    def setUp(self):
+        providers._KEY_STATE.clear()
+        self.addCleanup(providers._KEY_STATE.clear)
+
+    def test_key_works_when_the_model_list_answers_without_any_paid_request(self):
+        for pid, key in (("zai_coding", "z-1"), ("xiaomi", "tp-1")):
+            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", return_value={"data": []}) as get,                     mock.patch.object(providers, "_post_json") as post:
+                self.assertEqual(providers.verify(pid, key), (True, ""))
+            self.assertEqual(get.call_args.args, (providers.PROVIDERS[pid]["base_url"] + "/models",
+                                                  {"Authorization": "Bearer " + key}))
+            post.assert_not_called()
+
+    def test_missing_model_list_falls_back_to_a_one_token_reply(self):
+        # PR #22 (MergePilot): أي رد غير رفض المفتاح على /models — مش 404 بس — بيكمّل للرد
+        for list_err in (_http_error(404), _http_error(405), _http_error(501), ValueError("not json")):
+            with self.subTest(err=list_err), mock.patch.object(providers, "_get_json", side_effect=list_err),                     mock.patch.object(providers, "_post_json", return_value={"choices": []}) as post:
+                self.assertEqual(providers.verify("xiaomi", "ttp-1"), (True, ""))
+        url, body, headers = post.call_args.args
+        self.assertEqual(url, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions")
+        self.assertEqual((body["model"], body["max_tokens"], body["thinking"]), ("mimo-v2.6-flash", 1, {"type": "disabled"}))
+        self.assertEqual(headers, {"Authorization": "Bearer ttp-1"})
+
+    def test_probe_request_shape_rejected_still_means_the_key_works(self):
+        # 400 على رد التوكن الواحد (مثلًا max_tokens مش مقبول) = المفتاح عدّى؛ 401 = مرفوض
+        cases = [(_http_error(400), (True, "")), (_http_error(401), (False, "المفتاح مش مقبول — اتأكد إنك نسخته كامل"))]
+        for probe_err, expected in cases:
+            with self.subTest(code=probe_err.code),                     mock.patch.object(providers, "_get_json", side_effect=_http_error(404)),                     mock.patch.object(providers, "_post_json", side_effect=probe_err):
+                self.assertEqual(providers.verify("zai_coding", "z-1"), expected)
+
+    def test_rejected_key_fails_without_a_paid_request(self):
+        cases = [("zai_coding", "z-1", _http_error(401), "المفتاح مش مقبول — اتأكد إنك نسخته كامل"),
+                 ("zai_coding", "z-1", _http_error(429), "المفتاح شغّال بس الرصيد/الحد خلص"),
+                 ("xiaomi", "sk-payg", None, "مفتاح Token Plan بيبدأ بحروف tp أو ttp — اتأكد إنك نسخته كامل")]
+        for pid, key, err, msg in cases:
+            with self.subTest(pid=pid), mock.patch.object(providers, "_get_json", side_effect=err) as get,                     mock.patch.object(providers, "_post_json") as post:
+                self.assertEqual(providers.verify(pid, key), (False, msg))
+            post.assert_not_called()
+            if err is None:
+                get.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -145,6 +145,37 @@ PROVIDERS = {
         "chat":      "google/gemini-3.8-flash",
         "chat_alt":  ["anthropic/claude-haiku-5.5", "x-ai/grok-4.7"],
     },
+    # بيعالجوا بس (CHAT_ONLY_ORDER) — مبيفرّغوش. التفكير بيتقفل: التنضيف مش محتاجه وبيبطّأ الرد
+    "zai_coding": {
+        "name":      "Z.ai GLM Coding Plan",
+        "tag":       "معالجة بس",
+        "desc":      "معالجة بموديلات GLM من اشتراك Coding Plan · مفتاح منفصل · ⚠️ Z.ai بيقصر الخطة على أدوات معيّنة وإملاء مش منها",
+        "key_url":   "https://z.ai/manage-apikey/apikey-list",
+        "key_hint":  "مفتاح اشتراك GLM Coding Plan من z.ai",
+        "key_start": None,
+        "env":       "ZAI_CODING_API_KEY",
+        "base_url":  "https://api.z.ai/api/coding/paas/v4",
+        "stt":       None,
+        "stt_alt":   None,
+        "chat":      "glm-5.3",
+        "chat_alt":  ["glm-5.3-flash"],
+        "chat_extra": {"thinking": {"type": "disabled"}},
+    },
+    "xiaomi": {
+        "name":      "Xiaomi MiMo (Singapore)",
+        "tag":       "معالجة بس",
+        "desc":      "معالجة بموديلات MiMo من اشتراك Token Plan · سيرفر سنغافورة · ⚠️ Xiaomi بيقول الخطة معمولة للبرمجة",
+        "key_url":   "https://platform.xiaomimimo.com/#/console/plan-manage",
+        "key_hint":  "مفتاح Token Plan بيبدأ بحروف tp أو ttp",
+        "key_start": ("tp-", "ttp-"),
+        "env":       "MIMO_API_KEY",
+        "base_url":  "https://token-plan-sgp.xiaomimimo.com/v1",
+        "stt":       None,
+        "stt_alt":   None,
+        "chat":      "mimo-v2.6-flash",
+        "chat_alt":  ["mimo-v2.6-pro"],
+        "chat_extra": {"thinking": {"type": "disabled"}},
+    },
     # Vercel AI Gateway هنا للقراية بصوت (TTS) بس — مش في ORDER: مبيفرّغش ومبيعالجش
     "vercel": {
         "name":      "Vercel AI Gateway",
@@ -164,6 +195,7 @@ PROVIDERS = {
 }
 
 ORDER = ["groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter"]   # بيفرّغوا/بيعالجوا
+CHAT_ONLY_ORDER = ["zai_coding", "xiaomi"]                                       # بيعالجوا بس
 TTS_ORDER = ["vercel"]                                                           # بيقروا النص بصوت بس
 DEFAULT = "groq"
 
@@ -293,6 +325,20 @@ GUIDES = {
                   "Settings ← API Keys ← Create Key وانسخه (بيبدأ بـ sk-or-)"],
         "docs": "https://openrouter.ai/docs/guides/overview/multimodal/stt",
         "free": "مدفوع",
+    },
+    "zai_coding": {
+        "steps": ["اشترك في GLM Coding Plan من z.ai",
+                  "API Keys ← Create a new API key وانسخه",
+                  "الصقه هنا (ده غير مفتاح Z.ai بتاع التفريغ)"],
+        "docs": "https://docs.z.ai/devpack/overview",
+        "free": "اشتراك",
+    },
+    "xiaomi": {
+        "steps": ["اشترك في Token Plan من منصة Xiaomi MiMo",
+                  "من صفحة Token Plan انسخ المفتاح (بيبدأ بـ tp- أو ttp-)",
+                  "الصقه هنا — إملاء بيستخدم سيرفر سنغافورة"],
+        "docs": "https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/quick-access",
+        "free": "اشتراك",
     },
     "vercel": {
         "steps": ["سجّل دخول على vercel.com",
@@ -538,10 +584,10 @@ def chat_models(pid):
 
 
 # قايمة /models (OpenAI-compatible) فيها موديلات مش للشات: البوابات بتكتب النوع، وGroq
-# وxAI مبيكتبوهوش فبنعرفهم من الاسم: تفريغ (Whisper/Transcribe) وصوت (TTS/Orpheus)
+# وxAI وMiMo مبيكتبوهوش فبنعرفهم من الاسم: تفريغ (Whisper/Transcribe/ASR) وصوت (TTS/Orpheus)
 # وتصنيف أمان (Llama Guard/Safeguard) — ردهم مش نص متنضّف
 _NON_CHAT_TYPES = {"embedding", "image", "video", "reranking", "speech", "transcription", "realtime"}
-_NON_CHAT_ID = re.compile(r"embed|rerank|whisper|transcribe|tts|orpheus|guard", re.I)
+_NON_CHAT_ID = re.compile(r"embed|rerank|whisper|transcribe|asr|tts|orpheus|guard", re.I)
 
 
 def lists_chat_models(pid):
@@ -1612,7 +1658,8 @@ class Client(TextOps):
                 r = client.chat.completions.create(
                     model=model, temperature=temperature,
                     messages=[{"role": "system", "content": system},
-                              {"role": "user", "content": text}])
+                              {"role": "user", "content": text}],
+                    **({"extra_body": self.m["chat_extra"]} if self.m.get("chat_extra") else {}))
                 self.last_chat = (self.m["name"], model)
                 return (r.choices[0].message.content or "").strip()
             except Exception as e:
@@ -1711,6 +1758,8 @@ def verify(provider_id, key):
             _get_json(DEEPGRAM_API + "/projects", {"Authorization": "Token " + key}, timeout=15)
         elif provider_id in KEY_CHECK_URLS:
             _verify_by_key_endpoint(provider_id, key)
+        elif provider_id in CHAT_ONLY_ORDER:
+            _verify_chat_only(provider_id, key)
         elif not m["chat"]:
             _verify_by_silent_stt(provider_id, key)
         else:
@@ -1770,6 +1819,31 @@ def verify(provider_id, key):
             return False, "الخدمة مش لاقية الموديل — الموديل اتغيّر عند المزوّد"
         detail = " ".join(_http_msg(e).split())[:60]
         return False, ("معرفناش نتأكد من المفتاح" + (" — " + detail if detail else ""))
+
+
+def _verify_chat_only(provider_id, key):
+    """
+    مزوّد بيعالج بس: قايمة {base_url}/models الأول (ببلاش). سيرفرات Coding Plan و Token Plan
+    مش موثّق إن عندها القايمة — فأي رد غير رفض المفتاح (401/403/429)، أو رد مش JSON،
+    بنكمّل بعده برد بتوكن واحد على الموديل الأساسي.
+    400 على الرد ده معناها المفتاح عدّى والطلب نفسه اترفض (زي _verify_by_silent_stt)؛
+    401/403/429 بتطلع.
+    """
+    m = meta(provider_id)
+    auth = {"Authorization": "Bearer " + key}
+    try:
+        _get_json(m["base_url"] + "/models", auth, timeout=15)
+    except (urllib.error.HTTPError, ValueError) as e:
+        if getattr(e, "code", None) in (401, 403, 429):
+            raise
+        try:
+            _post_json(m["base_url"] + "/chat/completions",
+                       {"model": m["chat"], "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}],
+                        **(m.get("chat_extra") or {})},
+                       auth, timeout=15)
+        except urllib.error.HTTPError as probe_err:
+            if probe_err.code != 400:
+                raise
 
 
 def _verify_by_silent_stt(provider_id, key):
