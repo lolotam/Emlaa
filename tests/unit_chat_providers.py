@@ -53,6 +53,7 @@ class TestLiveChatModels(unittest.TestCase):
              ["anthropic/claude-haiku-5.5", "x-ai/grok-4.7", "liquid/lfm-2.5-2.6b:free"]),
             # قايمة بتكتب النوع (زي البوابات) وقايمة مبتكتبهوش (Groq: موديلات التفريغ جنب الشات)
             ("xai", {"data": [{"id": "grok-4.7", "type": "language"}, {"id": "grok-imagine", "type": "image"},
+                              {"id": "grok-imagine-image"}, {"id": "grok-imagine-video"},
                               {"id": "grok-voice-transcribe-2.0"}, {"id": "grok-4.7"}]},
              ["grok-4.7"]),
             ("groq", {"data": [{"id": "whisper-large-v3"}, {"id": "qwen/qwen3.8-27b"},
