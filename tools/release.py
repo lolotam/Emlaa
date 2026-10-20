@@ -69,7 +69,9 @@ def main():
     if out("git", "status", "--porcelain"):
         run("git", "commit", "-m", f"Release {tag}")
     run("git", "tag", "-a", tag, "-m", f"Emlaa {tag}")
-    run("git", "push", "origin", "HEAD", "--follow-tags")
+    # الـpre-push hook بيرفض أي push على main؛ الإصدار ده بس اللي بيعدّي، والإذن ده للأمر ده لوحده
+    run("git", "push", "origin", "HEAD", "--follow-tags",
+        env={**os.environ, "EMLAA_RELEASE_PUSH": "1"})
 
     # 4) GitHub Release + الـexe
     run("gh", "release", "create", tag, exe, "--repo", REPO,
