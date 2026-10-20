@@ -49,10 +49,14 @@ def main():
     if tag in out("git", "tag", "--list", tag).split():
         sys.exit(f"الإصدار {tag} موجود قبل كده — اختار رقم أكبر")
 
-    # لازم الشجرة نضيفة غير ملف رقم الإصدار — أي تعديل تاني هيتبني في الـexe بس مش هيوصل في الـtag
+    # لازم الشجرة نضيفة غير ملف رقم الإصدار — أي تعديل تاني أو أي ملف مش متتبّع جوّه source/ هيتبني في الـexe بس مش هيوصل في الـtag
     dirty = []
     for path in out("git", "diff", "--name-only", "HEAD").splitlines():
         if not path.strip() or path.strip() == "source/emlaa.py":
+            continue
+        dirty.append(path)
+    for path in out("git", "ls-files", "--others", "--", "source").splitlines():
+        if not path.strip() or "/__pycache__/" in path:
             continue
         dirty.append(path)
     if dirty:
