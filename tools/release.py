@@ -68,21 +68,31 @@ def main():
     m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', src, re.M)
     if not m:
         sys.exit("مش لاقي APP_VERSION في source/emlaa.py")
-    io.open(APPFILE, "w", encoding="utf-8", newline="").write(
-        src[:m.start(1)] + version + src[m.end(1):])
+    bumped = src[:m.start(1)] + version + src[m.end(1):]
+    io.open(APPFILE, "w", encoding="utf-8", newline="").write(bumped)
     print(f"APP_VERSION: {m.group(1)} → {version}")
 
     # 2) البناء
     # لو البناء وقع بأي شكل (استثناء أو مفيش الـexe) — رجّع رقم الإصدار في الملف زي ما كان،
-    # عشان الـguard يقبل الجولة الجاية من غير ما حد يرجّع الملف بإيده
+    # بس لو حد عدّل الملف أثناء البناء سيبه زي ما هو؛ الهدف إن الـguard يقبل الجولة الجاية
+    # من غير ما حد يرجّع الملف بإيده
     try:
         run(sys.executable, "-m", "PyInstaller", "Emlaa.spec", "--noconfirm")
         exe = os.path.join(ROOT, "dist", "Emlaa.exe")
         if not os.path.exists(exe):
             sys.exit("البناء فشل — مفيش dist/Emlaa.exe")
     except BaseException:
-        io.open(APPFILE, "w", encoding="utf-8", newline="").write(src)
-        print("البناء فشل — رجعنا رقم الإصدار في source/emlaa.py زي ما كان")
+        try:
+            current = io.open(APPFILE, encoding="utf-8").read()
+            if current == bumped:
+                io.open(APPFILE, "w", encoding="utf-8", newline="").write(src)
+                print("البناء فشل — رجعنا رقم الإصدار في source/emlaa.py زي ما كان")
+            else:
+                print("الملف اتغيّر أثناء البناء — سبنا source/emlaa.py زي ما هو؛ "
+                      "لو محتاج ترجّعه: git checkout -- source/emlaa.py")
+        except OSError:
+            print("مش قادرين نرجّع رقم الإصدار في source/emlaa.py — رجّعه بإيدك: "
+                  "git checkout -- source/emlaa.py")
         raise
 
     # 3) git
