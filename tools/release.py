@@ -73,10 +73,17 @@ def main():
     print(f"APP_VERSION: {m.group(1)} → {version}")
 
     # 2) البناء
-    run(sys.executable, "-m", "PyInstaller", "Emlaa.spec", "--noconfirm")
-    exe = os.path.join(ROOT, "dist", "Emlaa.exe")
-    if not os.path.exists(exe):
-        sys.exit("البناء فشل — مفيش dist/Emlaa.exe")
+    # لو البناء وقع بأي شكل (استثناء أو مفيش الـexe) — رجّع رقم الإصدار في الملف زي ما كان،
+    # عشان الـguard يقبل الجولة الجاية من غير ما حد يرجّع الملف بإيده
+    try:
+        run(sys.executable, "-m", "PyInstaller", "Emlaa.spec", "--noconfirm")
+        exe = os.path.join(ROOT, "dist", "Emlaa.exe")
+        if not os.path.exists(exe):
+            sys.exit("البناء فشل — مفيش dist/Emlaa.exe")
+    except BaseException:
+        io.open(APPFILE, "w", encoding="utf-8", newline="").write(src)
+        print("البناء فشل — رجعنا رقم الإصدار في source/emlaa.py زي ما كان")
+        raise
 
     # 3) git
     # الـcommit لملف رقم الإصدار بس — أي حاجة تانية متسجّلة في الـindex ماتدخلش في الـcommit
