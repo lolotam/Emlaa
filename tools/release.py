@@ -65,8 +65,9 @@ def main():
         sys.exit("البناء فشل — مفيش dist/Emlaa.exe")
 
     # 3) git
-    run("git", "add", "-A")
-    if out("git", "status", "--porcelain"):
+    # بس ملف رقم الإصدار — أي add -A ممكن يلم ملف .env أو مفتاح محلي في الـcommit
+    run("git", "add", "--", "source/emlaa.py")
+    if out("git", "diff", "--cached", "--name-only"):
         run("git", "commit", "-m", f"Release {tag}")
     run("git", "tag", "-a", tag, "-m", f"Emlaa {tag}")
     # الـpre-push hook بيرفض أي push على main؛ الإصدار ده بس اللي بيعدّي، والإذن ده للأمر ده لوحده
