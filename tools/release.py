@@ -49,6 +49,16 @@ def main():
     if tag in out("git", "tag", "--list", tag).split():
         sys.exit(f"الإصدار {tag} موجود قبل كده — اختار رقم أكبر")
 
+    # لازم الشجرة نضيفة غير ملف رقم الإصدار — أي تعديل تاني هيتبني في الـexe بس مش هيوصل في الـtag
+    dirty = []
+    for path in out("git", "diff", "--name-only", "HEAD").splitlines():
+        if not path.strip() or path.strip() == "source/emlaa.py":
+            continue
+        dirty.append(path)
+    if dirty:
+        sys.exit("في ملفات تانية متعدّلة مش هتوصل في الـcommit — "
+                 "اعمل commit للتعديلات دي الأول:\n  " + "\n  ".join(dirty))
+
     # 1) رقم الإصدار
     src = io.open(APPFILE, encoding="utf-8").read()
     m = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', src, re.M)
@@ -65,10 +75,9 @@ def main():
         sys.exit("البناء فشل — مفيش dist/Emlaa.exe")
 
     # 3) git
-    # بس ملف رقم الإصدار — أي add -A ممكن يلم ملف .env أو مفتاح محلي في الـcommit
-    run("git", "add", "--", "source/emlaa.py")
-    if out("git", "diff", "--cached", "--name-only"):
-        run("git", "commit", "-m", f"Release {tag}")
+    # الـcommit لملف رقم الإصدار بس — أي حاجة تانية متسجّلة في الـindex ماتدخلش في الـcommit
+    if out("git", "diff", "--name-only", "HEAD", "--", "source/emlaa.py"):
+        run("git", "commit", "--only", "-m", f"Release {tag}", "--", "source/emlaa.py")
     run("git", "tag", "-a", tag, "-m", f"Emlaa {tag}")
     # الـpre-push hook بيرفض أي push على main؛ الإصدار ده بس اللي بيعدّي، والإذن ده للأمر ده لوحده
     run("git", "push", "origin", "HEAD", "--follow-tags",
