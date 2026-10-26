@@ -1283,6 +1283,8 @@ function settingsPayload() {
 // delay صفر: الدوسة/الاختيار بيتبعتوا علطول — مفيش تغيير بيفضل مستني في تايمر وقت ما
 // البرنامج يتقفل. الكتابة (اسم برنامج) بس اللي ليها مهلة. حفظتين ورا بعض بيتسلسلوا
 function scheduleSave(delay = 0) {
+  // الاستعادة ماسكة الفورم القديم — تايمر هنا كان هيحفظه فوق النسخة اللي لسه راجعة
+  if (SAVE.hold) return;
   if (!S.features) return;
   SAVE.closeWarned = false;       // تعديل جديد = تنبيه القفل القديم مبقاش ليه لازمة
   clearTimeout(SAVE.timer);
@@ -1347,7 +1349,7 @@ function askRestore() {
   });
 }
 
-function paintBackup(status) {
+function paintBackup(status, keepLine) {
   if (!status) return;
   const hint = $("#googleHint");
   const signed = !!status.signedIn;
@@ -1358,6 +1360,8 @@ function paintBackup(status) {
   const driveOn = !!status.clientConfigured && signed;
   $("#driveBackup").disabled = !driveOn;
   $("#driveRestore").disabled = !driveOn;
+  // غلط العملية (مشغول، ملف بايظ، إصدار أحدث…) يفضل ظاهر. تحديث حالة ناجح بعدين يقدر يستبدله.
+  if (keepLine) return;
   const line = $("#backupStatus");
   if (status.error) line.textContent = status.error;
   else if (status.backedUpAt) line.textContent = "فيه نسخة في Drive.";
@@ -1365,14 +1369,32 @@ function paintBackup(status) {
 }
 
 async function backupBusy(fn) {
-  const buttons = ["#backupExport", "#backupImport", "#googleSignIn", "#driveBackup", "#driveRestore"];
+  const buttons = ["#backupExport", "#backupImport", "#googleSignIn", "#driveBackup", "#driveRestore", "#googleSignOut"];
   buttons.forEach(id => { const b = $(id); if (b) b.disabled = true; });
-  $("#backupStatus").textContent = "جاري…";
+  const line = $("#backupStatus");
+  line.textContent = "جاري…";
   try { return await fn(); }
   finally {
+    const keepLine = line.textContent !== "جاري…";
     const status = api() && await api().backup_status().catch(() => null);
-    paintBackup(status);
+    // التصدير والاستيراد وتسجيل الدخول والخروج يترجعوا بعد أي محاولة، حتى لو التأكيد أو نافذة الملف اتلغوا.
+    // أزرار Drive تفضل على قاعدة paintBackup (متسجل ولا لأ)، وهي اللي بتخبّي الخروج لو مش متسجل.
+    ["#backupExport", "#backupImport", "#googleSignIn", "#googleSignOut"].forEach(id => {
+      const b = $(id); if (b) b.disabled = false;
+    });
+    paintBackup(status, keepLine);
   }
+}
+
+function applyRestoredBoot(r) {
+  // applyBoot بيحدّث الشكل بس. الفورم وS.features لسه على القيم اللي قبل الاستعادة،
+  // والحفظ التلقائي كان هيكتبها تاني فوق النسخة اللي رجعت. ننجح بس لما النداء ينجح.
+  if (!r || !r.boot || !(r.ok || !r.err)) return;
+  S.boot = r.boot;
+  S.features = JSON.parse(JSON.stringify(r.boot.features));
+  applyBoot();
+  fillSettings();
+  loadHistory();
 }
 
 $("#backupExport")?.addEventListener("click", () => backupBusy(async () => {
@@ -1384,7 +1406,7 @@ $("#backupImport")?.addEventListener("click", () => backupBusy(async () => {
   await settleSavesForRestore();
   try {
     const r = await api().backup_import();
-    if (r && r.boot) { S.boot = r.boot; applyBoot(); loadHistory(); }
+    applyRestoredBoot(r);
     if (r && r.err) $("#backupStatus").textContent = r.err;
   } finally { SAVE.hold = false; }
 }));
@@ -1404,7 +1426,7 @@ $("#driveRestore")?.addEventListener("click", () => backupBusy(async () => {
   await settleSavesForRestore();
   try {
     const r = await api().drive_restore();
-    if (r && r.boot) { S.boot = r.boot; applyBoot(); loadHistory(); }
+    applyRestoredBoot(r);
     if (r && r.err) $("#backupStatus").textContent = r.err;
   } finally { SAVE.hold = false; }
 }));

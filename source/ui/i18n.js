@@ -28,6 +28,7 @@ const EN = {
   "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟":
     "Restore replaces the settings, API keys, history, clipboard and recordings on this PC with this backup. Recordings that are not in the backup are deleted. Continue?",
   "استنى لحد ما التسجيل أو التفريغ يخلّص.": "Wait until recording or transcription finishes.",
+  "استنى لحد ما التسجيل أو التفريغ يخلّص": "Wait until recording or transcription finishes",
   "الملف ده مش نسخة إملاء صالحة.": "This file is not a valid Emlaa backup.",
   "النسخة دي معمولة بإصدار أحدث من إملاء.": "This backup was made by a newer version of Emlaa.",
   "لسه مفيش نسخة في Google Drive.": "There is no backup in Google Drive yet.",
@@ -36,6 +37,7 @@ const EN = {
   "جاري…": "Working…",
   "كمّل": "Continue",
   "فيه نسخة في Drive من {time}.": "Drive has a backup from {time}.",
+  "فيه نسخة في Drive.": "Drive has a backup.",
   // ── تشغيل وتنزيل صوت التسجيل ──
   "تشغيل التسجيل": "Play recording", "إيقاف": "Pause", "تنزيل MP3": "Download MP3", "اتحفظ ✓": "Saved ✓",
   "الصوت مش متاح": "Audio not available", "مقدرتش أشغّل الصوت": "Couldn't play the audio",
