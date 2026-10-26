@@ -71,6 +71,8 @@ def resolve_file(base_dir, transport, token, folder_id):
 
 
 def upload(base_dir, zip_bytes, transport, token, now_ms):
+    # الجيل بيتقفل قبل أي نداء. لو الخروج عدّى أثناء الرفع، الكتابة الأخيرة ما ترجعش التوكن.
+    generation = google_auth.current_generation(base_dir)
     state = google_auth.read_state(base_dir)
     folder = resolve_folder(base_dir, transport, token)
     state["folderId"] = folder
@@ -83,14 +85,14 @@ def upload(base_dir, zip_bytes, transport, token, now_ms):
     )
     if status not in (200, 201):
         state["error"] = backup.message_for("reauth")
-        google_auth.write_state(base_dir, state)
+        google_auth.write_state(base_dir, state, generation, create=False)
         raise backup.BackupError("reauth")
     location = headers.get("Location") or headers.get("location")
     status, _headers, body = transport("PUT", location, {**_auth_header(token), "Content-Type": "application/zip"}, zip_bytes)
     if status not in (200, 201):
         _delete_quiet(transport, token, _json(body).get("id") if body else None)
         state["error"] = backup.message_for("reauth")
-        google_auth.write_state(base_dir, state)
+        google_auth.write_state(base_dir, state, generation, create=False)
         raise backup.BackupError("reauth")
     incoming_id = _json(body)["id"]
     status, _headers, body = transport(
@@ -101,14 +103,14 @@ def upload(base_dir, zip_bytes, transport, token, now_ms):
     if status != 200:
         _delete_quiet(transport, token, incoming_id)
         state["error"] = backup.message_for("reauth")
-        google_auth.write_state(base_dir, state)
+        google_auth.write_state(base_dir, state, generation, create=False)
         raise backup.BackupError("reauth")
     new_id = _json(body)["id"]
     # إعادة التسمية هي لحظة الاعتماد: المعرّف يتسجل قبل مسح القديم
     state["fileId"] = new_id
     state["backedUpAt"] = now_ms
     state["error"] = None
-    google_auth.write_state(base_dir, state)
+    google_auth.write_state(base_dir, state, generation, create=False)
     if previous and previous != new_id:
         _delete_quiet(transport, token, previous)
     for extra in _list(transport, token, _q(CANONICAL, parent=folder)):
@@ -127,6 +129,7 @@ def _delete_quiet(transport, token, file_id):
 
 
 def download(base_dir, transport, token):
+    generation = google_auth.current_generation(base_dir)
     folder = resolve_folder(base_dir, transport, token)
     found = resolve_file(base_dir, transport, token, folder)
     if not found:
@@ -134,10 +137,13 @@ def download(base_dir, transport, token):
     status, _headers, body = transport("GET", f"{FILES}/{found['id']}?alt=media", _auth_header(token), None)
     if status != 200:
         raise backup.BackupError("no_drive_file")
+    body = body or b""
+    if len(body) > google_auth.BACKUP_READ_CAP:
+        raise backup.BackupError("too_large")
     state = google_auth.read_state(base_dir)
     state["folderId"] = folder
     state["fileId"] = found["id"]
-    google_auth.write_state(base_dir, state)
+    google_auth.write_state(base_dir, state, generation, create=False)
     return body
 
 

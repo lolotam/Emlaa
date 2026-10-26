@@ -1,12 +1,12 @@
 # Privacy Policy — Emlaa (إملاء)
 
-_Last updated: October 4, 2026_
+_Last updated: October 26, 2026_
 
-Emlaa is a Windows dictation app developed by **Walid Mohamed** ([walidmohamed.com](https://walidmohamed.com)). This policy explains what the app does with your data. Short version: **we don't collect anything.** There are no accounts, no analytics, no tracking and no servers of ours in the loop.
+Emlaa is a Windows dictation app developed by **Walid Mohamed** ([walidmohamed.com](https://walidmohamed.com)). This policy explains what the app does with your data. Short version: **we don't collect anything.** Emlaa has no accounts of its own, no analytics, no tracking and no servers of ours. Signing in with Google does nothing until a client id is configured. If you then press **Back up now**, the app uploads your keys, history, clipboard and recordings to your own Google Drive. Emlaa has no server on that path.
 
 ## What stays on your device
 
-The following are stored **only on your computer** and are never sent to us:
+The following stay on your computer and are never sent to us, unless you press **Back up now**. That button uploads your API keys, history, clipboard text and recordings to a folder named `Emlaa` in your own Google Drive. Emlaa has no server on that path. Sign-in does nothing until a client id is configured.
 
 - **API keys** you enter for your chosen transcription provider.
 - **Settings** (hotkeys, language, theme, chosen models).
