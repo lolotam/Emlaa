@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime, timezone
 
 import core
@@ -24,6 +25,8 @@ REC_NAME = re.compile(r"^[0-9]+\.(mp3|wav|json)$")
 MAX_MEMBERS = 5000
 MAX_TOTAL = 2 * 1024 ** 3
 MAX_ONE = 512 * 1024 ** 2
+# اسم مؤقت عشان نجرب القيمة من غير ما نلمس متغير مزوّد حقيقي
+_ENV_PROBE = "EMLAA_BACKUP_ENV_PROBE"
 
 # الجملة اللي يشوفها المستخدم. too_large ملف بايظ من برّه، والكود الداخلي بس اللي بيفرّق.
 MESSAGES = {
@@ -63,6 +66,21 @@ def _stamp(now):
     _fail("damaged")
 
 
+def _assert_env_storable(value):
+    # النشر في os.environ بيحصل بعد كتابة الملفات. لو القيمة مرفوضة
+    # (NUL أو أي ValueError) نرفض النسخة هنا عشان ما نسيب ملفات جديدة والبيئة ما اتغيرتش.
+    previous = os.environ.get(_ENV_PROBE)
+    try:
+        os.environ[_ENV_PROBE] = value
+    except ValueError:
+        _fail("damaged")
+    finally:
+        if previous is None:
+            os.environ.pop(_ENV_PROBE, None)
+        else:
+            os.environ[_ENV_PROBE] = previous
+
+
 def _check_keys(keys):
     if not isinstance(keys, dict):
         _fail("damaged")
@@ -79,6 +97,7 @@ def _check_keys(keys):
             out.append(item.strip())
         if out:
             clean[pid] = out
+            _assert_env_storable(",".join(out))
     return clean
 
 
@@ -92,6 +111,21 @@ def _check_recordings(names):
     return names
 
 
+def _reject_oversize(manifest_bytes, blobs):
+    # نفس حدود read_zip. لو صدرنا أرشيف أكبر، المستخدم يفتكر النسخة تمت والاستعادة تقول عليه بايظ.
+    if 1 + len(blobs) > MAX_MEMBERS:
+        _fail("too_large")
+    total = 0
+    sizes = [len(manifest_bytes)]
+    sizes.extend(len(blob) for blob in blobs)
+    for size in sizes:
+        if size > MAX_ONE:
+            _fail("too_large")
+        total += size
+        if total > MAX_TOTAL:
+            _fail("too_large")
+
+
 def build_zip(config, keys, history, clipboard, recordings, now):
     """recordings = {اسم الملف: bytes}. مفيش أعضاء غير manifest.json و recordings/<اسم>."""
     if not isinstance(config, dict) or not isinstance(history, list) or not isinstance(clipboard, list):
@@ -101,6 +135,12 @@ def build_zip(config, keys, history, clipboard, recordings, now):
     keys = _check_keys(keys)
     names = sorted(recordings)
     _check_recordings(names)
+    blobs = []
+    for name in names:
+        blob = recordings[name]
+        if not isinstance(blob, (bytes, bytearray)):
+            _fail("damaged")
+        blobs.append(bytes(blob))
     manifest = {
         "format": FORMAT,
         "version": VERSION,
@@ -111,14 +151,13 @@ def build_zip(config, keys, history, clipboard, recordings, now):
         "clipboard": clipboard,
         "recordings": names,
     }
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+    _reject_oversize(manifest_bytes, blobs)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False).encode("utf-8"))
-        for name in names:
-            blob = recordings[name]
-            if not isinstance(blob, (bytes, bytearray)):
-                _fail("damaged")
-            zf.writestr(f"recordings/{name}", bytes(blob))
+        zf.writestr("manifest.json", manifest_bytes)
+        for name, blob in zip(names, blobs):
+            zf.writestr(f"recordings/{name}", blob)
     return buf.getvalue()
 
 
@@ -137,9 +176,21 @@ def read_zip(data):
     if not isinstance(data, (bytes, bytearray)):
         _fail("damaged")
     try:
-        zf = zipfile.ZipFile(io.BytesIO(bytes(data)))
-    except zipfile.BadZipFile:
-        _fail("damaged")
+        return _read_zip(bytes(data))
+    except BackupError:
+        raise
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, zlib.error,
+            NotImplementedError, UnicodeError, json.JSONDecodeError, RuntimeError) as exc:
+        # CRC والعضو المقطوع والملف البايظ كلهم نسخة تالفة. الاستثناء الخام بتاع zip ما يطلعش للي استدعى.
+        raise BackupError("damaged") from exc
+
+
+def _read_zip(data):
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return _parsed_zip(zf)
+
+
+def _parsed_zip(zf):
     infos = zf.infolist()
     if len(infos) > MAX_MEMBERS:
         _fail("too_large")
@@ -158,10 +209,7 @@ def read_zip(data):
         seen.append(info.filename)
     if len(seen) != len(set(seen)) or "manifest.json" not in seen:
         _fail("damaged")
-    try:
-        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError, RuntimeError):
-        _fail("damaged")
+    manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
     if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
         _fail("damaged")
     version = manifest.get("version", None)
@@ -330,15 +378,19 @@ def restore_snapshot(base_dir, data, app=None):
     parsed = read_zip(data)
     journal = tempfile.mkdtemp(prefix="emlaa-restore-")
     env_before = {meta["env"]: os.environ.get(meta["env"]) for meta in providers.PROVIDERS.values()}
+    keep_journal = False
     try:
         _apply(base_dir, parsed, journal, app)
         _publish_env(parsed["keys"])
         reload_app(app)
-    except Exception:
+    except Exception as exc:
+        # اليومية آخر نسخة من الملفات اللي اتشالت. تتمسح بعد الرجوع الناجح بس.
+        keep_journal = bool(getattr(exc, "keep_journal", False))
         _restore_env(env_before)
         raise
     finally:
-        shutil.rmtree(journal, ignore_errors=True)
+        if not keep_journal:
+            shutil.rmtree(journal, ignore_errors=True)
 
 
 def _publish_env(keys):
@@ -387,14 +439,10 @@ def _apply(base_dir, parsed, journal, app):
             _atomic_text(env_path, new_env)
             _atomic_json(hist_path, parsed["history"])
             _atomic_json(clip_path, parsed["clipboard"])
-        except Exception:
-            _rollback_docs(base_dir, journal, had)
-            raise
-        if app is not None and _contended(app):
-            _rollback_docs(base_dir, journal, had)
-            _fail("busy")
-        os.makedirs(rec_dir, exist_ok=True)
-        try:
+            if app is not None and _contended(app):
+                _fail("busy")
+            # إنشاء المجلد كتابة زي الباقي: لو فشل، المستندات اللي اتبدلت لازم ترجع.
+            os.makedirs(rec_dir, exist_ok=True)
             for name in existing:
                 if name not in parsed["files"]:
                     os.remove(os.path.join(rec_dir, name))
@@ -407,16 +455,45 @@ def _apply(base_dir, parsed, journal, app):
                     os.fsync(f.fileno())
                 os.replace(tmp, dest)
         except Exception as exc:
-            _rollback_docs(base_dir, journal, had)
-            lost = _rollback_recordings(rec_dir, saved_recs, set(existing))
-            if lost:
-                raise BackupError("damaged", "ما قدرتش أرجّع: " + ", ".join(lost)) from exc
-            raise
+            _abort_restore(base_dir, journal, had, rec_dir, saved_recs, set(existing), exc)
+
+
+def _abort_restore(base_dir, journal, had, rec_dir, saved_recs, originally, exc):
+    # فشل رجوع المستندات ما يمنعش رجوع التسجيلات.
+    # ولو الرجوع ما اكتملش، المجلد ده آخر نسخة من اللي اتشال — يفضل على القرص ومساره في الخطأ.
+    doc_error = None
+    try:
+        _rollback_docs(base_dir, journal, had)
+    except Exception as err:
+        doc_error = err
+    lost = []
+    rec_error = None
+    try:
+        lost = _rollback_recordings(rec_dir, saved_recs, originally)
+    except Exception as err:
+        rec_error = err
+    if doc_error is not None or rec_error is not None or lost:
+        if lost:
+            detail = "ما قدرتش أرجّع: " + ", ".join(lost)
+        else:
+            detail = "ما قدرتش أرجّع الملفات"
+        err = BackupError("damaged", detail + "\n" + journal)
+        err.keep_journal = True
+        raise err from (doc_error or rec_error or exc)
+    raise exc
 
 
 def _rollback_docs(base_dir, journal, had):
+    # ملف واحد لو رجوعه فشل، الباقي لسه ممكن يترجع.
+    first = None
     for name, existed in had.items():
-        _put_back_file(os.path.join(base_dir, name), journal, name, existed)
+        try:
+            _put_back_file(os.path.join(base_dir, name), journal, name, existed)
+        except Exception as err:
+            if first is None:
+                first = err
+    if first is not None:
+        raise first
 
 
 def _rollback_recordings(rec_dir, saved, originally):
