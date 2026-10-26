@@ -53,7 +53,7 @@
 
     <div class="privacy">
       <div class="privacy-title">تظل بياناتك خاصة <span aria-hidden="true">🔒</span></div>
-      <p>السجل والحافظة وصوت آخر ١٠ تسجيلات محفوظين على جهازك بس. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.</p>
+      <p>السجل والحافظة وصوت آخر ١٠ تسجيلات محفوظين على جهازك بس، إلا لو دوست «انسخ دلوقتي» فالنسخة بتروح لفولدر Emlaa على Google Drive بتاعك. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.</p>
     </div>
 
     <a class="promo" id="promo" href="#" data-url="">
@@ -366,10 +366,41 @@
         <label class="srow upd-row"><span class="srow-text"><b>نزّل وثبّت التحديثات تلقائيًا</b><small>من GitHub · بيستنى لحد ما التسجيل يخلص وبعدين يعيد التشغيل لوحده</small></span><span class="switch"><input type="checkbox" id="sAutoUpd"><i></i></span></label>
       </div>
 
+      <h3 class="group-h">نسخة احتياطية</h3>
+      <div class="group" id="backupBox">
+        <p class="sub">الملف فيه مفاتيح الـAPI والسجل والحافظة وتسجيلات الصوت. خليه عندك وما تبعتهوش لحد.</p>
+        <div class="srow">
+          <button class="ghost-btn" id="backupExport" type="button">تنزيل نسخة احتياطية</button>
+          <button class="ghost-btn" id="backupImport" type="button">استعادة من ملف</button>
+        </div>
+        <p class="sub" id="googleHint">تسجيل الدخول بجوجل لسه مش متفعّل في النسخة دي.</p>
+        <div class="srow" id="googleRow">
+          <button class="ghost-btn" id="googleSignIn" type="button">تسجيل الدخول بجوجل</button>
+          <span id="googleWho"></span>
+          <button class="ghost-btn" id="googleSignOut" type="button" hidden>تسجيل الخروج</button>
+        </div>
+        <div class="srow">
+          <button class="ghost-btn" id="driveBackup" type="button" disabled>انسخ دلوقتي</button>
+          <button class="ghost-btn" id="driveRestore" type="button" disabled>استرجع من Drive</button>
+        </div>
+        <p class="sub">الملف في فولدر Emlaa على Google Drive بتاعك، وآخر نسخة بتستبدل اللي قبلها. تسجيل الخروج ما بيمسحهاش.</p>
+        <p class="sub" id="backupStatus" aria-live="polite"></p>
+      </div>
+
       <div class="save-bar">
         <span class="save-msg" id="saveMsg" aria-live="polite"></span>
       </div>
     </section>
+
+    <div class="upd-modal" id="restoreModal" hidden>
+      <div class="upd-card" role="dialog" aria-modal="true">
+        <p id="restoreText"></p>
+        <div class="srow">
+          <button class="cta cta-sm" id="restoreYes" type="button">كمّل</button>
+          <button class="ghost-btn" id="restoreNo" type="button">إلغاء</button>
+        </div>
+      </div>
+    </div>
 
     <!-- أول مرة -->
     <section class="page" data-page="welcome">

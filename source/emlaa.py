@@ -1259,6 +1259,8 @@ class EmlaaClassic(tk.Tk):
                      "بيسأل سيرفرنا عن رقم آخر إصدار بس — مفيش أي بيانات عنك",
                      bg=BG).pack(fill="x", pady=(13, 2))
 
+        self._backup_section(d)
+
         self.smsg = tk.Label(d, text="", bg=BG, fg=MUTED, font=(FONT, 9),
                              wraplength=380, justify="right")
         self.smsg.pack(fill="x", padx=22, pady=(16, 0))
@@ -1282,6 +1284,136 @@ class EmlaaClassic(tk.Tk):
         y = max(10, min(self.winfo_rooty() + 30,
                         d.winfo_screenheight() - h - 60))
         d.geometry(f"{w}x{h}+{max(10, x)}+{y}")
+
+    def _backup_section(self, parent):
+        """نفس أزرار الواجهة الجديدة. المنطق في backup مش نسخة تانية."""
+        import tkinter.filedialog as fd
+        import tkinter.messagebox as mb
+        import backup
+        box = tk.Frame(parent, bg=BG)
+        box.pack(fill="x", padx=22, pady=(16, 0))
+        tk.Label(box, text=R("نسخة احتياطية"), bg=BG, fg=FG, font=(FONT, 10, "bold"),
+                 anchor="e").pack(fill="x")
+        tk.Label(box, text=R("الملف فيه مفاتيح الـAPI والسجل والحافظة وتسجيلات الصوت. خليه عندك وما تبعتهوش لحد."),
+                 bg=BG, fg=MUTED, font=(FONT, 8), wraplength=380, justify="right").pack(fill="x", pady=(4, 6))
+        row = tk.Frame(box, bg=BG)
+        row.pack(fill="x")
+        tk.Button(row, text=R("تنزيل نسخة احتياطية"), command=self._backup_export,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        tk.Button(row, text=R("استعادة من ملف"), command=self._backup_import,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        row2 = tk.Frame(box, bg=BG)
+        row2.pack(fill="x", pady=(6, 0))
+        tk.Button(row2, text=R("تسجيل الدخول بجوجل"), command=self._google_sign_in,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        tk.Button(row2, text=R("انسخ دلوقتي"), command=self._drive_backup,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        tk.Button(row2, text=R("استرجع من Drive"), command=self._drive_restore,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        self._backup_msg = tk.Label(box, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                                    wraplength=380, justify="right")
+        self._backup_msg.pack(fill="x", pady=(6, 0))
+        self._fd = fd
+        self._mb = mb
+        self._backup_mod = backup
+
+    def _backup_say(self, text):
+        if getattr(self, "_backup_msg", None):
+            self._backup_msg.config(text=text)
+
+    def _backup_export(self):
+        backup = self._backup_mod
+        app = getattr(self, "engine", None)
+        try:
+            backup.begin_backup(app)
+            dest = self._fd.asksaveasfilename(defaultextension=".zip", initialfile="emlaa-backup.zip",
+                                              filetypes=[("ZIP", "*.zip")])
+            if not dest:
+                return
+            blob = backup.export_snapshot(core.BASE, app)
+            with open(dest, "wb") as f:
+                f.write(blob)
+            self._backup_say(R("اتحفظ ✓"))
+        except backup.BackupError as err:
+            self._backup_say(backup.message_for(err.code))
+        finally:
+            backup.end_backup(app)
+
+    def _backup_import(self):
+        backup = self._backup_mod
+        if not self._mb.askyesno("إملاء", "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟"):
+            return
+        app = getattr(self, "engine", None)
+        try:
+            backup.begin_backup(app)
+            src = self._fd.askopenfilename(filetypes=[("ZIP", "*.zip")])
+            if not src:
+                return
+            with open(src, "rb") as f:
+                blob = f.read()
+            backup.restore_snapshot(core.BASE, blob, app)
+            if isinstance(getattr(self, "cfg", None), dict):
+                fresh = core.load_config()
+                self.cfg.clear()
+                self.cfg.update(fresh)
+            self._backup_say(R("اتحفظ ✓"))
+        except backup.BackupError as err:
+            self._backup_say(backup.message_for(err.code))
+        finally:
+            backup.end_backup(app)
+
+    def _google_sign_in(self):
+        import google_auth
+        import time
+        if not google_auth.GOOGLE_CLIENT_ID:
+            self._backup_say(self._backup_mod.message_for("unconfigured"))
+            return
+        try:
+            import webbrowser
+            google_auth.sign_in(google_auth.GOOGLE_CLIENT_ID, google_auth.urllib_transport,
+                                google_auth.listen_once, webbrowser.open, time.time, core.BASE)
+            self._backup_say(R("اتحفظ ✓"))
+        except self._backup_mod.BackupError as err:
+            self._backup_say(self._backup_mod.message_for(err.code))
+
+    def _drive_backup(self):
+        import google_auth
+        import drive_backup
+        import time
+        if not google_auth.GOOGLE_CLIENT_ID:
+            self._backup_say(self._backup_mod.message_for("unconfigured"))
+            return
+        app = getattr(self, "engine", None)
+        try:
+            self._backup_mod.begin_backup(app)
+            token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
+            blob = self._backup_mod.export_snapshot(core.BASE, app)
+            drive_backup.upload(core.BASE, blob, google_auth.urllib_transport, token, int(time.time() * 1000))
+            self._backup_say(R("اتحفظ ✓"))
+        except self._backup_mod.BackupError as err:
+            self._backup_say(self._backup_mod.message_for(err.code))
+        finally:
+            self._backup_mod.end_backup(app)
+
+    def _drive_restore(self):
+        import google_auth
+        import drive_backup
+        import time
+        if not google_auth.GOOGLE_CLIENT_ID:
+            self._backup_say(self._backup_mod.message_for("unconfigured"))
+            return
+        if not self._mb.askyesno("إملاء", "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟"):
+            return
+        app = getattr(self, "engine", None)
+        try:
+            self._backup_mod.begin_backup(app)
+            token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
+            drive_backup.restore(core.BASE, google_auth.urllib_transport, token, app)
+            self._backup_say(R("اتحفظ ✓"))
+        except self._backup_mod.BackupError as err:
+            self._backup_say(self._backup_mod.message_for(err.code))
+        finally:
+            self._backup_mod.end_backup(app)
 
     def _prompt_toggled(self, on):
         """

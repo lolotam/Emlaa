@@ -17,6 +17,7 @@ import core
 import providers
 import smart
 import offline
+import backup
 
 UI_DIR = "ui"
 KEY_WRITE_ERR = "معرفتش أحفظ ملف المفاتيح — المفاتيح القديمة زي ما هي، جرّب تاني"
@@ -939,11 +940,12 @@ class Api:
         ok, err = providers.verify(pid, new_key)
         if not ok:
             return err
-        with self._key_lock:
-            try:
-                providers.write_key(core.ENV_PATH, pid, new_key)
-            except OSError:
-                return KEY_WRITE_ERR
+        with core._backup_lock:
+            with self._key_lock:
+                try:
+                    providers.write_key(core.ENV_PATH, pid, new_key)
+                except OSError:
+                    return KEY_WRITE_ERR
         return None
 
     # ── تسجيل زرار ميزة من الكيبورد ──
@@ -1029,15 +1031,16 @@ class Api:
         ok, err = providers.verify(pid, key)
         if not ok:
             return {"ok": False, "err": err}
-        with self._key_lock:
-            if key in providers.read_key_pools(core.ENV_PATH).get(pid, []):
-                return dup
-            try:
-                providers.add_provider_key(core.ENV_PATH, pid, key)
-            except OSError:
-                return {"ok": False, "err": KEY_WRITE_ERR}
-            self._readiness_changed()
-            return {"ok": True, **self.key_pool(pid)}
+        with core._backup_lock:
+            with self._key_lock:
+                if key in providers.read_key_pools(core.ENV_PATH).get(pid, []):
+                    return dup
+                try:
+                    providers.add_provider_key(core.ENV_PATH, pid, key)
+                except OSError:
+                    return {"ok": False, "err": KEY_WRITE_ERR}
+                self._readiness_changed()
+                return {"ok": True, **self.key_pool(pid)}
 
     def key_remove(self, pid, index, key_id=None):
         """
@@ -1049,25 +1052,26 @@ class Api:
             return {"ok": False, "err": "مزوّد مش معروف"}
         if isinstance(index, bool) or not isinstance(index, int):
             return {"ok": False, "err": "المفتاح مش موجود"}
-        with self._key_lock:
-            pools = providers.read_key_pools(core.ENV_PATH)
-            pool = pools.get(pid, [])
-            if not (0 <= index < len(pool)):
-                return {"ok": False, "err": "المفتاح مش موجود"}
-            # لو .env اتغيّر من ورا القايمة (الفهرس بقى بيشاور على مفتاح تاني) منمسحش حاجة.
-            # البصمة مش الشكل المقنّع: مفتاحين ممكن يبقوا بنفس البداية والنهاية
-            if key_id is not None and providers.key_id(pool[index]) != key_id:
-                return {"ok": False, "err": KEY_STALE_ERR}
-            # مزوّد القراية بصوت مبيفرّغش — شيل مفتاحه عمره ما يوقف التفريغ
-            if pid in providers.ORDER and \
-                    not core.can_run(pools=dict(pools, **{pid: pool[:index] + pool[index + 1:]})):
-                return {"ok": False, "err": LAST_STT_KEY_ERR}
-            try:
-                providers.remove_provider_key(core.ENV_PATH, pid, index)
-            except OSError:
-                return {"ok": False, "err": KEY_WRITE_ERR}
-            self._readiness_changed()
-            return {"ok": True, **self.key_pool(pid)}
+        with core._backup_lock:
+            with self._key_lock:
+                pools = providers.read_key_pools(core.ENV_PATH)
+                pool = pools.get(pid, [])
+                if not (0 <= index < len(pool)):
+                    return {"ok": False, "err": "المفتاح مش موجود"}
+                # لو .env اتغيّر من ورا القايمة (الفهرس بقى بيشاور على مفتاح تاني) منمسحش حاجة.
+                # البصمة مش الشكل المقنّع: مفتاحين ممكن يبقوا بنفس البداية والنهاية
+                if key_id is not None and providers.key_id(pool[index]) != key_id:
+                    return {"ok": False, "err": KEY_STALE_ERR}
+                # مزوّد القراية بصوت مبيفرّغش — شيل مفتاحه عمره ما يوقف التفريغ
+                if pid in providers.ORDER and \
+                        not core.can_run(pools=dict(pools, **{pid: pool[:index] + pool[index + 1:]})):
+                    return {"ok": False, "err": LAST_STT_KEY_ERR}
+                try:
+                    providers.remove_provider_key(core.ENV_PATH, pid, index)
+                except OSError:
+                    return {"ok": False, "err": KEY_WRITE_ERR}
+                self._readiness_changed()
+                return {"ok": True, **self.key_pool(pid)}
 
     def _readiness_changed(self):
         """
@@ -1123,6 +1127,133 @@ class Api:
     def offline_remove(self):
         offline.remove()
         return {"ok": True}
+
+    def _file_dialog(self, save, suggested=""):
+        window = getattr(self._c, "window", None)
+        if window is None:
+            return None
+        try:
+            import webview
+            try:
+                kind = webview.FileDialog.SAVE if save else webview.FileDialog.OPEN
+            except AttributeError:                 # pywebview أقدم من 6
+                kind = webview.SAVE_DIALOG if save else webview.OPEN_DIALOG
+        except ImportError:
+            kind = None
+        if save:
+            dest = window.create_file_dialog(kind, save_filename=suggested, file_types=("ZIP (*.zip)",))
+        else:
+            dest = window.create_file_dialog(kind, file_types=("ZIP (*.zip)",))
+        if isinstance(dest, (list, tuple)):
+            dest = dest[0] if dest else None
+        return dest or None
+
+    def _engine(self):
+        return getattr(self._c, "engine", None)
+
+    def _backup_call(self, fn):
+        app = self._engine()
+        try:
+            backup.begin_backup(app)
+        except backup.BackupError as err:
+            return {"ok": False, "err": backup.message_for(err.code)}
+        try:
+            return fn(app)
+        except backup.BackupError as err:
+            return {"ok": False, "err": backup.message_for(err.code)}
+        finally:
+            backup.end_backup(app)
+
+    def backup_status(self):
+        """من غير توكن. المعرّف الفاضي يخلّي أزرار درايف مقفولة في الواجهة."""
+        import google_auth
+        try:
+            state = google_auth.read_state(core.BASE)
+        except (OSError, ValueError):
+            state = {}
+        account = state.get("account") or {}
+        return {
+            "clientConfigured": bool(google_auth.GOOGLE_CLIENT_ID),
+            "signedIn": bool(account.get("email")),
+            "email": account.get("email") or "",
+            "name": account.get("name") or "",
+            "picture": account.get("picture") or "",
+            "backedUpAt": state.get("backedUpAt"),
+            "error": state.get("error"),
+        }
+
+    def backup_export(self):
+        def run(app):
+            dest = self._file_dialog(True, "emlaa-backup.zip")
+            if not dest:
+                return {"ok": False, "err": ""}
+            if not str(dest).lower().endswith(".zip"):
+                dest = str(dest) + ".zip"
+            blob = backup.export_snapshot(core.BASE, app)
+            with open(dest, "wb") as f:
+                f.write(blob)
+            return {"ok": True}
+        return self._backup_call(run)
+
+    def backup_import(self):
+        """الواجهة أكّدت قبل النداء. الإلغاء من نافذة الملف ما يغيّرش حاجة."""
+        def run(app):
+            src = self._file_dialog(False)
+            if not src:
+                return {"ok": False, "err": ""}
+            with open(src, "rb") as f:
+                blob = f.read()
+            backup.restore_snapshot(core.BASE, blob, app)
+            return {"ok": True, "boot": self.bootstrap()}
+        return self._backup_call(run)
+
+    def google_sign_in(self):
+        import google_auth
+        if not google_auth.GOOGLE_CLIENT_ID:
+            return {"ok": False, "err": backup.message_for("unconfigured")}
+        try:
+            import webbrowser
+            google_auth.sign_in(
+                google_auth.GOOGLE_CLIENT_ID,
+                google_auth.urllib_transport,
+                google_auth.listen_once,
+                webbrowser.open,
+                time.time,
+                core.BASE,
+            )
+            return {"ok": True, **self.backup_status()}
+        except backup.BackupError as err:
+            return {"ok": False, "err": backup.message_for(err.code)}
+
+    def google_sign_out(self):
+        import google_auth
+        google_auth.sign_out(core.BASE)
+        return {"ok": True, **self.backup_status()}
+
+    def drive_backup(self):
+        import drive_backup
+        import google_auth
+        if not google_auth.GOOGLE_CLIENT_ID:
+            return {"ok": False, "err": backup.message_for("unconfigured")}
+
+        def run(app):
+            token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
+            blob = backup.export_snapshot(core.BASE, app)
+            drive_backup.upload(core.BASE, blob, google_auth.urllib_transport, token, int(time.time() * 1000))
+            return {"ok": True, **self.backup_status()}
+        return self._backup_call(run)
+
+    def drive_restore(self):
+        import drive_backup
+        import google_auth
+        if not google_auth.GOOGLE_CLIENT_ID:
+            return {"ok": False, "err": backup.message_for("unconfigured")}
+
+        def run(app):
+            token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
+            drive_backup.restore(core.BASE, google_auth.urllib_transport, token, app)
+            return {"ok": True, "boot": self.bootstrap(), **self.backup_status()}
+        return self._backup_call(run)
 
     # ── متفرقات ──
     def check_update(self):
