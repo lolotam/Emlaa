@@ -25,8 +25,7 @@ REC_NAME = re.compile(r"^[0-9]+\.(mp3|wav|json)$")
 MAX_MEMBERS = 5000
 MAX_TOTAL = 2 * 1024 ** 3
 MAX_ONE = 512 * 1024 ** 2
-# اسم مؤقت عشان نجرب القيمة من غير ما نلمس متغير مزوّد حقيقي
-_ENV_PROBE = "EMLAA_BACKUP_ENV_PROBE"
+_ALLOWED_COMPRESSION = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
 
 # الجملة اللي يشوفها المستخدم. too_large ملف بايظ من برّه، والكود الداخلي بس اللي بيفرّق.
 MESSAGES = {
@@ -67,18 +66,9 @@ def _stamp(now):
 
 
 def _assert_env_storable(value):
-    # النشر في os.environ بيحصل بعد كتابة الملفات. لو القيمة مرفوضة
-    # (NUL أو أي ValueError) نرفض النسخة هنا عشان ما نسيب ملفات جديدة والبيئة ما اتغيرتش.
-    previous = os.environ.get(_ENV_PROBE)
-    try:
-        os.environ[_ENV_PROBE] = value
-    except ValueError:
+    # من غير ما نكتب في os.environ: NUL البيئة بترفضه، والسطر الجديد بيحقن سطر تاني في .env.
+    if "\0" in value or "\r" in value or "\n" in value:
         _fail("damaged")
-    finally:
-        if previous is None:
-            os.environ.pop(_ENV_PROBE, None)
-        else:
-            os.environ[_ENV_PROBE] = previous
 
 
 def _check_keys(keys):
@@ -197,7 +187,8 @@ def _parsed_zip(zf):
     total = 0
     seen = []
     for info in infos:
-        if info.flag_bits & 0x1:
+        if info.flag_bits & 0x1 or info.compress_type not in _ALLOWED_COMPRESSION:
+            # bzip2 و lzma مش من النسخ اللي بنصدرها، وعضوهم البايظ بيطير استثناء خام مش BackupError.
             _fail("damaged")
         if info.file_size > MAX_ONE:
             _fail("too_large")
@@ -379,10 +370,15 @@ def restore_snapshot(base_dir, data, app=None):
     journal = tempfile.mkdtemp(prefix="emlaa-restore-")
     env_before = {meta["env"]: os.environ.get(meta["env"]) for meta in providers.PROVIDERS.values()}
     keep_journal = False
+    applied = None
     try:
-        _apply(base_dir, parsed, journal, app)
-        _publish_env(parsed["keys"])
-        reload_app(app)
+        applied = _apply(base_dir, parsed, journal, app)
+        try:
+            _publish_env(parsed["keys"])
+            reload_app(app)
+        except Exception as exc:
+            # الملفات اتبدلت بالفعل. فشل النشر أو إعادة التحميل لازم يرجّعها، مش يمسح اليومية وبس.
+            _rollback_applied(base_dir, journal, applied, exc)
     except Exception as exc:
         # اليومية آخر نسخة من الملفات اللي اتشالت. تتمسح بعد الرجوع الناجح بس.
         keep_journal = bool(getattr(exc, "keep_journal", False))
@@ -434,6 +430,7 @@ def _apply(base_dir, parsed, journal, app):
             if name in existing:
                 saved_recs[name] = existing[name]
                 _copy_aside(os.path.join(rec_dir, name), journal, os.path.join("recordings", name))
+        recordings_touched = False
         try:
             _atomic_json(cfg_path, parsed["config"])
             _atomic_text(env_path, new_env)
@@ -443,23 +440,54 @@ def _apply(base_dir, parsed, journal, app):
                 _fail("busy")
             # إنشاء المجلد كتابة زي الباقي: لو فشل، المستندات اللي اتبدلت لازم ترجع.
             os.makedirs(rec_dir, exist_ok=True)
+            # من هنا بس التسجيلات بتتغير. فشل قبل كده ما يمسح تسجيل بدأ بعد ما صورنا المجلد.
+            recordings_touched = True
             for name in existing:
                 if name not in parsed["files"]:
                     os.remove(os.path.join(rec_dir, name))
             for name, blob in parsed["files"].items():
-                dest = os.path.join(rec_dir, name)
-                tmp = dest + ".incoming"
-                with open(tmp, "wb") as f:
-                    f.write(blob)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp, dest)
+                _write_recording(os.path.join(rec_dir, name), blob)
         except Exception as exc:
-            _abort_restore(base_dir, journal, had, rec_dir, saved_recs, set(existing), exc)
+            _abort_restore(
+                base_dir, journal, had, rec_dir, saved_recs, set(existing), exc, recordings_touched,
+            )
+    return {
+        "had": had,
+        "rec_dir": rec_dir,
+        "saved_recs": saved_recs,
+        "originally": set(existing),
+        "recordings_touched": recordings_touched,
+    }
 
 
-def _abort_restore(base_dir, journal, had, rec_dir, saved_recs, originally, exc):
-    # فشل رجوع المستندات ما يمنعش رجوع التسجيلات.
+def _rollback_applied(base_dir, journal, applied, exc):
+    locks = _locked()
+    with locks[0], locks[1], locks[2]:
+        _abort_restore(
+            base_dir, journal, applied["had"], applied["rec_dir"], applied["saved_recs"],
+            applied["originally"], exc, applied["recordings_touched"],
+        )
+
+
+def _write_recording(dest, blob):
+    tmp = dest + ".incoming"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, dest)
+    finally:
+        # الاستبدال لو فشل يسيب الملف المؤقت، والرجوع ما بيشوفش غير أسماء التسجيلات.
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _abort_restore(base_dir, journal, had, rec_dir, saved_recs, originally, exc, recordings_touched):
+    # فشل رجوع المستندات ما يمنعش رجوع التسجيلات، بس لو لسه ما بدأناش نغيّر التسجيلات ما نلمسهاش.
     # ولو الرجوع ما اكتملش، المجلد ده آخر نسخة من اللي اتشال — يفضل على القرص ومساره في الخطأ.
     doc_error = None
     try:
@@ -469,7 +497,8 @@ def _abort_restore(base_dir, journal, had, rec_dir, saved_recs, originally, exc)
     lost = []
     rec_error = None
     try:
-        lost = _rollback_recordings(rec_dir, saved_recs, originally)
+        if recordings_touched:
+            lost = _rollback_recordings(rec_dir, saved_recs, originally)
     except Exception as err:
         rec_error = err
     if doc_error is not None or rec_error is not None or lost:
@@ -500,13 +529,19 @@ def _rollback_recordings(rec_dir, saved, originally):
     lost = []
     for name, blob in saved.items():
         dest = os.path.join(rec_dir, name)
+        tmp = dest + ".rollback"
         try:
-            tmp = dest + ".rollback"
             with open(tmp, "wb") as f:
                 f.write(blob)
             os.replace(tmp, dest)
         except OSError:
             lost.append(name)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    lost.append(tmp)
     if os.path.isdir(rec_dir):
         for name in os.listdir(rec_dir):
             if REC_NAME.fullmatch(name) and name not in originally:

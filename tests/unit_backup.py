@@ -227,6 +227,17 @@ class FormatTests(unittest.TestCase):
                 self.assertEqual(cm.exception.code, "damaged")
                 self.assertNotIsInstance(cm.exception, zipfile.BadZipFile)
 
+    def test_other_compression_is_damaged(self):
+        good = json.loads(zipfile.ZipFile(BytesIO(_zip())).read("manifest.json"))
+        for method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+            with self.subTest(method):
+                buf = BytesIO()
+                with zipfile.ZipFile(buf, "w", compression=method) as zf:
+                    zf.writestr("manifest.json", json.dumps(good).encode("utf-8"))
+                with self.assertRaises(backup.BackupError) as cm:
+                    backup.read_zip(buf.getvalue())
+                self.assertEqual(cm.exception.code, "damaged")
+
 
 class SnapshotTests(unittest.TestCase):
     def setUp(self):
@@ -297,14 +308,17 @@ class SnapshotTests(unittest.TestCase):
             backup.export_snapshot(self.base)
         self.assertEqual(cm.exception.code, "unreadable")
 
-    def test_history_replace_failure_rolls_back_documents_and_recordings(self):
+    def test_history_replace_failure_rolls_back_documents_only(self):
         self._write()
         blob = _zip({"lang": "en"}, {})
         real = backup._atomic_json
         journal = tempfile.mkdtemp(prefix="emlaa-restore-")
+        live = os.path.join(self.base, "recordings", "7.wav")
 
         def boom(path, obj):
             if path.endswith("history.json"):
+                with open(live, "wb") as f:
+                    f.write(b"live")
                 raise OSError("disk")
             real(path, obj)
 
@@ -314,13 +328,14 @@ class SnapshotTests(unittest.TestCase):
                  mock.patch("backup.tempfile.mkdtemp", return_value=journal):
                 with self.assertRaises(OSError):
                     backup.restore_snapshot(self.base, blob)
-            recs.assert_called_once()
+            recs.assert_not_called()
             self.assertFalse(os.path.exists(journal))
         finally:
             shutil.rmtree(journal, ignore_errors=True)
         with open(os.path.join(self.base, "config.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["lang"], "ar")
         self.assertEqual(open(os.path.join(self.base, "recordings", "1.mp3"), "rb").read(), b"a")
+        self.assertEqual(open(live, "rb").read(), b"live")
         backup.reload_app.assert_not_called()
 
     def test_recording_failure_restores_deleted_and_drops_new(self):
@@ -342,6 +357,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(open(os.path.join(rec, "1.mp3"), "rb").read(), b"a")
         self.assertEqual(open(os.path.join(rec, "9.wav"), "rb").read(), b"b")
         self.assertFalse(os.path.exists(os.path.join(rec, "3.mp3")))
+        self.assertFalse(os.path.exists(os.path.join(rec, "3.mp3.incoming")))
 
     def test_busy_before_any_write(self):
         self._write()
@@ -396,58 +412,33 @@ class SnapshotTests(unittest.TestCase):
     def test_unstorable_key_rejected_before_write(self):
         self._write()
         before = open(os.path.join(self.base, "config.json"), encoding="utf-8").read()
-        probe = backup._ENV_PROBE
-        probe_before = os.environ.get(probe)
         groq_before = os.environ.get("GROQ_API_KEY")
         os.environ["GROQ_API_KEY"] = "keep-real"
         try:
-            good = json.loads(zipfile.ZipFile(BytesIO(_zip())).read("manifest.json"))
-            manifest = dict(good, config={"lang": "en"}, keys={"groq": ["ab\0cd"]})
-            buf = BytesIO()
-            with zipfile.ZipFile(buf, "w") as zf:
-                zf.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
-            with mock.patch.object(backup, "_apply") as apply:
-                with self.assertRaises(backup.BackupError) as cm:
-                    backup.restore_snapshot(self.base, buf.getvalue())
-            self.assertEqual(cm.exception.code, "damaged")
-            apply.assert_not_called()
-            self.assertEqual(open(os.path.join(self.base, "config.json"), encoding="utf-8").read(), before)
-            self.assertEqual(os.environ.get("GROQ_API_KEY"), "keep-real")
-            self.assertEqual(os.environ.get(probe), probe_before)
-
-            with mock.patch.object(backup.zipfile, "ZipFile") as opened:
-                with self.assertRaises(backup.BackupError) as cm:
-                    backup.build_zip({}, {"groq": ["ab\0cd"]}, [], [], {}, NOW)
-                self.assertEqual(cm.exception.code, "damaged")
-                opened.assert_not_called()
+            for bad in ("ab\0cd", "abc\nOTHER=value", "abc\rset"):
+                with self.subTest(bad):
+                    good = json.loads(zipfile.ZipFile(BytesIO(_zip())).read("manifest.json"))
+                    manifest = dict(good, config={"lang": "en"}, keys={"groq": [bad]})
+                    buf = BytesIO()
+                    with zipfile.ZipFile(buf, "w") as zf:
+                        zf.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+                    with mock.patch.object(backup, "_apply") as apply:
+                        with self.assertRaises(backup.BackupError) as cm:
+                            backup.restore_snapshot(self.base, buf.getvalue())
+                    self.assertEqual(cm.exception.code, "damaged")
+                    apply.assert_not_called()
+                    self.assertEqual(open(os.path.join(self.base, "config.json"), encoding="utf-8").read(), before)
+                    self.assertEqual(os.environ.get("GROQ_API_KEY"), "keep-real")
+                    with mock.patch.object(backup.zipfile, "ZipFile") as opened:
+                        with self.assertRaises(backup.BackupError) as cm:
+                            backup.build_zip({}, {"groq": [bad]}, [], [], {}, NOW)
+                        self.assertEqual(cm.exception.code, "damaged")
+                        opened.assert_not_called()
         finally:
             if groq_before is None:
                 os.environ.pop("GROQ_API_KEY", None)
             else:
                 os.environ["GROQ_API_KEY"] = groq_before
-            if probe_before is None:
-                os.environ.pop(probe, None)
-            else:
-                os.environ[probe] = probe_before
-
-    def test_environ_valueerror_rejects_before_write(self):
-        self._write()
-        before = open(os.path.join(self.base, "config.json"), encoding="utf-8").read()
-        blob = _zip({"lang": "en"}, {"groq": ["plain-key"]})
-        real_set = os.environ.__class__.__setitem__
-
-        def boom(env, key, value):
-            if key == backup._ENV_PROBE:
-                raise ValueError("rejected")
-            return real_set(env, key, value)
-
-        with mock.patch.object(os.environ.__class__, "__setitem__", boom), \
-             mock.patch.object(backup, "_apply") as apply:
-            with self.assertRaises(backup.BackupError) as cm:
-                backup.restore_snapshot(self.base, blob)
-        self.assertEqual(cm.exception.code, "damaged")
-        apply.assert_not_called()
-        self.assertEqual(open(os.path.join(self.base, "config.json"), encoding="utf-8").read(), before)
 
     def test_makedirs_failure_puts_documents_back(self):
         self._write()
@@ -536,6 +527,32 @@ class SnapshotTests(unittest.TestCase):
                 self.assertEqual(json.load(f)["lang"], "en")
         finally:
             shutil.rmtree(journal, ignore_errors=True)
+
+    def test_publish_failure_rolls_files_back(self):
+        self._write()
+        os.environ["GROQ_API_KEY"] = "still-here"
+        blob = _zip({"lang": "en"}, {"openai": ["sk-new"]}, recordings={"3.mp3": b"new"})
+        journal = tempfile.mkdtemp(prefix="emlaa-restore-")
+        try:
+            with mock.patch.object(backup, "_publish_env", side_effect=ValueError("env")), \
+                 mock.patch("backup.tempfile.mkdtemp", return_value=journal):
+                with self.assertRaises(ValueError):
+                    backup.restore_snapshot(self.base, blob)
+            self.assertFalse(os.path.exists(journal))
+        finally:
+            shutil.rmtree(journal, ignore_errors=True)
+        with open(os.path.join(self.base, "config.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["lang"], "ar")
+        env = open(os.path.join(self.base, ".env"), encoding="utf-8").read()
+        self.assertIn("GROQ_API_KEY = old", env)
+        self.assertNotIn("sk-new", env)
+        rec = os.path.join(self.base, "recordings")
+        self.assertEqual(open(os.path.join(rec, "1.mp3"), "rb").read(), b"a")
+        self.assertEqual(open(os.path.join(rec, "9.wav"), "rb").read(), b"b")
+        self.assertFalse(os.path.exists(os.path.join(rec, "3.mp3")))
+        self.assertFalse(os.path.exists(os.path.join(rec, "3.mp3.incoming")))
+        self.assertEqual(os.environ.get("GROQ_API_KEY"), "still-here")
+        backup.reload_app.assert_not_called()
 
     def test_success_deletes_journal(self):
         self._write()
