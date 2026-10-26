@@ -42,6 +42,10 @@ Depending on the provider you choose, your audio, and for text cleanup, prompt a
 
 You choose the provider and can switch or remove it at any time in Settings.
 
+## Backup file and Google Drive
+
+Settings can download a zip that contains your API keys, history, clipboard text, and recordings. That file stays wherever you save it. If you sign in with Google and press **Back up now**, the same zip is uploaded to a folder named `Emlaa` in your own Google Drive. Emlaa has no server on that path. Signing out does not delete the Drive file. Download and restore from a file work with no Google account. Until a Google client id is configured in the app, the sign-in button does not contact Google.
+
 ## Update checks
 
 - **Microsoft Store version:** updates come from the Microsoft Store. The app does not check for updates itself.

@@ -1265,7 +1265,7 @@ $("#styleList").addEventListener("click", e => {
 /* ── الحفظ التلقائي: أي تغيير في الإعدادات بيتحفظ لوحده بعد لحظة (من غير زرار) ──
    حفظ واحد في نفس الوقت؛ تغيير جه وهو شغّال بيعمل حفظة تانية بعده بالقيم الأحدث.
    الفورم مبيتعادش بناؤه بعد الحفظ — المستخدم ممكن يكون لسه بيعدّل. */
-const SAVE = { timer: null, running: false, again: false, err: null, closeWarned: false };
+const SAVE = { timer: null, running: false, again: false, err: null, closeWarned: false, hold: false };
 function settingsPayload() {
   return {
     features: S.features,
@@ -1312,8 +1312,103 @@ async function saveSettings() {
     msg.className = "save-msg err";
     msg.textContent = r.err;
   }
-  if (SAVE.again) { SAVE.again = false; saveSettings(); }
+  if (SAVE.again && !SAVE.hold) { SAVE.again = false; saveSettings(); }
 }
+
+async function settleSavesForRestore() {
+  // الحفظة الشغّالة تخلّص، واللي لسه في الطابور تتشال عشان ما تكتبش الفورم القديم بعد الاستعادة
+  while (SAVE.running) await new Promise(r => setTimeout(r, 30));
+  clearTimeout(SAVE.timer);
+  SAVE.timer = null;
+  SAVE.again = false;
+  SAVE.hold = true;
+}
+
+const RESTORE_CONFIRM = "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟";
+
+function askRestore() {
+  const modal = $("#restoreModal");
+  const text = $("#restoreText");
+  text.textContent = RESTORE_CONFIRM;
+  modal.hidden = false;
+  return new Promise(resolve => {
+    const yes = $("#restoreYes");
+    const no = $("#restoreNo");
+    const finish = (ok) => {
+      yes.removeEventListener("click", onYes);
+      no.removeEventListener("click", onNo);
+      modal.hidden = true;
+      resolve(ok);
+    };
+    const onYes = () => finish(true);
+    const onNo = () => finish(false);
+    yes.addEventListener("click", onYes);
+    no.addEventListener("click", onNo);
+  });
+}
+
+function paintBackup(status) {
+  if (!status) return;
+  const hint = $("#googleHint");
+  const signed = !!status.signedIn;
+  hint.hidden = !!status.clientConfigured;
+  $("#googleSignIn").hidden = signed;
+  $("#googleSignOut").hidden = !signed;
+  $("#googleWho").textContent = signed ? (status.name || status.email) : "";
+  const driveOn = !!status.clientConfigured && signed;
+  $("#driveBackup").disabled = !driveOn;
+  $("#driveRestore").disabled = !driveOn;
+  const line = $("#backupStatus");
+  if (status.error) line.textContent = status.error;
+  else if (status.backedUpAt) line.textContent = "فيه نسخة في Drive.";
+  else line.textContent = "";
+}
+
+async function backupBusy(fn) {
+  const buttons = ["#backupExport", "#backupImport", "#googleSignIn", "#driveBackup", "#driveRestore"];
+  buttons.forEach(id => { const b = $(id); if (b) b.disabled = true; });
+  $("#backupStatus").textContent = "جاري…";
+  try { return await fn(); }
+  finally {
+    const status = api() && await api().backup_status().catch(() => null);
+    paintBackup(status);
+  }
+}
+
+$("#backupExport")?.addEventListener("click", () => backupBusy(async () => {
+  const r = await api().backup_export();
+  if (r && r.err) $("#backupStatus").textContent = r.err;
+}));
+$("#backupImport")?.addEventListener("click", () => backupBusy(async () => {
+  if (!await askRestore()) return;
+  await settleSavesForRestore();
+  try {
+    const r = await api().backup_import();
+    if (r && r.boot) { S.boot = r.boot; applyBoot(); loadHistory(); }
+    if (r && r.err) $("#backupStatus").textContent = r.err;
+  } finally { SAVE.hold = false; }
+}));
+$("#googleSignIn")?.addEventListener("click", () => backupBusy(async () => {
+  const r = await api().google_sign_in();
+  if (r && r.err) $("#backupStatus").textContent = r.err;
+}));
+$("#googleSignOut")?.addEventListener("click", () => backupBusy(async () => {
+  await api().google_sign_out();
+}));
+$("#driveBackup")?.addEventListener("click", () => backupBusy(async () => {
+  const r = await api().drive_backup();
+  if (r && r.err) $("#backupStatus").textContent = r.err;
+}));
+$("#driveRestore")?.addEventListener("click", () => backupBusy(async () => {
+  if (!await askRestore()) return;
+  await settleSavesForRestore();
+  try {
+    const r = await api().drive_restore();
+    if (r && r.boot) { S.boot = r.boot; applyBoot(); loadHistory(); }
+    if (r && r.err) $("#backupStatus").textContent = r.err;
+  } finally { SAVE.hold = false; }
+}));
+
 // الحفظ اللي لسه مستني (أو شغّال) يخلص — قبل الخروج من الصفحة أو قفل البرنامج
 async function flushSave() {
   if (SAVE.timer) { clearTimeout(SAVE.timer); await saveSettings(); }
@@ -1527,6 +1622,7 @@ async function start() {
   S.clips = await api().clips();
   fillClipApps();
   if (S.boot.update) showUpdate(S.boot.update);
+  try { paintBackup(await api().backup_status()); } catch (e) { /* القسم يظهر حتى لو الحالة ما رجعتش */ }
   go(S.boot.canRun ? "home" : "welcome");
 }
 if (window.pywebview && window.pywebview.api) start();

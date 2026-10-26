@@ -2038,6 +2038,42 @@ def read_keys(env_path):
     return {pid: keys[0] for pid, keys in read_key_pools(env_path).items() if keys}
 
 
+def _line_names_var(line, var):
+    """سطر تعيين لنفس المتغير حتى لو فيه مسافة حوالين = — القارئ بيقبلها والكاتب لازم يمسحها."""
+    raw = line.strip()
+    if not raw or raw.startswith("#") or "=" not in raw:
+        return False
+    name, _value = raw.split("=", 1)
+    return name.strip() == var
+
+
+def render_env(text, pools):
+    """نص .env جديد: سطور المزوّدين المعروفة تتستبدل بالمجمّعات، وأي سطر تاني يفضل."""
+    kept = []
+    known = {meta["env"] for meta in PROVIDERS.values()}
+    for line in (text or "").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            kept.append(line)
+            continue
+        name, _value = raw.split("=", 1)
+        if name.strip() in known:
+            continue
+        kept.append(line)
+    body = "\n".join(kept)
+    if body and not body.endswith("\n"):
+        body += "\n"
+    extras = []
+    # كل المزوّدين، مش ORDER بس: مفاتيح المعالجة والصوت لو اتشالت من الملف وما ترجعتش بتتمسح
+    for pid in PROVIDERS:
+        pool = _pool_normalize((pools or {}).get(pid))
+        if pool:
+            extras.append(f"{PROVIDERS[pid]['env']}={','.join(pool)}")
+    if extras:
+        body += "\n".join(extras) + "\n"
+    return body
+
+
 def _set_pool(env_path, var, keys):
     """
     يكتب مجمّعة المفاتيح في سطر واحد ويحافظ على باقي أسطر .env ويحدّث os.environ.
@@ -2050,7 +2086,7 @@ def _set_pool(env_path, var, keys):
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
             for line in f:
-                if line.strip().startswith(var + "="):
+                if _line_names_var(line, var):
                     found = True
                     if keys:
                         lines.append(f"{var}={','.join(keys)}\n")

@@ -125,6 +125,12 @@
 
 تقدر تغيّر أي زرار من تاب الميزة في الإعدادات.
 
+### نسخة احتياطية
+
+من الإعدادات تقدر تنزّل ملف zip فيه الإعدادات ومفاتيح الـAPI والسجل والحافظة والتسجيلات، وترجّعه على جهاز تاني. الاستعادة بتستبدل الموجود. لو سجّلت دخول بجوجل، «انسخ دلوقتي» بيرفع نفس الملف لفولدر اسمه Emlaa على Google Drive بتاعك. تسجيل الخروج ما بيمسحش الملف. من غير حساب جوجل، تنزيل الملف واسترجاعه شغالين.
+
+From Settings you can download a zip of your settings, API keys, history, clipboard and recordings, and restore it on another PC. Restore replaces what is already there. After you sign in with Google, Back up now uploads that zip to a folder named Emlaa in your own Google Drive. Signing out does not delete it. File download and restore work without a Google account.
+
 أو دوس على زرار الميك الأحمر جوّه البرنامج. **قفل النافذة مش بيقفل البرنامج** — بيستخبّى جنب الساعة. للخروج: كليك يمين على الأيقونة ← خروج.
 
 ### وضع البرومبت

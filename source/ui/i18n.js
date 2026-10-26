@@ -11,8 +11,31 @@ const EN = {
   "المفضلة — مش بتتمسح": "Favorites — never deleted",
   "الحافظة": "Clipboard", "القاموس": "Dictionary", "النظام": "System", "الإعدادات": "Settings",
   "تظل بياناتك خاصة": "Your data stays private",
-  "السجل والحافظة وصوت آخر ١٠ تسجيلات محفوظين على جهازك بس. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.":
-    "History, clipboard and the audio of your last 10 recordings are stored only on this device. Audio goes only to the transcription provider you chose, only while recording.",
+  "السجل والحافظة وصوت آخر ١٠ تسجيلات محفوظين على جهازك بس، إلا لو دوست «انسخ دلوقتي» فالنسخة بتروح لفولدر Emlaa على Google Drive بتاعك. الصوت بيتبعت لمزوّد التفريغ اللي اخترته وقت التسجيل وبس.":
+    "History, clipboard and the audio of your last 10 recordings stay on this device, unless you press Back up now — then the copy goes to an Emlaa folder in your own Google Drive. Audio goes only to the transcription provider you chose, only while recording.",
+  "نسخة احتياطية": "Backup",
+  "الملف فيه مفاتيح الـAPI والسجل والحافظة وتسجيلات الصوت. خليه عندك وما تبعتهوش لحد.":
+    "This file contains your API keys, history, clipboard and recordings. Keep it private.",
+  "تنزيل نسخة احتياطية": "Download backup",
+  "استعادة من ملف": "Restore from file",
+  "تسجيل الدخول بجوجل لسه مش متفعّل في النسخة دي.": "Google sign-in is not turned on in this version yet.",
+  "تسجيل الدخول بجوجل": "Sign in with Google",
+  "تسجيل الخروج": "Sign out",
+  "انسخ دلوقتي": "Back up now",
+  "استرجع من Drive": "Restore from Drive",
+  "الملف في فولدر Emlaa على Google Drive بتاعك، وآخر نسخة بتستبدل اللي قبلها. تسجيل الخروج ما بيمسحهاش.":
+    "The file is in an Emlaa folder in your own Google Drive, and the latest copy replaces the previous one. Signing out does not delete it.",
+  "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟":
+    "Restore replaces the settings, API keys, history, clipboard and recordings on this PC with this backup. Recordings that are not in the backup are deleted. Continue?",
+  "استنى لحد ما التسجيل أو التفريغ يخلّص.": "Wait until recording or transcription finishes.",
+  "الملف ده مش نسخة إملاء صالحة.": "This file is not a valid Emlaa backup.",
+  "النسخة دي معمولة بإصدار أحدث من إملاء.": "This backup was made by a newer version of Emlaa.",
+  "لسه مفيش نسخة في Google Drive.": "There is no backup in Google Drive yet.",
+  "جوجل محتاج تسجيل دخول تاني.": "Google needs you to sign in again.",
+  "معرفتش أقرأ ملفات النسخة — مفيش حاجة اتغيّرت.": "Couldn't read the backup files — nothing was changed.",
+  "جاري…": "Working…",
+  "كمّل": "Continue",
+  "فيه نسخة في Drive من {time}.": "Drive has a backup from {time}.",
   // ── تشغيل وتنزيل صوت التسجيل ──
   "تشغيل التسجيل": "Play recording", "إيقاف": "Pause", "تنزيل MP3": "Download MP3", "اتحفظ ✓": "Saved ✓",
   "الصوت مش متاح": "Audio not available", "مقدرتش أشغّل الصوت": "Couldn't play the audio",
