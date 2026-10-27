@@ -5,10 +5,13 @@ GOOGLE_CLIENT_ID فاضي لحد ما يتلزق معرّف عميل إملاء.
 """
 import base64
 import hashlib
+import http.client
 import json
 import os
 import secrets
+import threading
 import time
+import urllib.error
 import urllib.parse
 
 import backup
@@ -18,7 +21,16 @@ SCOPES = "openid email profile https://www.googleapis.com/auth/drive.file"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
+# فشل النقل من الديسك أو الشبكة. HTTPError بتاع urllib جوه URLError،
+# والرد المقطوع من http.client مش دايمًا بيطلع OSError.
+TRANSPORT_ERRORS = (OSError, urllib.error.URLError, http.client.HTTPException)
+# MAX_TOTAL سقف المحتوى غير المضغوط. الملف على الديسك أكبر بهيدر كل عضو
+# والدليل المركزي، والصوت المضغوط أصلًا ممكن يتمدّد شوية جوّه الـzip.
+# القراية بتقف هنا عشان ملف أكبر مايتحملش كله في الذاكرة قبل الرفض.
+BACKUP_READ_CAP = backup.MAX_TOTAL + 8 * 1024 * 1024
 _memory = {}
+_state_lock = threading.Lock()
+_sign_out_generation = {}
 
 
 class GoogleError(backup.BackupError):
@@ -63,14 +75,44 @@ def read_state(base_dir):
     return data if isinstance(data, dict) else {}
 
 
-def write_state(base_dir, state):
+def current_generation(base_dir):
+    with _state_lock:
+        return _sign_out_generation.get(base_dir, 0)
+
+
+def _discard(path):
+    try:
+        os.remove(path)
+    except OSError:
+        return
+
+
+def write_state(base_dir, state, generation=None, create=True):
     path = state_path(base_dir)
-    tmp = path + ".tmp"
+    tmp = path + "." + os.urandom(4).hex() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    with _state_lock:
+        signed_out = generation is not None and _sign_out_generation.get(base_dir, 0) != generation
+        # ملف اتمسح يعني الخروج خلّص قبل الكتابة. إنشاء الملف هنا كان هيرجّع التوكن.
+        missing = generation is not None and not create and not os.path.exists(path)
+        if signed_out or missing:
+            _discard(tmp)
+            return False
+        os.replace(tmp, path)
+        if generation is None:
+            _sign_out_generation[base_dir] = _sign_out_generation.get(base_dir, 0) + 1
+        return True
+
+
+def read_bounded(path):
+    with open(path, "rb") as handle:
+        blob = handle.read(BACKUP_READ_CAP + 1)
+    if len(blob) > BACKUP_READ_CAP:
+        raise backup.BackupError("too_large")
+    return blob
 
 
 def sign_in(client_id, transport, listener, opener, clock, base_dir):
@@ -114,12 +156,21 @@ def sign_in(client_id, transport, listener, opener, clock, base_dir):
         "picture": claims.get("picture") or "",
     }
     previous = read_state(base_dir)
+    previous_email = (previous.get("account") or {}).get("email")
+    switched = previous_email not in (None, account["email"])
     # حساب تاني بيمسح معرّفات الملفات القديمة عشان البحث يبقى في درايف الحساب ده
-    if previous.get("account", {}).get("email") not in (None, account["email"]):
+    if switched:
         previous.pop("folderId", None)
         previous.pop("fileId", None)
     previous["account"] = account
-    previous["refreshToken"] = token.get("refresh_token") or previous.get("refreshToken") or ""
+    refresh = token.get("refresh_token")
+    if refresh:
+        previous["refreshToken"] = refresh
+    elif switched:
+        # الرد من غير refresh token ما يفضلش شايل توكن الحساب القديم تحت إيميل الجديد
+        previous.pop("refreshToken", None)
+    else:
+        previous["refreshToken"] = previous.get("refreshToken") or ""
     write_state(base_dir, previous)
     _memory[base_dir] = {
         "access": token.get("access_token"),
@@ -153,10 +204,13 @@ def access_token(base_dir, transport, clock, client_id=None):
 
 
 def sign_out(base_dir, transport=None):
-    path = state_path(base_dir)
-    if os.path.exists(path):
-        os.remove(path)
-    _memory.pop(base_dir, None)
+    # النقل بيتتجاهل: الخروج بينسى الحساب على الجهاز ومش بينادي جوجل ولا درايف
+    with _state_lock:
+        path = state_path(base_dir)
+        if os.path.exists(path):
+            os.remove(path)
+        _memory.pop(base_dir, None)
+        _sign_out_generation[base_dir] = _sign_out_generation.get(base_dir, 0) + 1
 
 
 def listen_once(timeout=300):
@@ -190,14 +244,18 @@ def listen_once(timeout=300):
     return "http://127.0.0.1:%s/" % server.server_address[1], wait
 
 
+def _read_capped(response):
+    return response.read(BACKUP_READ_CAP + 1)
+
+
 def urllib_transport(method, url, headers, body):
     import urllib.request
     req = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=60, context=providers_ssl()) as res:
-            return res.status, dict(res.headers), res.read()
+            return res.status, dict(res.headers), _read_capped(res)
     except urllib.error.HTTPError as err:
-        return err.code, dict(err.headers or {}), err.read()
+        return err.code, dict(err.headers or {}), _read_capped(err)
 
 
 def providers_ssl():
@@ -208,5 +266,7 @@ def providers_ssl():
 def forget_for_tests(base_dir=None):
     if base_dir is None:
         _memory.clear()
+        _sign_out_generation.clear()
     else:
         _memory.pop(base_dir, None)
+        _sign_out_generation.pop(base_dir, None)

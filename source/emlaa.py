@@ -7,6 +7,7 @@
 """
 import os
 import sys
+import tempfile
 import threading
 import webbrowser
 
@@ -38,6 +39,24 @@ def R(t):
     الـ\\n فاصل فقرات في bidi — فكل سطر بيتحوّط لوحده.
     """
     return "\n".join("‫" + ln + "‬" for ln in str(t).split("\n"))
+
+
+def write_backup_zip(dest, blob):
+    # فتح الوجهة بـ wb كان بيفضي الملف قبل ما الكتابة تخلّص، والفشل كان يسيب نسخة مقطوعة.
+    directory = os.path.dirname(os.path.abspath(os.fspath(dest))) or "."
+    tmp = os.path.join(directory, ".emlaa-backup-" + os.urandom(4).hex() + ".part")
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ── الثيم ────────────────────────────────────────────────────────────────────
@@ -1310,6 +1329,10 @@ class EmlaaClassic(tk.Tk):
                   bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
         tk.Button(row2, text=R("استرجع من Drive"), command=self._drive_restore,
                   bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
+        row3 = tk.Frame(box, bg=BG)
+        row3.pack(fill="x", pady=(6, 0))
+        tk.Button(row3, text=R("تسجيل الخروج"), command=self._google_sign_out,
+                  bg=CARD, fg=FG, bd=0).pack(side="right", padx=4)
         self._backup_msg = tk.Label(box, text="", bg=BG, fg=MUTED, font=(FONT, 8),
                                     wraplength=380, justify="right")
         self._backup_msg.pack(fill="x", pady=(6, 0))
@@ -1321,6 +1344,33 @@ class EmlaaClassic(tk.Tk):
         if getattr(self, "_backup_msg", None):
             self._backup_msg.config(text=text)
 
+    def _say_backup_failure(self, err):
+        import google_auth
+        backup = self._backup_mod
+        if isinstance(err, backup.BackupError):
+            self._backup_say(backup.message_for(err.code))
+        elif isinstance(err, google_auth.TRANSPORT_ERRORS):
+            self._backup_say(backup.message_for("unreadable"))
+        else:
+            raise err
+
+    def _reload_restored_cfg(self):
+        fresh = core.load_config()
+        if isinstance(getattr(self, "cfg", None), dict):
+            self.cfg.clear()
+            self.cfg.update(fresh)
+
+    def _rebuild_settings_after_restore(self):
+        # الويدجتس لسه ماسكة القيم اللي قبل الاستعادة، والحفظ كان هيكتبها فوق النسخة.
+        dlg = getattr(self, "_dlg", None)
+        self._dlg = None
+        if dlg is not None:
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+        self._open_settings()
+
     def _backup_export(self):
         backup = self._backup_mod
         app = getattr(self, "engine", None)
@@ -1331,36 +1381,36 @@ class EmlaaClassic(tk.Tk):
             if not dest:
                 return
             blob = backup.export_snapshot(core.BASE, app)
-            with open(dest, "wb") as f:
-                f.write(blob)
+            write_backup_zip(dest, blob)
             self._backup_say(R("اتحفظ ✓"))
-        except backup.BackupError as err:
-            self._backup_say(backup.message_for(err.code))
+        except Exception as err:
+            self._say_backup_failure(err)
         finally:
             backup.end_backup(app)
 
     def _backup_import(self):
+        import google_auth
         backup = self._backup_mod
         if not self._mb.askyesno("إملاء", "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟"):
             return
         app = getattr(self, "engine", None)
+        restored = False
         try:
             backup.begin_backup(app)
             src = self._fd.askopenfilename(filetypes=[("ZIP", "*.zip")])
             if not src:
                 return
-            with open(src, "rb") as f:
-                blob = f.read()
+            blob = google_auth.read_bounded(src)
             backup.restore_snapshot(core.BASE, blob, app)
-            if isinstance(getattr(self, "cfg", None), dict):
-                fresh = core.load_config()
-                self.cfg.clear()
-                self.cfg.update(fresh)
-            self._backup_say(R("اتحفظ ✓"))
-        except backup.BackupError as err:
-            self._backup_say(backup.message_for(err.code))
+            self._reload_restored_cfg()
+            restored = True
+        except Exception as err:
+            self._say_backup_failure(err)
         finally:
             backup.end_backup(app)
+        if restored:
+            self._rebuild_settings_after_restore()
+            self._backup_say(R("اتحفظ ✓"))
 
     def _google_sign_in(self):
         import google_auth
@@ -1373,8 +1423,18 @@ class EmlaaClassic(tk.Tk):
             google_auth.sign_in(google_auth.GOOGLE_CLIENT_ID, google_auth.urllib_transport,
                                 google_auth.listen_once, webbrowser.open, time.time, core.BASE)
             self._backup_say(R("اتحفظ ✓"))
-        except self._backup_mod.BackupError as err:
-            self._backup_say(self._backup_mod.message_for(err.code))
+        except Exception as err:
+            self._say_backup_failure(err)
+
+    def _google_sign_out(self):
+        # نفس google_auth.sign_out: يمسح الحساب المحلي ومش بينادي درايف
+        import google_auth
+        try:
+            google_auth.sign_out(core.BASE)
+        except Exception as err:
+            self._say_backup_failure(err)
+            return
+        self._backup_say("")
 
     def _drive_backup(self):
         import google_auth
@@ -1390,8 +1450,8 @@ class EmlaaClassic(tk.Tk):
             blob = self._backup_mod.export_snapshot(core.BASE, app)
             drive_backup.upload(core.BASE, blob, google_auth.urllib_transport, token, int(time.time() * 1000))
             self._backup_say(R("اتحفظ ✓"))
-        except self._backup_mod.BackupError as err:
-            self._backup_say(self._backup_mod.message_for(err.code))
+        except Exception as err:
+            self._say_backup_failure(err)
         finally:
             self._backup_mod.end_backup(app)
 
@@ -1405,15 +1465,20 @@ class EmlaaClassic(tk.Tk):
         if not self._mb.askyesno("إملاء", "الاستعادة هتستبدل الإعدادات والمفاتيح والسجل والحافظة والتسجيلات الموجودة على الجهاز ده بالنسخة دي. التسجيلات اللي مش في النسخة هتتمسح. تكمّل؟"):
             return
         app = getattr(self, "engine", None)
+        restored = False
         try:
             self._backup_mod.begin_backup(app)
             token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
             drive_backup.restore(core.BASE, google_auth.urllib_transport, token, app)
-            self._backup_say(R("اتحفظ ✓"))
-        except self._backup_mod.BackupError as err:
-            self._backup_say(self._backup_mod.message_for(err.code))
+            self._reload_restored_cfg()
+            restored = True
+        except Exception as err:
+            self._say_backup_failure(err)
         finally:
             self._backup_mod.end_backup(app)
+        if restored:
+            self._rebuild_settings_after_restore()
+            self._backup_say(R("اتحفظ ✓"))
 
     def _prompt_toggled(self, on):
         """

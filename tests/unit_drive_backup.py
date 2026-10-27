@@ -99,3 +99,70 @@ class DriveTests(unittest.TestCase):
                 drive_backup.restore(self.base, script, "tok")
             self.assertEqual(cm.exception.code, "no_drive_file")
             restore.assert_not_called()
+
+    def test_upload_after_sign_out_does_not_restore_refresh_token(self):
+        google_auth.write_state(self.base, {
+            "folderId": "fold",
+            "fileId": "old",
+            "account": {"email": "a@b.c"},
+            "refreshToken": "secret-refresh",
+        })
+
+        class Transport:
+            def __call__(self, method, url, headers, body):
+                if method == "GET" and "/files/fold" in url:
+                    return ok({"id": "fold", "trashed": False})
+                if method == "POST":
+                    return (200, {"Location": "http://upload.example/session"}, b"{}")
+                if method == "PUT":
+                    google_auth.sign_out(self_base)
+                    return ok({"id": "incoming"})
+                if method == "PATCH":
+                    return ok({"id": "new"})
+                if method == "DELETE":
+                    return (204, {}, b"")
+                if method == "GET":
+                    return ok({"files": []})
+                raise AssertionError(method + " " + url)
+
+        self_base = self.base
+        got = drive_backup.upload(self.base, b"zip", Transport(), "tok", 22)
+        self.assertEqual(got["fileId"], "new")
+        self.assertFalse(os.path.exists(google_auth.state_path(self.base)))
+        for name in os.listdir(self.base):
+            with open(os.path.join(self.base, name), "rb") as handle:
+                self.assertNotIn(b"secret-refresh", handle.read())
+
+    def test_finished_upload_keeps_refresh_token_while_signed_in(self):
+        google_auth.write_state(self.base, {
+            "folderId": "fold",
+            "fileId": "old",
+            "refreshToken": "keep-me",
+            "account": {"email": "a@b.c"},
+        })
+        script = Script([
+            ok({"id": "fold", "trashed": False}),
+            (200, {"Location": "http://upload"}, b"{}"),
+            ok({"id": "incoming"}),
+            ok({"id": "new"}),
+            (204, {}, b""),
+            ok({"files": []}),
+        ])
+        drive_backup.upload(self.base, b"zip", script, "tok", 22)
+        self.assertEqual(google_auth.read_state(self.base)["refreshToken"], "keep-me")
+
+    def test_oversized_download_does_not_restore(self):
+        google_auth.write_state(self.base, {"folderId": "fold", "refreshToken": "keep-me"})
+        script = Script([
+            ok({"id": "fold", "trashed": False}),
+            ok({"files": [{"id": "live", "name": "emlaa-backup.zip"}]}),
+            (200, {}, b"x" * 40),
+        ])
+        with mock.patch.object(google_auth, "BACKUP_READ_CAP", 16), \
+             mock.patch.object(backup, "restore_snapshot") as restore:
+            with self.assertRaises(backup.BackupError) as cm:
+                drive_backup.restore(self.base, script, "tok")
+            self.assertEqual(cm.exception.code, "too_large")
+            self.assertEqual(backup.message_for(cm.exception.code), backup.MESSAGES["damaged"])
+            restore.assert_not_called()
+        self.assertEqual(google_auth.read_state(self.base).get("refreshToken"), "keep-me")

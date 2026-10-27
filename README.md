@@ -205,11 +205,11 @@ From Settings you can download a zip of your settings, API keys, history, clipbo
 
 ## خصوصيتك
 
-- المفاتيح بتتحفظ **على جهازك بس** (ملف `.env` جنب البرنامج).
-- الصوت رايح **للمزوّد بحسابك انت مباشرة**، والملف المؤقت بيتمسح بعد كل تفريغ — بس **آخر ١٠ تسجيلات** بتتحفظ على جهازك كملفات MP3 (فولدر `recordings` في فولدر بيانات البرنامج — جنب `Emlaa.exe` في النسخة المحمولة، و`%LOCALAPPDATA%\Emlaa` في نسخة Microsoft Store) للسماع والتنزيل، وبتتمسح مع مسح تسجيلها من السجل (أو لما تسجيل أحدث يزيحها).
+- المفاتيح بتتحفظ على جهازك (ملف `.env` جنب البرنامج). زرار «انسخ دلوقتي» استثناء: بيرفع المفاتيح والسجل والحافظة والتسجيلات لفولدر Emlaa على Google Drive بتاعك. إملاء مالوش سيرفر في الطريق ده، وتسجيل الدخول ما بيعملش حاجة لحد ما معرّف عميل جوجل يتظبط.
+- الصوت رايح **للمزوّد بحسابك انت مباشرة**، والملف المؤقت بيتمسح بعد كل تفريغ — بس **آخر ١٠ تسجيلات** بتتحفظ على جهازك كملفات MP3 (فولدر `recordings` في فولدر بيانات البرنامج — جنب `Emlaa.exe` في النسخة المحمولة، و`%LOCALAPPDATA%\Emlaa` في نسخة Microsoft Store) للسماع والتنزيل، وبتتمسح مع مسح تسجيلها من السجل (أو لما تسجيل أحدث يزيحها). نفس الصوت يروح لـ Drive بتاعك بس لو دوست زرار النسخ.
 - التسجيل اللي تفريغه **فشل** بيتحفظ في نفس الفولدر (الصوت الأصلي WAV + MP3 + نسخة من صفّه) برّه حد آخر ١٠ — لحد ما تفرّغه يدوي (ساعتها الـMP3 بس بيفضل ويمشي على قاعدة آخر ١٠) أو تمسحه أو تمسح السجل. ولو حتى حفظه فشل، الملف المؤقت مابيتمسحش ومكانه بيتكتب في ملف اللوج. ده بيشمل تسجيل فشل وانت في خانة باسورد (الصوت بس — مفيش نص)، ولو فرّغته يدوي النتيجة بتتحفظ في السجل زي أي تسجيل.
-- السجل والحافظة والقاموس **على جهازك بس**.
-- **الاتصال الوحيد غير المزوّد** هو سؤال GitHub عن آخر إصدار — من غير أي بيانات عنك (ونسخة الـStore مبتسألش خالص).
+- السجل والحافظة والقاموس على جهازك. زرار «انسخ دلوقتي» هو اللي يرفع نسخة من السجل والحافظة لـ Google Drive بتاعك.
+- سؤال GitHub عن آخر إصدار من غير أي بيانات عنك (ونسخة الـStore مبتسألش خالص). ولو معرّف عميل جوجل متظبط، زرار النسخ بيتصل بـ Drive بتاعك عشان يرفع الملف. إملاء مالوش سيرفر في الطريق ده.
 - سياسة الخصوصية كاملة: [PRIVACY.md](PRIVACY.md)
 
 ---
@@ -245,7 +245,7 @@ From Settings you can download a zip of your settings, API keys, history, clipbo
 - **Read aloud (Vercel AI Gateway, text-to-speech only):** a speaker button in History reads the result aloud with the voice model picked in Settings (`openai/tts-1` by default). Needs a Vercel AI Gateway key.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.
 - **Auto-updates from GitHub Releases** — one-click "Download & install", or fully automatic (waits until you finish recording). Downloads are checked by size and SHA-256.
-- Keys, settings and history stay on your machine. Audio goes only to the provider you chose.
+- Keys, settings and history stay on your machine unless you press Back up now. That button uploads your keys, history, clipboard and recordings to a folder named Emlaa in your own Google Drive. Emlaa has no server on that path, and sign-in does nothing until a client id is configured. Audio goes to the provider you chose, and to your Drive only when you back up.
 
 ---
 

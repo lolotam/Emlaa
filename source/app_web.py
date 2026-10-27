@@ -9,6 +9,7 @@
 """
 import json
 import os
+import tempfile
 import threading
 import time
 import webbrowser
@@ -35,6 +36,24 @@ OPEN_HOTKEYS = [
 
 def ui_path(name):
     return core.asset(os.path.join(UI_DIR, name))
+
+
+def write_backup_zip(dest, blob):
+    # فتح الوجهة بـ wb كان بيفضي الملف قبل ما الكتابة تخلّص، والفشل كان يسيب نسخة مقطوعة.
+    directory = os.path.dirname(os.path.abspath(os.fspath(dest))) or "."
+    tmp = os.path.join(directory, ".emlaa-backup-" + os.urandom(4).hex() + ".part")
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, dest)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _warm_offline_check():
@@ -1152,17 +1171,35 @@ class Api:
         return getattr(self._c, "engine", None)
 
     def _backup_call(self, fn):
+        import google_auth
         app = self._engine()
         try:
             backup.begin_backup(app)
         except backup.BackupError as err:
             return {"ok": False, "err": backup.message_for(err.code)}
+        except google_auth.TRANSPORT_ERRORS:
+            return {"ok": False, "err": backup.message_for("unreadable")}
         try:
             return fn(app)
         except backup.BackupError as err:
             return {"ok": False, "err": backup.message_for(err.code)}
+        except google_auth.TRANSPORT_ERRORS:
+            return {"ok": False, "err": backup.message_for("unreadable")}
         finally:
             backup.end_backup(app)
+
+    def _finish_restore(self, app):
+        # تثبيت فاضي: Controller.run ما بدأش محرك، فالاستعادة كانت بترجع وهي لسه None.
+        # من غير start_engine التسجيل يفضل مش متاح حتى لو النسخة تقدر تشتغل.
+        if app is not None and hasattr(app, "restart_hotkey"):
+            try:
+                app.restart_hotkey()
+            except Exception:
+                pass
+        boot = self.bootstrap()
+        if boot.get("canRun"):
+            self._c.start_engine()
+        return boot
 
     def backup_status(self):
         """من غير توكن. المعرّف الفاضي يخلّي أزرار درايف مقفولة في الواجهة."""
@@ -1190,21 +1227,20 @@ class Api:
             if not str(dest).lower().endswith(".zip"):
                 dest = str(dest) + ".zip"
             blob = backup.export_snapshot(core.BASE, app)
-            with open(dest, "wb") as f:
-                f.write(blob)
+            write_backup_zip(dest, blob)
             return {"ok": True}
         return self._backup_call(run)
 
     def backup_import(self):
         """الواجهة أكّدت قبل النداء. الإلغاء من نافذة الملف ما يغيّرش حاجة."""
         def run(app):
+            import google_auth
             src = self._file_dialog(False)
             if not src:
                 return {"ok": False, "err": ""}
-            with open(src, "rb") as f:
-                blob = f.read()
+            blob = google_auth.read_bounded(src)
             backup.restore_snapshot(core.BASE, blob, app)
-            return {"ok": True, "boot": self.bootstrap()}
+            return {"ok": True, "boot": self._finish_restore(app)}
         return self._backup_call(run)
 
     def google_sign_in(self):
@@ -1224,6 +1260,8 @@ class Api:
             return {"ok": True, **self.backup_status()}
         except backup.BackupError as err:
             return {"ok": False, "err": backup.message_for(err.code)}
+        except google_auth.TRANSPORT_ERRORS:
+            return {"ok": False, "err": backup.message_for("unreadable")}
 
     def google_sign_out(self):
         import google_auth
@@ -1252,7 +1290,7 @@ class Api:
         def run(app):
             token = google_auth.access_token(core.BASE, google_auth.urllib_transport, time.time)
             drive_backup.restore(core.BASE, google_auth.urllib_transport, token, app)
-            return {"ok": True, "boot": self.bootstrap(), **self.backup_status()}
+            return {"ok": True, "boot": self._finish_restore(app), **self.backup_status()}
         return self._backup_call(run)
 
     # ── متفرقات ──
