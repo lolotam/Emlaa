@@ -13,6 +13,7 @@
 الاتصال الوحيد بسيرفرنا هو سؤال «آخر إصدار كام؟» (check_update تحت)،
 من غير أي بيانات عن المستخدم، وبيتقفل من الإعدادات.
 """
+import contextlib
 import os
 import sys
 import time
@@ -213,6 +214,10 @@ HISTORY_PATH = os.path.join(BASE, "history.json")
 
 
 _store_lock = threading.RLock()
+# قفل النسخة الاحتياطية بيتاخد قبل قفل المفاتيح وقبل أقفال السجل، عشان الحفظ
+# والاستعادة ما يكتبوش فوق بعض. RLock لأن نفس الثريد ممكن يحفظ الإعدادات وهو ماسكه.
+_backup_lock = threading.RLock()
+_live_app = None
 
 
 def _read_list(path):
@@ -1094,9 +1099,15 @@ def can_run(cfg=None, pools=None, local=_UNSET):
 
 
 def save_config(cfg):
+    """كتابة ذرّية تحت قفل النسخة. الخطأ بيتبلع زي الأول عشان الواجهة ماتقعش."""
     try:
-        json.dump(cfg, open(CFG_PATH, "w", encoding="utf-8"),
-                  ensure_ascii=False, indent=2)
+        with _backup_lock:
+            tmp = CFG_PATH + "." + uuid.uuid4().hex[:8] + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, CFG_PATH)
     except Exception:
         pass
 
@@ -1699,23 +1710,29 @@ def _claim_retry(rid):
     تحت القفل: الصف لازم يكون فاشل وصوته موجود ومحدش بيفرّغه — بيتعلّم «بيتفرّغ» (التنضيف
     مايلمسوش، وتفريغ تاني له بيترفض) وبيتنسخ صوته نسخة خاصة: المسح أثناء التفريغ مايشدّش
     الصوت من تحت المزوّد. بيرجّع (الصف، النسخة) أو (None، سبب الرفض).
+    قفل حالة التطبيق قبل قفل السجل: النسخة الاحتياطية بتمسك الاتنين بنفس الترتيب.
     """
-    with _store_lock:
-        entry = history_entry(rid)
-        if entry is None or not _is_failed(entry) or not os.path.exists(failed_wav_path(rid)):
-            return None, "التسجيل ده مش موجود أو اتفرّغ خلاص"
-        if rid in _retrying:
-            return None, "التسجيل ده بيتفرّغ دلوقتي"
-        fd, work = tempfile.mkstemp(prefix="emlaa-retry-", suffix=".wav")
-        os.close(fd)
-        try:
-            shutil.copyfile(failed_wav_path(rid), work)
-        except Exception as e:
-            log_error(e, "retranscribe/copy")
-            _silent_remove(work)
-            return None, friendly_error(e)
-        _retrying.add(rid)
-    return entry, work
+    app = _live_app
+    state = app._state_lock if app is not None else contextlib.nullcontext()
+    with state:
+        if app is not None and getattr(app, "backing_up", False):
+            return None, "استنى لحد ما التسجيل أو التفريغ يخلّص"
+        with _store_lock:
+            entry = history_entry(rid)
+            if entry is None or not _is_failed(entry) or not os.path.exists(failed_wav_path(rid)):
+                return None, "التسجيل ده مش موجود أو اتفرّغ خلاص"
+            if rid in _retrying:
+                return None, "التسجيل ده بيتفرّغ دلوقتي"
+            fd, work = tempfile.mkstemp(prefix="emlaa-retry-", suffix=".wav")
+            os.close(fd)
+            try:
+                shutil.copyfile(failed_wav_path(rid), work)
+            except Exception as e:
+                log_error(e, "retranscribe/copy")
+                _silent_remove(work)
+                return None, friendly_error(e)
+            _retrying.add(rid)
+            return entry, work
 
 
 def _fail_again(rid, message):
@@ -1911,6 +1928,9 @@ class App:
         self.rec = Recorder()
         self.recording = False
         self.busy = False
+        self.backing_up = False
+        global _live_app
+        _live_app = self
         self._op = None
         self._client = None
         self._client_sig = None
@@ -1974,7 +1994,7 @@ class App:
         with self._state_lock:
             # فحص وحجز في خطوة واحدة: لو التسجيل شغّال أو التفريغ شغّال،
             # الدوسة الجديدة تترفض — بدل ما كل ثريد يفحص وبعدين يكمّل لوحده.
-            if self.recording or self.busy or getattr(self, "capturing", False):
+            if self.recording or self.busy or getattr(self, "capturing", False) or getattr(self, "backing_up", False):
                 return
             self.recording = True
             self.active_mode = mode
@@ -2496,7 +2516,7 @@ class App:
         يحصلوا مع بعض.
         """
         with self._state_lock:
-            if self.recording or self.busy or getattr(self, "capturing", False):
+            if self.recording or self.busy or getattr(self, "capturing", False) or getattr(self, "backing_up", False):
                 return False
             self.capturing = True
             return True
