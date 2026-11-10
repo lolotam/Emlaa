@@ -339,7 +339,10 @@
           <select class="select" id="offlineModel"></select></div>
         <div class="srow srow-stack" id="offlineDlRow">
           <span class="srow-text"><b>تنزيل الموديل</b><small id="offlineDownloadNote">بيتنزّل مرة واحدة ويتخزّن على جهازك</small></span>
-          <button class="cta cta-sm" id="offlineDownload" type="button">تنزيل</button>
+          <div class="offline-btns">
+            <button class="cta cta-sm" id="offlineDownload" type="button">تنزيل</button>
+            <button class="ghost-btn" id="offlineCancel" type="button" hidden>إلغاء</button>
+          </div>
           <div class="upd-bar" id="offlineBar" hidden><i></i></div>
         </div>
       </div>

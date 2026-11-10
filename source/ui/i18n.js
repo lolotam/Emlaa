@@ -185,6 +185,8 @@ const EN = {
   "تنزيل الموديل": "Download model", "تنزيل": "Download",
   "بيتنزّل مرة واحدة ويتخزّن على جهازك": "Downloads once and is stored on your device",
   "أسرع وأقل دقة": "Faster, less accurate", "أدق — موصى بيه": "More accurate — recommended",
+  "عربي/إنجليزي (محرك NVIDIA)": "Arabic/English (NVIDIA engine)",
+  "اتلغى التنزيل": "Download cancelled",
   "اتنزّل ✓": "Downloaded ✓", "اتشال الموديل": "Model removed", "مقدرتش أنزّل الموديل": "Couldn't download the model",
   // ── أول مرة ──
   "أهلاً بيك في إملاء": "Welcome to Emlaa", "اختار مزوّد التفريغ وحط مفتاحه — خطوة واحدة وتبدأ تتكلم.": "Pick a transcription provider and paste its key — one step and you're talking.",

@@ -34,7 +34,7 @@
 | 🛟 **التسجيل مايضيعش** | لو التفريغ فشل (نت، مفتاح، موديل، أو مطلعش نص) الصوت بيتحفظ في السجل بالسبب ورسالة بزرار «افتح السجل» — ومن هناك «تفريغ يدوي» لما المشكلة تتحل، والنتيجة بتنسخها انت (مبتتكتبش لوحدها) |
 | 📎 **مدير الحافظة** | كل حاجة بتتنسخ في جدول: فلترة، بحث، نسخ، ومسح أكتر من سطر مرة واحدة |
 | 📖 **القاموس** | أسماء ومصطلحات بتاعتك عشان تتكتب صح كل مرة |
-| 🤖 **9 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · xAI Grok · Z.ai GLM · OpenRouter · Whisper محلي، وللمعالجة كمان Z.ai GLM Coding Plan و Xiaomi MiMo — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
+| 🤖 **9 مزوّدين + بدائل بالترتيب** | Groq · OpenAI · Gemini · Deepgram · xAI Grok · Z.ai GLM · OpenRouter · محلي (Whisper · Nemotron)، وللمعالجة كمان Z.ai GLM Coding Plan و Xiaomi MiMo — لكل ميزة قايمة تفريغ وقايمة معالجة، ولو موديل فشل بيجرّب اللي بعده |
 | 🌗 **فاتح / غامق** · 🌐 **عربي / English** | زرارين صغيرين فوق |
 | 🔄 **تحديث تلقائي** | لما ينزل إصدار جديد: «نزّل وثبّت» بدوسة — أو لوحده خالص |
 | ⚡ **افتح البرنامج من أي مكان** | اختصار (افتراضي `Ctrl + Alt + N`) |
@@ -110,6 +110,33 @@
 
 ---
 
+## التفريغ من غير إنترنت (محلي)
+
+من غير مفتاح ومن غير نت: **إملاء بيفرّغ عندك** بموديل محلي تنزّله مرة واحدة من الإعدادات («التفريغ من غير إنترنت») وبيفضل متخزّن على جهازك — الصوت مايفيشش برّه.
+
+| الموديل | الحجم | المحرّك | ليه تختاره |
+|---|---|---|---|
+| `base` | 156 MB | whisper.cpp | أسرع وأخف — كافي للكلام العادي |
+| `small-q5_1` | 198 MB | whisper.cpp | أدق — موصى بيه |
+| `nemotron-3.5` | 751 MB | NeMo-Speech.cpp (NVIDIA) | عربي/إنجليزي (٣٢ لغة جاهزة للتفريغ) |
+
+- الموديل **بيحدّد اللغة لوحده** (عربي/إنجليزي) — من غير ما تختار حاجة.
+- **حزمة واحدة بس بتكون مثبّتة في نفس الوقت** — تنزيل موديل تاني بيشيل الأول، عشان مفيش حاجة تفضل متامى على القرص من غير زرار يمسحها.
+- الحجم المعروض = حجم تنزيل الموديل + أرشيف محرّكه؛ مساحة التثبيت أكبر بعد فك الضغط، والتحديث محتاج مساحة مؤقتة إضافية.
+- **المتطلبات:** ويندوز 10/11 x64 — نسخة Nemotron بتشتغل على المعالج لوحده، من غير كارت شاشة أو CUDA. السرعة بتعتمد على الجهاز.
+
+**المصادر والتراخيص** (إملاء بينزّل الملفات دي وقت الاستخدام من الروابط الرسمية الأصلية — مفيش أي ملف متضمّن في البرنامج):
+
+| | المصدر | الترخيص |
+|---|---|---|
+| `nemotron-3.5` الموديل | [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) — الملف `nemotron-3.5-asr-streaming-0.6b.q8_0.gguf` | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) |
+| محرّك NeMo-Speech.cpp | [NVIDIA/NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) — الإصدار `v0.3.0`، نسخة ويندوز x64 (المعالج) | [Apache-2.0](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/LICENSE) + إشعارات الأطراف التالتة |
+| موديلات Whisper | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) على HuggingFace | MIT |
+
+إملاء بيتأكد من **حجم كل ملف وبصمته (SHA-256)** قبل ما يثبّته، وبيشيل ملفّات التنزيل لو التحميل فشل أو اتلغى — فمفيش ولا تثبيت ناقص.
+
+---
+
 ## الاستخدام
 
 1. سيب إملاء شغّال — بيقعد **جنب الساعة**.
@@ -150,10 +177,10 @@
 |---|---|
 | **تابات الميزات** | عادي · برومبت · ترجمة · تعديل — لكل تاب **زرار التسجيل** و**قايمة التفريغ** و**قايمة المعالجة بالـAI** |
 | **زرار التسجيل** | «سجّل زرار» (زرار واحد زي `F8` — مش حرف أو رقم أو مسافة، دول بتكتب بيهم) أو «سجّل تركيبة» (`Ctrl`/`Alt`/`Shift`/`Win` + زرار، زي `Ctrl + F8`) — وبعدين دوس الزرار، و`Esc` بيلغي. كل ميزة لازم زرارها يبقى مختلف. الزرار مبيوصلش للبرامج التانية، بس `Ctrl`/`Alt`/`Shift`/`Win` بيفضلوا يوصلوا عادي |
-| **قايمة التفريغ** | مزوّد + موديل، بالترتيب: لو الأول فشل (نت، كوتا، مفتاح) بيجرّب اللي بعده. «محلي · Whisper» عنصر فيها بعد ما تنزّله |
+| **قايمة التفريغ** | مزوّد + موديل، بالترتيب: لو الأول فشل (نت، كوتا، مفتاح) بيجرّب اللي بعده. «محلي» عنصر فيها بعد ما تنزّله |
 | **قايمة المعالجة بالـAI** | بالترتيب برضه. ممكن تفضّيها عشان النص مايروحش لأي موديل معالجة: العادي يكتب الكلام زي ما اتقال، والبرومبت والترجمة يكتبوه من غير تحويل، والتعديل مايشتغلش. الصوت نفسه بيروح لمزوّد التفريغ — عشان مايخرجش من جهازك خلّي قايمة التفريغ «محلي · Whisper» بس. اللي كان مختار «من غير إنترنت دايمًا» بتبدأ قوايمه كده (تفريغ محلي ومعالجة فاضية) |
 | **المفاتيح** | قسم واحد لكل المزوّدين — كذا مفتاح لكل مزوّد، ومشتركة بين الميزات |
-| **التفريغ من غير إنترنت** | تنزيل أو إزالة موديل Whisper المحلي |
+| **التفريغ من غير إنترنت** | تنزيل أو إزالة الموديل المحلي (Whisper · Nemotron 3.5) |
 | **طريقة التسجيل** | دوسة تبدأ ودوسة توقف · أو امسك واتكلم |
 | **فتح إملاء من أي مكان** | اختصار يجيب النافذة قدامك (`Ctrl+Alt+N` افتراضي) |
 | **تنظيف النص وتصحيحه** | بيصلّح الترقيم والأخطاء ويحافظ على العامية |
@@ -234,7 +261,8 @@
 
 - **4 features**, each on its own settings tab: Normal (cleaned-up text), Prompt (turns speech into a structured AI prompt), Translate (Arabic ⇄ English), Edit selected text (speak an instruction).
 - **Record any hotkey** — one key, or Ctrl/Alt/Shift/Win plus a key. The hotkey is blocked from other apps; Ctrl/Alt/Shift/Win themselves still pass through.
-- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok and OpenRouter (paid, transcription and AI processing), Z.ai GLM (paid, transcription only), Z.ai GLM Coding Plan and Xiaomi MiMo Singapore Token Plan (subscription, AI processing only), and offline Whisper (transcription only). API keys live in one shared section, several keys per provider.
+- **Ordered fallback lists per feature:** one for transcription and one for AI processing. If an item fails, the next one is tried. Providers: Groq (fastest, free), OpenAI (most accurate), Google Gemini (free daily quota), Deepgram ($200 free credit), xAI Grok and OpenRouter (paid, transcription and AI processing), Z.ai GLM (paid, transcription only), Z.ai GLM Coding Plan and Xiaomi MiMo Singapore Token Plan (subscription, AI processing only), and the offline local model (transcription only). API keys live in one shared section, several keys per provider.
+- **Optional local ASR, no key and no network:** download a local model once from Settings → "Offline transcription" and dictation runs entirely on your machine. Two engines are offered: whisper.cpp (`base`, `small-q5_1`) and NVIDIA's **Nemotron 3.5 ASR Streaming 0.6B** on the official **NeMo-Speech.cpp** runtime (`nemotron-3.5`, ~751 MB, Arabic and English with automatic language detection). The model and the runtime are downloaded from NVIDIA's official URLs and checked by size and SHA-256 before they are installed; the model and runtime licenses are OpenMDW-1.1 and Apache-2.0.
 - **Failed recordings are kept:** if transcription fails (network, key, model, or no speech), the audio stays in History with the reason, a toast offers "Open History", and "Transcribe again" re-runs it once the problem is fixed. The result is shown for you to copy — never typed.
 - **Read aloud (Vercel AI Gateway, text-to-speech only):** a speaker button in History reads the result aloud with the voice model picked in Settings (`openai/tts-1` by default). Needs a Vercel AI Gateway key.
 - History (optionally last 10 only), clipboard manager, custom dictionary, floating wave panel, light/dark theme, Arabic/English UI, a global "open Emlaa" shortcut.
@@ -253,6 +281,9 @@ source/
   providers.py   المزوّدين وموديلات التفريغ ونسب الترشيح ودليل المفاتيح
   chains.py      قوايم الميزات: بيجرّب المزوّد/الموديل اللي بعده لو اللي قبله فشل
   smart.py       منطق صافي من غير ويندوز: الزراير والميزات والتحقق وتصنيف الكتابة
+  offline.py     التفريغ المحلي: واجهة واحدة على محرّكي Whisper و Nemotron
+  nemotron.py    محرّك Nemotron 3.5 المحلي (NeMo-Speech.cpp من NVIDIA)
+  asr_pack.py    القواعد المشتركة لتثبيت الموديلات المحلية (تنزيل متحقّق · فك آمن · مانيڨست ذرّي)
   ui/            الواجهة (HTML/CSS/JS) + الترجمة i18n.js
 tools/release.py        نشر إصدار جديد على GitHub بأمر واحد
 tools/store_package.py  بناء حزمة Microsoft Store (MSIX)

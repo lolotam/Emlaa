@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-إملاء — التفريغ بدون إنترنت (whisper.cpp)
-----------------------------------------
-مسار تفريغ بديل بيشتغل كلّه على جهاز المستخدم: بينزّل موديل whisper.cpp
-وبياناته، وبيفرّغ الـwav بـwhisper-cli.exe من غير ما أي صوت يعدّي على سيرفر.
+إملاء — التفريغ بدون إنترنت (whisper.cpp · NeMo-Speech.cpp)
+-----------------------------------------------------------
+مسار تفريغ محلي بيشتغل كلّه على جهاز المستخدم: بينزّل موديل ومحرّك محلي، وبيفرّغ
+الـwav من غير ما أي صوت يعدّي على سيرفر.
+
+فيه محرّكين:
+  • whisper.cpp — الموديلات base و small-q5_1 (الافتراضي، زي ما كان).
+  • NeMo-Speech.cpp — موديل Nemotron 3.5 (NVIDIA) — اختياري، وبنفس قواعد التثبيت.
+
+كل محرّك لوحده في ملفه (offline للـwhisper · nemotron للـnemotron) — والدوال
+الجوّه دي واجهة واحدة على الاتنين: تنزيل، مسح، فحص، تفريغ.
 
 ليه اللوك والدول الفاصل:
   • التنزيل/المسح/التفريغ كلهم بيتشاركوا نفس الملفات — لو اتنين اشتغلوا فوق
@@ -18,12 +25,13 @@ import os
 import re
 import json
 import time
-import hashlib
 import tempfile
 import threading
 import urllib.request
 
 import smart
+import asr_pack
+import nemotron
 
 # ── القيم المثبّتة (متفق عليها مسبقًا — مينفعش تتغيّر) ───────────────────────
 WHISPER_CPP_VERSION = "v1.9.2"
@@ -45,9 +53,9 @@ MODELS = {
 # whisper-cli بيشتغل من غيرهم — بنستبعدهم من الفك عشان حجم أقل وتشغيل أنضف
 _SKIP_DLL = ("sdl2.dll",)
 
-CREATE_NO_WINDOW = 0x08000000   # عشان مفيش نافذة console تخطف لمّا الـCLI يشتغل
+CREATE_NO_WINDOW = asr_pack.CREATE_NO_WINDOW   # عشان مفيش نافذة console تخطف لمّا الـCLI يشتغل
 TRANSCRIBE_TIMEOUT = 120        # ثواني — أقصى وقت لتفريغ مقطع واحد
-DOWNLOAD_TIMEOUT = 30           # ثواني — مهلة الاتصال/القراية لكل urlopen (نت متوقّف = نرفض بدل ما نعلّق للأبد)
+DOWNLOAD_TIMEOUT = asr_pack.DOWNLOAD_TIMEOUT  # ثواني — مهلة الاتصال/القراية لكل urlopen (نت متوقّف = نرفض بدل ما نعلّق للأبد)
 
 # قفل واحد بيرتّب التنزيل/المسح/التفريغ — كلهم بيلمسوا نفس الملفات
 _lock = threading.Lock()
@@ -59,12 +67,53 @@ _dl_lock = threading.Lock()
 # الاختبارات بتحط opener مزيّف هنا عشان التنزيل يمشي من غير شبكة
 _opener = None
 
+# علامة الإلغاء: المستخدم يقدر يوقف تنزيل شغّال — التنزيل بيتفحصها كل قراءة
+_cancel = threading.Event()
+
+
+def cancel():
+    """يلغي تنزيل شغّال (المحرّكين) — التنزيل يوقف ويمسح الـstaging من غير ما يثبّت نص نص."""
+    _cancel.set()
+
+
 # ── فحص بصمة الحزمة مرة واحدة لكل عملية (Task 20) ─────────────────────────────
 # الموديل 150–190 MB، فهاشه على كل تفريغ كان هيبطّأ الوضع المحلي — بنحسبه مرة
 # واحدة ونخزّن النتيجة على هوية المانيڨست (mtime_ns, size)، وبنمسحها لما تنزيل
 # أو مسح يحصل. _verify_locked() بتفترض إن _lock ماسك (transcribe بيناديها واللوك
 # معاه)؛ verify() هي اللي بتاخد اللوك وبتخزّن النتيجة.
 _verify_cache = {}
+
+
+# ── القواعد المشتركة مع محرّك Nemotron (asr_pack) ──────────────────────────────
+# الدوال دي wrappers رقيقة: القاعدة نفسها في asr_pack، والاسم هنا موجود لأن
+# الاختبارات بتتعامل معاه بالاسم (وبتخبّي _opener و_run).
+def _sha256_file(path):
+    """sha256 لملف بيتقري على قطع 1 MB — عشان ممن نحمّل الـ150 MB في الذاكرة مرة واحدة."""
+    return asr_pack.sha256_file(path)
+
+
+def _stream_download(url, dest, sha256, size, progress, done, total):
+    """
+    بينزّل url لـdest عبر .part، ويتأكد من البصمة والحجم. progress بيتندّى
+    بكسر من الإجمالي الكلي للعملية (bin + model) — مش للملف ده لوحده.
+    """
+    return asr_pack.stream_download(url, dest, sha256, size, progress, done, total,
+                                    opener=_open, cancel=_cancel)
+
+
+def _run(cmd, **kw):
+    """بنفصل subprocess.run عشان الاختبار يقدر يزوّد نسخة مزيّفة من غير عملية حقيقية."""
+    return asr_pack.run(cmd, **kw)
+
+
+def _clear_staging(staging):
+    """بيمسح فولدر الـstaging كله — بيستخدم في الفشل وفي أول كل تنزيل."""
+    asr_pack.clear_dir(staging)
+
+
+def _remove_inside(root, rels):
+    """بيمسح المسارات النسبية دي — بس اللي فعلًا جوّه root (N4: مانيڨست متلعوب فيه ميمسحش برّه)."""
+    asr_pack.remove_inside(root, rels)
 
 
 def _dirs():
@@ -95,8 +144,8 @@ def _open(url):
 
 
 # ── المثبّت دلوقتي ────────────────────────────────────────────────────────────
-def installed():
-    """اسم الموديل المثبّت، أو None لو مفيش تثبيت سليم (ملفات ناقصة أو حجم مختلف)."""
+def _whisper_installed():
+    """اسم موديل whisper المثبّت، أو None لو مفيش تثبيت سليم (ملفات ناقصة أو حجم مختلف)."""
     bin_dir, model_dir, staging, manifest_path = _dirs()
     if not os.path.exists(manifest_path):
         return None
@@ -136,16 +185,43 @@ def installed():
     return model
 
 
+def installed():
+    """
+    اسم الحزمة المحلية المثبّتة (whisper أو Nemotron)، أو None.
+    حزمة واحدة بس بتكون مثبّتة في نفس الوقت — تنزيل حزمة بيشيل التانية، عشان
+    مفيش موديل يبقى متامى على الجهاز من غير زرار يمسحه.
+    """
+    pack = _whisper_installed()
+    return pack if pack else nemotron.installed()
+
+
+def packs():
+    """الحزم المحلية اللي ينفع تتختار: [{"id", "size"}] — size بالحجم الكلي للتحميل."""
+    out = [{"id": m, "size": sz + WHISPER_CPP_SIZE} for m, (_u, _h, sz) in MODELS.items()]
+    out += [{"id": pid, "size": sz} for pid, sz in nemotron.PACKS.items()]
+    return out
+
+
+def known_packs():
+    """معرّفات الحزم المحلية المعروفة — للواجهة وللتنزيل."""
+    return set(MODELS) | set(nemotron.PACKS)
+
+
+def engine_label(pack):
+    """اسم الموديل كما يظهر في السجل: «whisper.cpp base» أو «nemotron-3.5-asr-streaming-0.6b»."""
+    if pack in nemotron.PACKS:
+        return nemotron.MODEL_LABEL
+    return "whisper.cpp " + str(pack)
+
+
+def engine_title(pack):
+    """اسم المحرّك المحلي للواجهة: «Whisper محلي» أو «Nemotron محلي»."""
+    if pack in nemotron.PACKS:
+        return "Nemotron محلي"
+    return "Whisper محلي" if pack else "محلي"
+
+
 # ── فحص بصمة الملفات (Task 20) ────────────────────────────────────────────────
-def _sha256_file(path):
-    """sha256 لملف بيتقري على قطع 1 MB — عشان ممن نحمّل الـ150 MB في الذاكرة مرة واحدة."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _manifest_identity(manifest_path):
     """هوية المانيڨست الحالية (mtime_ns, size) — None لو مفيش ملف."""
     try:
@@ -155,7 +231,7 @@ def _manifest_identity(manifest_path):
     return (st.st_mtime_ns, st.st_size)
 
 
-def cached_verification():
+def _whisper_cached_verification():
     """
     نتيجة الفحص المخزّنة للمانيڨست الحالي: True/False، أو None لو الفحص لسه
     ما اتعملش (أو مفيش مانيڨست). مبيحسبش بصمات هنا — offline_status لازم يفضل
@@ -168,7 +244,23 @@ def cached_verification():
     return _verify_cache.get(identity)
 
 
-def verify():
+def cached_verification():
+    """نتيجة الفحص المخزّنة للمحرّك المحلي المثبّت (whisper أو Nemotron)."""
+    if _whisper_manifest_present():
+        return _whisper_cached_verification()
+    return nemotron.cached_verification()
+
+
+def _whisper_manifest_present():
+    """فيه مانيڨست whisper على القرص؟ — التوجيه بين المحرّكين بيتبني عليه.
+
+    بنستعمل وجود المانيڨست (مش سلامة التثبيت) عشان تثبيت whisper بايظ يفضل
+    يوصّل رسالة «الموديل بايظ» بدل ما يتقفل على إنه «مش متثبّت».
+    """
+    return os.path.exists(_dirs()[3])
+
+
+def _whisper_verify():
     """
     بيفحص بصمة كل ملف في المانيڨست مرة واحدة لكل عملية. النتيجة بتتخزّن على
     هوية المانيڨست (mtime_ns, size). المانيڨست القديم (من غير "sha256"):
@@ -183,6 +275,13 @@ def verify():
         return result
     with _lock:
         return _verified_cached_locked()
+
+
+def verify():
+    """بيفحص بصمة ملفات المحرّك المحلي المثبّت (whisper أو Nemotron)."""
+    if _whisper_manifest_present():
+        return _whisper_verify()
+    return nemotron.verify()
 
 
 def _verified_cached_locked():
@@ -253,32 +352,6 @@ def _verify_locked():
 
 
 # ── التنزيل والتثبيت ──────────────────────────────────────────────────────────
-def _stream_download(url, dest, sha256, size, progress, done, total):
-    """
-    بينزّل url لـdest عبر .part، ويتأكد من البصمة والحجم. progress بيتندّى
-    بكسر من الإجمالي الكلي للعملية (bin + model) — مش للملف ده لوحده.
-    """
-    h = hashlib.sha256()
-    got = 0
-    part = dest + ".part"
-    with _open(url) as r, open(part, "wb") as f:
-        while True:
-            chunk = r.read(256 * 1024)
-            if not chunk:
-                break
-            f.write(chunk)
-            h.update(chunk)
-            got += len(chunk)
-            if progress and total:
-                progress(min(1.0, (done + got) / total))
-    if size and got != size:
-        raise RuntimeError(f"الملف نزل ناقص ({got} من {size})")
-    if sha256 and h.hexdigest() != sha256:
-        raise RuntimeError("بصمة الملف مش مطابقة")
-    os.replace(part, dest)
-    return got
-
-
 def _extract_bin(zip_path, dest):
     """
     يفكك أرشيف whisper.cpp وياخد بس whisper-cli.exe والـdll المطلوبة، مفلطحة
@@ -315,29 +388,12 @@ def _extract_bin(zip_path, dest):
                 dst.write(src.read())
 
 
-def _run(cmd, **kw):
-    """بنفصل subprocess.run عشان الاختبار يقدر يزوّد نسخة مزيّفة من غير عملية حقيقية."""
-    import subprocess
-    return subprocess.run(cmd, capture_output=True, creationflags=CREATE_NO_WINDOW, **kw)
-
-
-def _clear_staging(staging):
-    """بيمسح فولدر الـstaging كله — بيستخدم في الفشل وفي أول كل تنزيل."""
-    import shutil
-    try:
-        shutil.rmtree(staging)
-    except OSError:
-        pass
-
-
-def download(model, progress=None):
+def _download_whisper(model, progress=None):
     """
     بينزّل ويجهّز موديل offline + بيانات whisper.cpp. بيدور كله في .staging،
     وبيبني الملفات الحقيقية مكانها وبيقفل بالمانيڨست آخر خطوة — فلو حصل أي
     فشل في النص مفيش حاجة بتتسجّل كـ«مثبّت»، وبيترمى الـstaging.
     """
-    if model not in MODELS:
-        raise ValueError(f"موديل offline مش معروف: {model}")
     model_url, model_sha, model_size = MODELS[model]
     total = WHISPER_CPP_SIZE + model_size
 
@@ -419,6 +475,25 @@ def download(model, progress=None):
             _clear_staging(staging)
 
 
+def download(model, progress=None):
+    """
+    بينزّل حزمة محلية: موديل whisper أو حزمة Nemotron. حزمة واحدة بس بتكون
+    مثبّتة في نفس الوقت — والتانية بتتشال بعد نجاح التنزيل بس (عشان تنزيل
+    فاشل مايهدمش تثبيت شغّال).
+    """
+    _cancel.clear()
+    if model in nemotron.PACKS:
+        nemotron.download(progress=progress, cancel=_cancel)
+        with _lock:
+            _remove_whisper_install()
+        return
+    if model not in MODELS:
+        raise ValueError(f"موديل offline مش معروف: {model}")
+    _download_whisper(model, progress)
+    with _lock:
+        nemotron.remove()
+
+
 def _manifest_files(manifest_path):
     """المسارات النسبية المسجّلة في المانيڨست — قايمة فاضية لو مفيش أو بايظ."""
     try:
@@ -427,19 +502,6 @@ def _manifest_files(manifest_path):
     except Exception:
         return []
     return list(files) if isinstance(files, dict) else []
-
-
-def _remove_inside(root, rels):
-    """بيمسح المسارات النسبية دي — بس اللي فعلًا جوّه root (N4: مانيڨست متلعوب فيه ميمسحش برّه)."""
-    root_real = os.path.realpath(root)
-    for rel in rels:
-        p = os.path.join(root, rel)
-        if not os.path.realpath(p).startswith(root_real + os.sep):
-            continue
-        try:
-            os.remove(p)
-        except OSError:
-            pass
 
 
 def _known_leftovers(bin_dir):
@@ -455,8 +517,8 @@ def _known_leftovers(bin_dir):
     return rels
 
 
-def residual():
-    """فيه ملفات باك على الجهاز (حتى لو التثبيت بايظ)؟ — عشان زرار الإزالة يفضل متاح."""
+def _whisper_residual():
+    """فيه ملفات باك من whisper على الجهاز (حتى لو التثبيت بايظ)؟"""
     bin_dir, model_dir, staging, manifest_path = _dirs()
     root = os.path.dirname(manifest_path)
     if os.path.exists(manifest_path):
@@ -464,27 +526,38 @@ def residual():
     return any(os.path.exists(os.path.join(root, rel)) for rel in _known_leftovers(bin_dir))
 
 
+def residual():
+    """فيه ملفات باك على الجهاز (حتى لو التثبيت بايظ)؟ — عشان زرار الإزالة يفضل متاح."""
+    return _whisper_residual() or nemotron.residual()
+
+
+def _remove_whisper_install():
+    """يشيل تثبيت whisper (الملفات + المانيڨست) — المتصل لازم يكون ماسك اللوك."""
+    bin_dir, _model_dir, _staging, manifest_path = _dirs()
+    # ملفات المانيڨست + الملفات اللي بنعرفها بالاسم — مانيڨست بايظ أو ناقص
+    # ميسيبش 150–190 MB على الجهاز من غير طريقة تشيلهم من الواجهة
+    root = os.path.dirname(manifest_path)
+    _remove_inside(root, set(_manifest_files(manifest_path)) | set(_known_leftovers(bin_dir)))
+    for p in (manifest_path,):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    _verify_cache.clear()
+
+
 def remove():
-    """بيمسح الموديل والـbin والمانيڨست المثبّتين — تحت اللوك عشان ميتعاركش مع تنزيل."""
+    """بيمسح الموديل المحلي المثبّت (whisper أو Nemotron) — تحت اللوك عشان ميتعاركش مع تنزيل."""
     with _lock:
-        bin_dir, model_dir, staging, manifest_path = _dirs()
-        # ملفات المانيڨست + الملفات اللي بنعرفها بالاسم — مانيڨست بايظ أو ناقص
-        # ميسيبش 150–190 MB على الجهاز من غير طريقة تشيلهم من الواجهة
-        root = os.path.dirname(manifest_path)
-        _remove_inside(root, set(_manifest_files(manifest_path)) | set(_known_leftovers(bin_dir)))
-        for p in (manifest_path,):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        _verify_cache.clear()
+        _remove_whisper_install()
         # الـstaging بتاع تنزيل شغّال مينفعش يتلمس — بنمسحه بس لو قدرنا ناخد _dl_lock
         # من غير استنى (يعني مفيش تنزيل في النص). لو فشلنا فيه تنزيل شغّال: نسيب الـstaging.
         if _dl_lock.acquire(blocking=False):
             try:
-                _clear_staging(staging)
+                _clear_staging(_dirs()[2])
             finally:
                 _dl_lock.release()
+    nemotron.remove()
 
 
 # ── التفريغ ───────────────────────────────────────────────────────────────────
@@ -570,6 +643,16 @@ def _strip_markers(text):
 
 def transcribe(wav, language):
     """
+    بيفرّغ wav بالمحرّك المحلي المثبّت (whisper أو Nemotron) ويرجّع النص.
+    language=None = تعرّف تلقائي على اللغة.
+    """
+    if _whisper_installed():
+        return _whisper_transcribe(wav, language)
+    return nemotron.transcribe(wav, language)
+
+
+def _whisper_transcribe(wav, language):
+    """
     بيفرّغ wav بالموديل المثبّت ويرجّع النص. language=None = تعرّف تلقائي على اللغة،
     ولو طلّع لغة غير عربي/إنجليزي بنعيد كعربي (زي Client.transcribe). لو الإعادة فشلت
     أو مطلعش منها كلام، التفريغ الأول أحسن من إن الكلام يضيع.
@@ -599,6 +682,10 @@ def _transcribe_once(wav, language):
         model = installed()
         if not model:
             raise RuntimeError("مفيش موديل offline مثبّت — نزّل موديل الأول")
+        if model not in MODELS:
+            # الموديل اتبدّل في نص التفريغ (المستخدم نزّل حزمة تانية) — نرفض
+            # بدل ما whisper-cli يشتغل على موديل مش موجود
+            raise RuntimeError("الموديل المحلي اتغيّر — جرّب تاني")
         _, model_dir, _, _ = _dirs()
         model_path = os.path.join(model_dir, model + ".bin")
         # T20: فحص بصمة الملفات قبل تشغيل whisper — لو الموديل اتلف بعد التثبيت

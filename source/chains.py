@@ -60,7 +60,7 @@ class FeatureClient(providers.TextOps):
                         raise RuntimeError(LOCAL_MISSING)
                     text = offline.transcribe(wav_path, language)
                     self.stt_local, self.last_stt_name = True, "offline"
-                    self.last_stt_model = "whisper.cpp " + pack
+                    self.last_stt_model = offline.engine_label(pack)
                     return text
                 cl = self._client(pid, model=model)
                 # القاموس ومفاتيح الاختصارات بيتغيّروا بين التسجيلات — والعميل مخزّن
