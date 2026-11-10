@@ -1,6 +1,6 @@
 # Optional Nemotron 3.5 local ASR — implementation plan
 
-2026-11-10 · branch `feat/nemotron-local-asr` · steps 1–8 done · step 9 pending (parent review + real smoke test)
+2026-11-10 · branch `T3-CODE/add-optional-nemotron-local-asr` · implementation and parent code/runtime validation complete; interactive recording UI not exercised.
 
 Each step is a reviewable slice; the parent runs the full suite
 (`venv/Scripts/python -m unittest discover -s tests -p unit_*.py`) after each
@@ -97,3 +97,22 @@ nemo-speech transcribe sample.wav --model <gguf> --language ar-AR --format text 
 
 and then the same through Emlaa (download the pack in Settings → record → check
 the transcript and the engine shown in History).
+
+## Parent validation — 2026-11-10
+
+- Updated the branch to current `origin/main` (`f243742`, v1.26) before final tests.
+- Full unit suite: **995 tests passed**. Python compilation, JavaScript syntax,
+  and `git diff --check` passed. Existing provider tests emit ResourceWarnings.
+- Downloaded the separate official model/runtime using `nemotron.download()`
+  into an isolated scratch data folder; `offline.installed()` returned
+  `nemotron-3.5` and `offline.verify()` returned `True`.
+- Actual CPU transcription through `offline.transcribe(..., None)` passed with
+  English audio synthesized by Windows and Arabic audio from public Google
+  FLEURS (`ar_eg`, test row 0). These are smoke tests, not accuracy benchmarks.
+- The runtime archive contains a single top-level folder, `bin/nemo-speech.exe`,
+  GGML/NeMo DLLs, and MSVC runtime DLLs. Extracted archive size: 33,072,106 bytes;
+  installed model plus runtime: approximately 775 MB (751 MB download).
+- Review fixed `_dirs` shadowing in cleanup, preserved raw archive names in
+  path validation, and added coverage for cancellation just before publishing.
+- Interactive microphone/UI recording and Microsoft Store packaging were not
+  tested. The existing packaged-app restriction on offline downloads remains.
