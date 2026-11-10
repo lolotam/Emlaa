@@ -28,7 +28,10 @@ const S = {
 };
 
 const MODE_LABEL = { normal: "عادي", prompt: "برومبت", translate: "ترجمة", edit: "تعديل" };
-const OFFLINE_MODEL_LABEL = { base: "أسرع وأقل دقة", "small-q5_1": "أدق — موصى بيه" };
+const OFFLINE_MODEL_LABEL = {
+  base: "أسرع وأقل دقة", "small-q5_1": "أدق — موصى بيه",
+  "nemotron-3.5": "عربي/إنجليزي (محرك NVIDIA)",
+};
 const STATE_TEXT = {
   ready: "جاهز", rec: "بيسجّل…", work: "بيفرّغ الكلام…", prompt: "بيجهّز البرومبت…",
   translate: "بيترجم…", done: "اتبعت ✓", err: "في مشكلة", off: "محتاج مفتاح",
@@ -1024,6 +1027,7 @@ async function refreshOffline(keepForm) {
 }
 function setOfflineDownloading(on) {
   $("#offlineDownload").disabled = on;
+  $("#offlineCancel").hidden = !on;
   $("#offlineBar").hidden = !on;
   $("#offlineBar i").style.width = "0%";
   $("#offlineDownloadNote").textContent = on ? "بينزّل… 0%" : "بيتنزّل مرة واحدة ويتخزّن على جهازك";
@@ -1040,6 +1044,9 @@ $("#offlineDownload").addEventListener("click", async () => {
     r = { ok: false };
   }
   if (!r.ok) { setOfflineDownloading(false); toast(r.err || "مقدرتش أنزّل الموديل"); }
+});
+$("#offlineCancel").addEventListener("click", async () => {
+  try { await api().offline_cancel(); } catch (e) { /* الإلغاء بيحصل على أي حال */ }
 });
 $("#offlineRemove").addEventListener("click", async () => {
   await api().offline_remove();

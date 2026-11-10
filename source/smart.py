@@ -551,7 +551,7 @@ class CaptureSession:
 
 # ── إعدادات الميزات الأربعة: كل ميزة ليها زرارها وقايمة تفريغ وقايمة معالجة ──────
 FEATURES = ("normal", "prompt", "translate", "edit")
-LOCAL = "local"                       # الموديل المحلي (Whisper من غير إنترنت) — عنصر تفريغ بس
+LOCAL = "local"                       # الموديل المحلي (Whisper · Nemotron من غير إنترنت) — عنصر تفريغ بس
 STT_ONLY = ("deepgram", "zai", LOCAL)   # بيفرّغوا بس — ممنوعين في قايمة المعالجة
 CHAT_ONLY = ("zai_coding", "xiaomi", "anthropic")   # بيعالجوا بس — ممنوعين في قايمة التفريغ
 KNOWN_PROVIDERS = ("groq", "openai", "gemini", "deepgram", "xai", "zai", "openrouter") + CHAT_ONLY

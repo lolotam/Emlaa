@@ -20,6 +20,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import core
+import offline
 import providers
 import smart
 import winput
@@ -1694,7 +1695,8 @@ class EmlaaClassic(tk.Tk):
     def _render_provider(self):
         """أول مزوّد في قايمة تفريغ التسجيل العادي — ده اللي هيتجرّب الأول."""
         pid = core.feature("normal")["stt"][0]["provider"]
-        name = "Whisper محلي" if pid == smart.LOCAL else providers.meta(pid)["name"]
+        name = providers.meta(pid)["name"] if pid != smart.LOCAL \
+            else offline.engine_title(offline.installed())
         self.prov_lbl.config(text=R("عن طريق " + name))
 
     def _render_mode(self):

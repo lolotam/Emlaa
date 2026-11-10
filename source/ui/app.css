@@ -464,6 +464,8 @@ label.srow:hover { background: var(--hover); }
 .srow-stack { flex-direction: column; align-items: stretch; gap: 10px; }
 .srow-stack .key-row .input { height: 36px; }
 .srow-stack .key-row .ghost-btn { height: 36px; }
+.offline-btns { display: flex; gap: 8px; }
+.offline-btns .cta, .offline-btns .ghost-btn { flex: 1; }
 .style-list { display: flex; flex-direction: column; gap: 8px; }
 .style-row { display: flex; align-items: center; gap: 8px; }
 .style-row .input { height: 32px; width: 190px; flex: none; }

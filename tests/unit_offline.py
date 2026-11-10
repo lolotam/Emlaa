@@ -265,6 +265,28 @@ def _download_patches():
 
 
 class TestDownload(_BaseCase):
+    def test_cancel_during_smoke_preserves_existing_pack(self):
+        self._install("base")
+        p1, p2, p3, p4, p5, p6 = _download_patches()
+
+        def cancel_smoke(cmd):
+            offline.cancel()
+            return SimpleNamespace(returncode=0)
+
+        try:
+            with p1, p2, p3, p4, p5, \
+                    mock.patch.object(offline, "_run", side_effect=cancel_smoke), \
+                    mock.patch.object(offline.nemotron, "remove") as remove:
+                with self.assertRaises(offline.asr_pack.Cancelled):
+                    offline.download("test-model")
+                remove.assert_not_called()
+            self.assertEqual(offline.installed(), "base")
+            self.assertTrue(offline.verify())
+            self.assertFalse(os.path.exists(offline._dirs()[2]))
+            self.assertFalse(os.path.exists(os.path.join(offline._dirs()[1], "test-model.bin")))
+        finally:
+            offline._cancel.clear()
+
     def test_installs_and_writes_manifest_last(self):
         p1, p2, p3, p4, p5, p6 = _download_patches()
         with p1, p2, p3, p4, p5, p6:

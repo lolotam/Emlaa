@@ -561,7 +561,12 @@ class Controller:
 
 LAST_STT_KEY_ERR = ("ده آخر مفتاح بيفرّغ — لو اتشال مفيش ولا ميزة هتقدر تفرّغ. "
                     "ضيف مفتاح تاني أو نزّل الموديل المحلي الأول")
-LOCAL_NAME = "محلي · Whisper"
+LOCAL_NAME = "محلي"
+
+
+def _offline_packs():
+    """الحزم المحلية (whisper + Nemotron) بأحجامها بالميجا — للقايمة في الإعدادات."""
+    return [{"id": p["id"], "size": round(p["size"] / 1_000_000)} for p in offline.packs()]
 
 
 def _feature_catalog(pools, local):
@@ -638,8 +643,7 @@ class Api:
             "offline": {
                 "installed": local,
                 "packaged": core._is_packaged(),
-                "models": [{"id": m, "size": round(sz / 1_000_000)}
-                           for m, (_u, _h, sz) in offline.MODELS.items()],
+                "models": _offline_packs(),
             },
             # المفاتيح: مزوّدين التفريغ/المعالجة وبعدهم القراية بصوت (tts) — الترحيب بيعرض اللي بيفرّغ بس
             "providers": [dict(id=p, name=providers.PROVIDERS[p]["name"],
@@ -1092,8 +1096,7 @@ class Api:
             "residual": offline.residual(),   # ملفات باقية من تثبيت بايظ — الإزالة تفضل متاحة
             "verified": offline.cached_verification(),   # True/False بعد الفحص، None لو لسه متفحصش
             "model": core.CFG.get("offline_model", ""),
-            "models": [{"id": m, "size": round(sz / 1_000_000)}
-                       for m, (_u, _h, sz) in offline.MODELS.items()],
+            "models": _offline_packs(),
         }
 
     def offline_download(self, model):
@@ -1105,7 +1108,7 @@ class Api:
         with self._offline_lock:
             if self._offline_busy:
                 return {"ok": False, "err": "فيه تنزيل شغّال دلوقتي"}
-            if model not in offline.MODELS:
+            if model not in offline.known_packs():
                 return {"ok": False, "err": "موديل offline مش معروف"}
             self._offline_busy = True
 
@@ -1122,6 +1125,11 @@ class Api:
                     self._offline_busy = False
 
         threading.Thread(target=run, daemon=True).start()
+        return {"ok": True}
+
+    def offline_cancel(self):
+        """يلغي تنزيل شغّال — التنزيل يوقف من غير ما يثبّت نص نص."""
+        offline.cancel()
         return {"ok": True}
 
     def offline_remove(self):
