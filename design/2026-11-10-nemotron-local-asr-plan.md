@@ -103,6 +103,7 @@ the transcript and the engine shown in History).
 - Updated the branch to current `origin/main` (`f243742`, v1.26) before final tests.
 - Full unit suite: **995 tests passed**. Python compilation, JavaScript syntax,
   and `git diff --check` passed. Existing provider tests emit ResourceWarnings.
+- `python -m PyInstaller --noconfirm Emlaa.spec` built `dist/Emlaa.exe` successfully.
 - Downloaded the separate official model/runtime using `nemotron.download()`
   into an isolated scratch data folder; `offline.installed()` returned
   `nemotron-3.5` and `offline.verify()` returned `True`.

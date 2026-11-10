@@ -1,6 +1,6 @@
 # Optional Nemotron 3.5 local ASR — design
 
-2026-11-10 · branch `T3-CODE/add-optional-nemotron-local-asr` · status: implemented (pending parent review + smoke test)
+2026-11-10 · branch `T3-CODE/add-optional-nemotron-local-asr` · status: reviewed; 995 unit tests, Windows build, and English/Arabic CPU smoke tests passed. Interactive recording UI remains untested.
 
 ## Problem
 
