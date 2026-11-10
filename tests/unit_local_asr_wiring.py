@@ -127,6 +127,34 @@ class TestPacksAndLabels(_BaseCase):
 
 # ── التوجيه بين المحرّكين ─────────────────────────────────────────────────────
 class TestDispatch(_BaseCase):
+    def test_broken_whisper_manifest_does_not_hide_nemotron_verification(self):
+        self._install_whisper()
+        self._install_nemotron()
+        with open(offline._dirs()[3], "w", encoding="utf-8") as f:
+            f.write("{")
+        self.assertEqual(offline.installed(), nemotron.MODEL_ID)
+        self.assertTrue(offline.verify())
+        self.assertIs(offline.cached_verification(), True)
+
+    def test_missing_whisper_file_does_not_hide_nemotron_verification(self):
+        self._install_whisper()
+        self._install_nemotron()
+        os.remove(os.path.join(offline._dirs()[0], "whisper-cli.exe"))
+        self.assertEqual(offline.installed(), nemotron.MODEL_ID)
+        self.assertTrue(offline.verify())
+        self.assertIs(offline.cached_verification(), True)
+
+    def test_download_passes_a_cleared_cancel_event_to_nemotron(self):
+        offline._cancel.set()
+        self.addCleanup(offline._cancel.clear)
+
+        def download(progress=None, cancel=None):
+            self.assertIs(cancel, offline._cancel)
+            self.assertFalse(cancel.is_set())
+
+        with mock.patch.object(nemotron, "download", side_effect=download):
+            offline.download(nemotron.MODEL_ID)
+
     def test_transcribe_goes_to_nemotron_when_it_is_installed(self):
         self._install_nemotron()
         with mock.patch.object(nemotron, "transcribe", return_value="نص") as tr:

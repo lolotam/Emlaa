@@ -246,18 +246,18 @@ def _whisper_cached_verification():
 
 def cached_verification():
     """نتيجة الفحص المخزّنة للمحرّك المحلي المثبّت (whisper أو Nemotron)."""
-    if _whisper_manifest_present():
+    if _whisper_verification_selected():
         return _whisper_cached_verification()
     return nemotron.cached_verification()
 
 
-def _whisper_manifest_present():
-    """فيه مانيڨست whisper على القرص؟ — التوجيه بين المحرّكين بيتبني عليه.
+def _whisper_verification_selected():
+    """نفس اختيار محرّك التفريغ، مع إبقاء حالة Whisper البايظ لو مفيش بديل سليم.
 
-    بنستعمل وجود المانيڨست (مش سلامة التثبيت) عشان تثبيت whisper بايظ يفضل
-    يوصّل رسالة «الموديل بايظ» بدل ما يتقفل على إنه «مش متثبّت».
+    مانيڨست Whisper تالف مينفعش يخفي حالة تثبيت Nemotron سليم.
     """
-    return os.path.exists(_dirs()[3])
+    return bool(_whisper_installed() or
+                (not nemotron.installed() and os.path.exists(_dirs()[3])))
 
 
 def _whisper_verify():
@@ -279,7 +279,7 @@ def _whisper_verify():
 
 def verify():
     """بيفحص بصمة ملفات المحرّك المحلي المثبّت (whisper أو Nemotron)."""
-    if _whisper_manifest_present():
+    if _whisper_verification_selected():
         return _whisper_verify()
     return nemotron.verify()
 

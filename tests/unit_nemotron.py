@@ -12,6 +12,7 @@ import sys
 import json
 import hashlib
 import zipfile
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -394,10 +395,25 @@ class TestTranscribe(_BaseCase):
 
     def test_timeout_raises(self):
         self._install()
-        fake_run, _seen = self._run_writing("", raise_=TimeoutError("slow"))
+        timeout_error = subprocess.TimeoutExpired("nemo-speech", nemotron.TRANSCRIBE_TIMEOUT)
+        fake_run, seen = self._run_writing("", raise_=timeout_error)
         with mock.patch.object(nemotron, "_run", fake_run):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as cm:
                 nemotron.transcribe("w.wav", "ar")
+        self.assertEqual(nemotron.TRANSCRIBE_TIMEOUT, 300)
+        self.assertEqual(seen["timeout"], nemotron.TRANSCRIBE_TIMEOUT)
+        self.assertIs(cm.exception.__cause__, timeout_error)
+        self.assertIn("TimeoutExpired", str(cm.exception))
+
+    def test_launch_failure_keeps_its_reason(self):
+        self._install()
+        launch_error = FileNotFoundError("missing nemo-speech.exe")
+        fake_run, _seen = self._run_writing("", raise_=launch_error)
+        with mock.patch.object(nemotron, "_run", fake_run):
+            with self.assertRaises(RuntimeError) as cm:
+                nemotron.transcribe("w.wav", "ar")
+        self.assertIs(cm.exception.__cause__, launch_error)
+        self.assertIn("FileNotFoundError", str(cm.exception))
 
     def test_corrupt_model_refuses_to_run(self):
         self._install()

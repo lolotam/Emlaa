@@ -17,6 +17,7 @@ NeMo-Speech.cpp (محرّك C++ أصلي). الصوت مايفيشش برّه ا
 """
 import os
 import re
+import subprocess
 import time
 import tempfile
 import threading
@@ -450,8 +451,8 @@ def transcribe(wav, language):
             cmd = build_cmd(wav, model_path, language, out_path)
             try:
                 r = _run(cmd, timeout=TRANSCRIBE_TIMEOUT)
-            except Exception:
-                raise RuntimeError("التفريغ offline فشل")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError("التفريغ offline فشل (%s)" % type(exc).__name__) from exc
             if r.returncode != 0:
                 detail = _error_detail(r.stderr)
                 raise RuntimeError("التفريغ offline فشل" + (": " + detail if detail else ""))
