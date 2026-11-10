@@ -428,6 +428,8 @@ def _download_whisper(model, progress=None):
             # الـcommit بس (نقل الملفات + المانيڨست + مسح القديم) جوه _lock —
             # هنا بنلمس bin/ وmodels/ الحقيقية، فمينفعش يبقى تنزيل/مسح فوق بعض.
             with _lock:
+                if _cancel.is_set():
+                    raise asr_pack.Cancelled("اتلغى التنزيل")
                 # ننقل للمكان الحقيقي: bin وmodels، من غير ما نلمس الملفات القديمة غير بعد النجاح
                 os.makedirs(bin_dir, exist_ok=True)
                 os.makedirs(model_dir, exist_ok=True)
